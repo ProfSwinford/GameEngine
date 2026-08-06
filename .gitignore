@@ -1,0 +1,52 @@
+# ==========================================
+# 1. CMake & Local Build Outputs
+# ==========================================
+# Ignore the entire build directory where CMake generates files, downloads SDL3, and compiles targets
+build/
+build_output/
+CMakeUserPresets.json
+
+# ==========================================
+# 2. Visual Studio 2026 / MSVC Logs & Cache
+# ==========================================
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.VisualState
+IntelGraphicsProfiles/
+MSVC.VisualC.Baseline.txt
+
+# Compile history and diagnostic logs
+*.log
+*.tlog
+*.lastbuildstate
+*.pdb
+*.idb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.so
+*.dylib
+
+# ==========================================
+# 3. Future C# Build Artifacts
+# ==========================================
+# Ignore standard .NET compiler directories
+[Bb]in/
+[Oo]bj/
+
+# User-specific C# project configurations
+*.userosxx
+*.suo
+*.userprefs
+.sc/
+
+# ==========================================
+# 4. Operating System Files
+# ==========================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

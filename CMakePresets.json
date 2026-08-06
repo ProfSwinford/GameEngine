@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "vs2026-x64",
+      "displayName": "Visual Studio 2026 (x64)",
+      "description": "Targeting Visual Studio 2026 64-bit",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "displayName": "Build Project (Debug)",
+      "configurePreset": "vs2026-x64",
+      "configuration": "Debug",
+      "targets": [ "build" ]
+    }
+  ]
+}
