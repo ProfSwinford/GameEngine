@@ -1,86 +1,65 @@
-// =============================================================================
-//  WEEK 3 - the logger. See Log.h for the design contract.
+// ============================================================================
+//  Log.cpp - implementation of the message log declared in Log.h.
 //
-//  Implementation notes, all of them earned:
+//  Every message is written to three destinations:
+//    1. the terminal, with a colour that depends on the level
+//    2. logs/engine.log, so the output survives a crash and can be attached to
+//       a bug report
+//    3. LogBuffer, the in-memory list the editor's Console window draws from
 //
-//   - The file is opened ONCE at Init, not once per write.
-//
-//   - Flush on Warning and above, and on Shutdown. Not every line (a flush per
-//     line is measurably expensive) and not never (the whole point of the file
-//     sink is that it survives a crash, and an unflushed buffer does not).
-//
-//   - The threshold check lives in Log::ShouldLog and is called from the macro
-//     BEFORE std::format runs, so a suppressed message never pays for its own
-//     formatting. Write() re-checks, because Write() is public.
-//
-//  ---------------------------------------------------------------------------
-//  WEEK 3 PREDICTION, and the Week 5 answer.
-//
-//  Week 3 guess: "the lock goes around the sink fan-out in Write(), and the
-//  ring buffer needs its own because the panel reads it from another thread."
-//
-//  Week 5 verdict: correct on both counts, with one refinement. The mutex here
-//  covers the console and file sinks only; LogBuffer has its own lock, so a
-//  panel snapshotting the ring does not block a worker thread mid-write to the
-//  file. Two small locks beat one big one when the readers and writers of the
-//  two sinks are different threads.
-//
-//  The threshold is a std::atomic and is deliberately NOT under the mutex:
-//  reading it is the first thing every log call does, including suppressed
-//  ones, and making that contend would put a lock in the hot path.
-// =============================================================================
+//  The state below lives in an anonymous namespace. An anonymous namespace is
+//  the standard C++ way to say "these names belong to this file only" - no
+//  other .cpp can see or accidentally reuse them.
+// ============================================================================
 
 #include <engine/core/Log.h>
 #include <engine/core/LogBuffer.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <functional>
-#include <mutex>
 #include <string>
 #include <system_error>
-#include <thread>
 
 namespace eng {
 namespace {
 
-std::mutex               g_mutex;
-std::ofstream            g_file;
-std::atomic<LogLevel>    g_threshold{LogLevel::Info};
-std::atomic<bool>        g_initialised{false};
+// std::ofstream is the standard file-writing stream. The file is opened ONCE
+// in Init and kept open for the whole run: opening and closing a file for every
+// log line is slow enough to change the timing of whatever you were trying to
+// observe.
+std::ofstream g_file;
+
+LogLevel g_threshold   = LogLevel::Info;
+bool     g_initialised = false;
+
+// std::chrono::steady_clock is the standard clock that is guaranteed never to
+// go backwards. The other two standard clocks can: system_clock is the wall
+// clock, and it jumps when the machine syncs its time or the user changes
+// timezone. A timestamp that jumps backwards in the middle of a log file is
+// worse than no timestamp at all.
 std::chrono::steady_clock::time_point g_start;
 
-// Seconds since Init at the last file flush, and lines written since then.
-// Both guarded by g_mutex, like the stream they belong to. See the flush policy
-// note in Write() - the line counter is the half that actually works.
-f64   g_lastFlushSeconds = 0.0;
-usize g_pendingLines     = 0;
+// Bookkeeping for the flush policy at the bottom of Write().
+double      g_lastFlushSeconds = 0.0;
+std::size_t g_pendingLines     = 0;
 
-u64 CurrentThreadId() {
-    // Hashing the id is portable; the absolute value means nothing, the
-    // difference between two of them means everything. Week 5's whole reason
-    // for wanting this is telling two interleaved lines apart.
-    return static_cast<u64>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+double ElapsedSeconds() {
+    const std::chrono::duration<double> elapsed =
+        std::chrono::steady_clock::now() - g_start;
+    return elapsed.count();
 }
 
-f64 ElapsedSeconds() {
-    using namespace std::chrono;
-    return duration<f64>(steady_clock::now() - g_start).count();
-}
-
-// Console colour, because a wall of undifferentiated grey text is a wall you
-// stop reading. ANSI escapes; harmless if the terminal ignores them.
+// ANSI escape codes. These are the text sequences every modern terminal
+// understands as "change the colour of what comes next". A terminal that does
+// not understand them simply ignores them, so there is nothing to detect and
+// nothing to configure.
 const char* ColorFor(LogLevel level) {
     switch (level) {
-        case LogLevel::Trace:   return "\x1b[90m";
-        case LogLevel::Debug:   return "\x1b[36m";
-        case LogLevel::Info:    return "\x1b[0m";
-        case LogLevel::Warning: return "\x1b[33m";
-        case LogLevel::Error:   return "\x1b[31m";
-        case LogLevel::Fatal:   return "\x1b[1;31m";
+        case LogLevel::Info:    return "\x1b[0m";    // default
+        case LogLevel::Warning: return "\x1b[33m";   // yellow
+        case LogLevel::Error:   return "\x1b[31m";   // red
     }
     return "\x1b[0m";
 }
@@ -89,165 +68,134 @@ const char* ColorFor(LogLevel level) {
 
 const char* ToString(LogLevel level) {
     switch (level) {
-        case LogLevel::Trace:   return "Trace";
-        case LogLevel::Debug:   return "Debug";
         case LogLevel::Info:    return "Info";
         case LogLevel::Warning: return "Warning";
         case LogLevel::Error:   return "Error";
-        case LogLevel::Fatal:   return "Fatal";
     }
     return "?";
 }
 
 bool ParseLogLevel(std::string_view text, LogLevel& out) {
-    struct Entry { std::string_view name; LogLevel level; };
-    static constexpr Entry kTable[] = {
-        {"trace", LogLevel::Trace},     {"debug", LogLevel::Debug},
-        {"info", LogLevel::Info},       {"warning", LogLevel::Warning},
-        {"warn", LogLevel::Warning},    {"error", LogLevel::Error},
-        {"fatal", LogLevel::Fatal},
-    };
-
+    // Lower-case the incoming text first so "Info", "INFO" and "info" all work.
+    // Config files are written by people, and being fussy about capitalisation
+    // buys nothing.
     std::string lowered;
     lowered.reserve(text.size());
     for (char c : text) {
-        lowered.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c));
+        const bool upper = (c >= 'A' && c <= 'Z');
+        lowered.push_back(upper ? static_cast<char>(c + ('a' - 'A')) : c);
     }
 
-    for (const Entry& entry : kTable) {
-        if (entry.name == lowered) {
-            out = entry.level;
-            return true;
-        }
-    }
+    if (lowered == "info")                            { out = LogLevel::Info;    return true; }
+    if (lowered == "warning" || lowered == "warn")    { out = LogLevel::Warning; return true; }
+    if (lowered == "error")                           { out = LogLevel::Error;   return true; }
     return false;
 }
 
 bool Log::Init(std::string_view logFilePath, LogLevel threshold) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-
     g_start            = std::chrono::steady_clock::now();
     g_lastFlushSeconds = 0.0;
     g_pendingLines     = 0;
-    g_threshold.store(threshold, std::memory_order_relaxed);
+    g_threshold        = threshold;
 
     if (!logFilePath.empty()) {
-        // Create the containing directory if the path names one. Doing this
-        // here rather than making the caller do it means "logs/engine.log"
-        // works out of the box on a fresh clone.
         const std::string path(logFilePath);
-        const usize slash = path.find_last_of("/\\");
+
+        // Create the folder the log file lives in if it is missing, so that a
+        // freshly cloned copy of the project writes "logs/engine.log" without
+        // anybody having to make the folder by hand.
+        //
+        // std::filesystem is the standard cross-platform path and directory
+        // library (C++17). Using it means this code is identical on Windows,
+        // macOS and Linux instead of needing a #ifdef per platform.
+        const std::size_t slash = path.find_last_of("/\\");
         if (slash != std::string::npos) {
-            const std::string dir = path.substr(0, slash);
-            std::error_code ec;
-            std::filesystem::create_directories(dir, ec);
+            std::error_code ec;   // the non-throwing overload: a missing folder
+                                  // is not worth an exception here
+            std::filesystem::create_directories(path.substr(0, slash), ec);
         }
 
         g_file.open(path, std::ios::out | std::ios::trunc);
         if (!g_file.is_open()) {
-            std::fprintf(stderr, "[Log] could not open log file '%s'; console only\n",
+            std::fprintf(stderr, "[Log] could not open '%s'; terminal only\n",
                          path.c_str());
         }
     }
 
-    g_initialised.store(true, std::memory_order_release);
+    g_initialised = true;
     return true;
 }
 
 void Log::Shutdown() {
-    // Deliberately logs its own last line BEFORE closing anything. Something
-    // logging after this point gets the console fallback rather than a crash -
-    // see IsInitialised() handling in Write().
-    Write(Channels::kCore, LogLevel::Info, "Log shutting down");
+    // Log the last line BEFORE closing the file, so the file ends with a
+    // message saying the shutdown was orderly. A log that simply stops is
+    // indistinguishable from a crash.
+    Write(Channels::kCore, LogLevel::Info, "log shutting down");
 
-    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_file.is_open()) {
         g_file.flush();
         g_file.close();
     }
-    g_initialised.store(false, std::memory_order_release);
+    g_initialised = false;
 }
 
-bool Log::IsInitialised() {
-    return g_initialised.load(std::memory_order_acquire);
-}
+bool Log::IsInitialised() { return g_initialised; }
 
-void Log::SetThreshold(LogLevel level) {
-    g_threshold.store(level, std::memory_order_relaxed);
-}
-
-LogLevel Log::GetThreshold() {
-    return g_threshold.load(std::memory_order_relaxed);
-}
-
-bool Log::ShouldLog(LogLevel level) {
-    return level >= g_threshold.load(std::memory_order_relaxed);
-}
+void     Log::SetThreshold(LogLevel level) { g_threshold = level; }
+LogLevel Log::GetThreshold()               { return g_threshold; }
+bool     Log::ShouldLog(LogLevel level)    { return level >= g_threshold; }
 
 void Log::Write(std::string_view channel, LogLevel level, std::string_view message) {
+    // Checked again here even though the macro already checked, because Write
+    // is public and something may call it directly.
     if (!ShouldLog(level)) {
         return;
     }
 
     LogRecord record;
     record.timeSeconds = ElapsedSeconds();
-    record.threadId    = CurrentThreadId();
     record.level       = level;
     record.channel.assign(channel);
     record.message.assign(message);
 
-    // Memory sink first, and outside our mutex: LogBuffer has its own lock and
-    // its own readers.
+    // Destination 1 of 3: the editor's Console window.
     LogBuffer::Append(record);
 
-    std::lock_guard<std::mutex> lock(g_mutex);
+    // One line, laid out so the columns line up when you read a wall of them:
+    //   [    1.234] [Warning] [Resource    ] could not load textures/foo.bmp
+    //
+    // The numbers inside the braces are std::format's alignment controls:
+    //   {:9.3f}  - a number, 9 characters wide, 3 digits after the point
+    //   {:>7}    - text, 7 characters wide, pushed to the right
+    //   {:<12}   - text, 12 characters wide, pushed to the left
+    const std::string line = std::format("[{:9.3f}] [{:>7}] [{:<12}] {}",
+                                         record.timeSeconds, ToString(level),
+                                         record.channel, record.message);
 
-    // [   1.234] [ WARN] [Resource     ] (t:a3f1) message
-    const std::string line =
-        std::format("[{:9.3f}] [{:>7}] [{:<12}] (t:{:04x}) {}",
-                    record.timeSeconds, ToString(level), record.channel,
-                    static_cast<u16>(record.threadId & 0xFFFFu), record.message);
-
+    // Destination 2 of 3: the terminal.
     std::fputs(ColorFor(level), stdout);
     std::fputs(line.c_str(), stdout);
-    std::fputs("\x1b[0m\n", stdout);
-
+    std::fputs("\x1b[0m\n", stdout);   // reset the colour so later output is normal
     if (level >= LogLevel::Warning) {
         std::fflush(stdout);
     }
 
+    // Destination 3 of 3: the log file.
     if (g_file.is_open()) {
         g_file << line << '\n';
 
-        // FLUSH POLICY, revised TWICE, and both revisions are worth recording
-        // because the second one is a bug the first one hid.
+        // FLUSH POLICY.
+        // A stream buffers what you write and only hands it to the operating
+        // system when the buffer fills. If the program crashes before that
+        // happens, the log file is empty - exactly when you need it most.
+        // Flushing after every single line is the other extreme and is slow.
         //
-        // Week 3's rule was "flush on Warning and above, and at Shutdown; never
-        // per line, because a flush per line is measurably expensive". Correct
-        // as far as it goes, and it defeated the file sink's stated purpose:
-        // an Info-only boot produces about 2 KB, an ofstream buffer is larger
-        // than that, and killing the process left a ZERO-BYTE log after six
-        // seconds of perfectly good output. A file sink that survives a crash
-        // has to have actually written something.
-        //
-        // First fix: also flush if a second has passed since the last one.
-        // That STILL left a zero-byte log, for a reason that is obvious in
-        // hindsight - the check only runs when a line is written, and this
-        // engine logs nothing at all during steady-state play. Boot finishes at
-        // t=0.4s, no further line is ever written, so "has a second passed" is
-        // never asked again and the buffer sits there indefinitely.
-        //
-        // Second fix, below: flush when EITHER a second has passed OR enough
-        // lines have accumulated. The line counter is what makes it work,
-        // because it does not depend on a later call arriving.
-        //
-        // Cost: boot flushes twice; a quiet session flushes never after that;
-        // a chatty one flushes at most once per 16 lines. Nothing in the hot
-        // path logs, so none of this is in the hot path.
+        // The compromise: flush when the message is important, or when a
+        // second has gone by, or when enough lines have piled up.
         ++g_pendingLines;
-        const bool important = level >= LogLevel::Warning;
+        const bool important = (level >= LogLevel::Warning);
         const bool stale     = (record.timeSeconds - g_lastFlushSeconds) >= 1.0;
-        const bool batched   = g_pendingLines >= 16;
+        const bool batched   = (g_pendingLines >= 16);
         if (important || stale || batched) {
             g_file.flush();
             g_lastFlushSeconds = record.timeSeconds;
@@ -257,7 +205,6 @@ void Log::Write(std::string_view channel, LogLevel level, std::string_view messa
 }
 
 void Log::Flush() {
-    std::lock_guard<std::mutex> lock(g_mutex);
     std::fflush(stdout);
     if (g_file.is_open()) {
         g_file.flush();

@@ -1,5 +1,5 @@
-﻿{
-  "_comment": "Live engine configuration. config/engine.example.json is the documented reference; this is the one the engine actually reads. Both are committed - the example is documentation, this is configuration.",
+{
+  "_comment": "The settings the engine reads when it starts. Change a value, save, and run again - no rebuilding. config/engine.example.json is the documented copy; this is the one that is actually read.",
 
   "window": {
     "title": "Engine2D",
@@ -8,33 +8,25 @@
   },
 
   "logging": {
+    "_note": "threshold hides anything less important than the level you name. Info, Warning or Error.",
     "threshold": "Info",
     "file": "logs/engine.log"
   },
 
   "tunables": {
-    "workerThreadCount": 0,
-    "debugCircleSegments": 24,
-    "frameAllocatorBytes": 1048576,
-    "entityPoolBlocks": 4096,
-    "logBufferCapacity": 4096,
+    "_note": "fixedTimestepSeconds is how much time one simulation step represents. 0.016666667 is sixty steps a second. Try 0.1 and watch the movement become chunky while the drawing stays smooth.",
     "fixedTimestepSeconds": 0.016666667,
-    "maxStepsPerFrame": 5
+    "maxStepsPerFrame": 5,
+    "logBufferCapacity": 4096,
+    "gizmoCircleSegments": 24
   },
 
   "startup": {
     "scene": "scenes/orbit_test.json"
   },
 
-  "cvars": {
-    "debug.drawColliders": true,
-    "debug.showAllocatorHud": true,
-    "debug.showGrid": false,
-    "camera.defaultZoom": 1.0
-  },
-
   "input": {
-    "deadZone": 0.18,
+    "_note": "A binding is Device.Name. Key. followed by any key name, or Mouse. followed by Left, Right or Middle. An action can have several, which is how WASD and the arrow keys both work.",
     "contexts": {
       "gameplay": {
         "MoveLeft":  ["Key.A", "Key.Left"],
@@ -50,11 +42,8 @@
         "NavigateUp":   ["Key.W", "Key.Up"],
         "NavigateDown": ["Key.S", "Key.Down"],
         "Confirm":      ["Key.Space", "Key.Return"],
-        "Back":         ["Key.Escape"],
-        "Pause":        ["Key.P"]
+        "Back":         ["Key.Escape"]
       }
     }
   }
 }
-
-

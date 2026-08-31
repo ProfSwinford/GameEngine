@@ -1,4 +1,7 @@
-// SCRIPTS. See ScriptComponent.h for why the binding is by name.
+// ============================================================================
+//  ScriptComponent.cpp - scripts. See ScriptComponent.h for why the connection
+//  between a component and its behaviour is made by NAME.
+// ============================================================================
 
 #include <engine/core/Log.h>
 #include <engine/math/Transform2D.h>
@@ -13,31 +16,29 @@
 namespace eng {
 namespace {
 
-// Dense array of the components to tick, same shape as SpinSystem's.
+// Every script component currently attached, so the system can tick them all
+// without walking the whole scene.
 std::vector<ScriptComponent*> g_scripts;
 
-// Registered once at boot, not once per component - see the note on
-// SubscribeToCollisions.
 bool g_collisionsSubscribed = false;
 
-// std::map rather than unordered_map so ForEachScript comes out alphabetical,
-// which is what the editor's "attach a script" list wants. There are tens of
-// scripts, not thousands; the lookup difference is not measurable and the
-// stable order is worth having.
+// std::map rather than std::unordered_map so that listing the scripts comes
+// out alphabetical without sorting - which is what the editor's "attach a
+// script" list wants. There are tens of scripts, not thousands, so the speed
+// difference does not matter.
+//
+// The std::less<> at the end is what allows looking a script up with a
+// std::string_view without first copying it into a std::string.
 using ScriptTable = std::map<std::string, ScriptRegistry::CreateFn, std::less<>>;
 
 ScriptTable& Table() {
-    // FUNCTION-LOCAL STATIC, and this is the detail that makes
-    // ENGINE_REGISTER_SCRIPT safe. Script registrars are file-scope objects
-    // whose construction order across translation units is unspecified; a
-    // namespace-scope table could be constructed after the first registrar
-    // that fills it. A function-local static is constructed on first use, so
-    // whichever registrar runs first builds the table.
+    // A variable inside a function, not a global.
     //
-    // That is the static initialization order fiasco, avoided rather than
-    // survived. ComponentFactory sidesteps it a different way - explicit
-    // RegisterBuiltins() at boot - because it can; scripts cannot, since the
-    // whole point is that the engine does not know their names.
+    // This is the detail that makes ENGINE_REGISTER_SCRIPT work. Those
+    // registrar objects run before main(), in an order nobody controls, and a
+    // plain global table might not exist yet when the first one tries to use
+    // it. A variable inside a function is created the first time the function
+    // is called, so whichever registrar runs first builds the table.
     static ScriptTable table;
     return table;
 }
@@ -45,14 +46,15 @@ ScriptTable& Table() {
 } // namespace
 
 // ---------------------------------------------------------------------------
-//  ScriptBehaviour
+//  ScriptBehaviour - the accessors a script uses
 // ---------------------------------------------------------------------------
+
 Entity* ScriptBehaviour::Owner() const {
     return m_component != nullptr ? m_component->Owner() : nullptr;
 }
 
-EntityHandle ScriptBehaviour::OwnerHandle() const {
-    return m_component != nullptr ? m_component->OwnerHandle() : EntityHandle{};
+EntityId ScriptBehaviour::OwnerId() const {
+    return m_component != nullptr ? m_component->OwnerId() : EntityId{};
 }
 
 Scene* ScriptBehaviour::GetScene() const {
@@ -66,19 +68,17 @@ Transform2D* ScriptBehaviour::Transform() const {
 // ---------------------------------------------------------------------------
 //  ScriptRegistry
 // ---------------------------------------------------------------------------
+
 void ScriptRegistry::Register(std::string_view scriptName, CreateFn create) {
     if (scriptName.empty() || create == nullptr) {
         return;
     }
-    // Last registration wins, and a duplicate is worth a warning: two files
-    // claiming one name means one of them will never run, and which one is a
-    // property of the link order.
     ScriptTable& table = Table();
-    const auto   it    = table.find(scriptName);
-    if (it != table.end()) {
+    if (table.find(scriptName) != table.end()) {
+        // Two files claiming the same name means one of them will never run,
+        // and which one is decided by something nobody can see. Worth saying.
         ENGINE_LOG_WARN(Channels::kScene,
-                        "two scripts are registered as '{}' - only one can win, and which "
-                        "one is decided by link order",
+                        "two scripts are both called '{}' - only one of them can run",
                         scriptName);
     }
     table[std::string(scriptName)] = create;
@@ -90,7 +90,7 @@ bool ScriptRegistry::IsRegistered(std::string_view scriptName) {
 
 std::unique_ptr<ScriptBehaviour> ScriptRegistry::Create(std::string_view scriptName) {
     const auto it = Table().find(scriptName);
-    return it != Table().end() ? it->second() : nullptr;
+    return (it != Table().end()) ? it->second() : nullptr;
 }
 
 void ScriptRegistry::ForEachScript(const std::function<void(const char*)>& fn) {
@@ -99,45 +99,34 @@ void ScriptRegistry::ForEachScript(const std::function<void(const char*)>& fn) {
     }
 }
 
-usize ScriptRegistry::Count() { return Table().size(); }
+std::size_t ScriptRegistry::Count() { return Table().size(); }
 
 // ---------------------------------------------------------------------------
 //  ScriptComponent
 // ---------------------------------------------------------------------------
-StringId ScriptComponent::TypeIdStatic() {
-    static const StringId id = Intern(kTypeName);
-    return id;
-}
 
 ScriptComponent::~ScriptComponent() {
-    // Safety net for a component destroyed without ever being attached, which
-    // happens when Deserialize fails during a scene load. OnDetach is the
-    // mechanism; this is the backstop. Same pattern as SpinComponent.
+    // A safety net for a component that was built but never attached, which
+    // happens when a scene fails to load partway through.
     ScriptSystem::Unregister(*this);
     Unbind();
 }
 
-bool ScriptComponent::Deserialize(const ConfigNode& node, std::string& outError) {
-    const ConfigNode script = node.Child("script");
-    if (!script.IsValid()) {
-        outError = node.Path() + " needs a 'script' naming the behaviour to run";
-        return false;
-    }
-
-    m_scriptName = script.AsString("");
+bool ScriptComponent::Deserialize(const Json& node, std::string& outError) {
+    m_scriptName = ReadString(node, "script", "", kTypeName);
     if (m_scriptName.empty()) {
-        outError = node.Path() + ".script is empty";
+        outError = "ScriptComponent needs a \"script\" naming the behaviour to run";
         return false;
     }
     return true;
 }
 
-bool ScriptComponent::Serialize(ConfigWriter& out) const {
-    // THE NAME IS WRITTEN WHETHER OR NOT IT RESOLVED. An unresolved script is
-    // a script that has not been compiled yet, and dropping it from the save
-    // would silently delete the author's work the first time they saved a
-    // scene from a build that did not have their script in it.
-    out.SetString("script", m_scriptName);
+bool ScriptComponent::Serialize(Json& out) const {
+    // The name is saved WHETHER OR NOT it was found in this build. An
+    // unresolved script is simply one that has not been compiled yet, and
+    // leaving it out of the save would silently delete somebody's work the
+    // first time they saved a scene from a build without their script in it.
+    out["script"] = m_scriptName;
     return true;
 }
 
@@ -147,9 +136,9 @@ void ScriptComponent::OnAttach() {
 }
 
 void ScriptComponent::OnDetach() {
-    // OnDestroy runs BEFORE the entity is torn down, so a behaviour can still
-    // reach its transform and its siblings - which is the whole reason the
-    // hook exists rather than leaving it to the destructor.
+    // OnDestroy runs BEFORE the entity is taken apart, so a behaviour can
+    // still reach its transform and its neighbours. That is the whole reason
+    // the hook exists rather than leaving clean-up to the destructor.
     if (m_behaviour != nullptr && m_started) {
         m_behaviour->OnDestroy();
     }
@@ -173,7 +162,7 @@ void ScriptComponent::SetScriptName(std::string_view name) {
 void ScriptComponent::Bind() {
     m_behaviour = ScriptRegistry::Create(m_scriptName);
     if (m_behaviour != nullptr) {
-        // Set before any hook can run, so Owner() and Transform() are valid
+        // Set before any hook can run, so Owner() and Transform() already work
         // inside OnStart.
         m_behaviour->m_component = this;
         return;
@@ -181,8 +170,8 @@ void ScriptComponent::Bind() {
 
     if (!m_scriptName.empty()) {
         ENGINE_LOG_WARN(Channels::kScene,
-                        "script '{}' is not compiled into this build, so it is attached "
-                        "but will not run ({} script(s) available)",
+                        "the script '{}' is not compiled into this build, so it is "
+                        "attached but will not run ({} script(s) available)",
                         m_scriptName, ScriptRegistry::Count());
     }
 }
@@ -194,14 +183,11 @@ void ScriptComponent::Unbind() {
     }
 }
 
-void ScriptComponent::Tick(f32 deltaSeconds) {
+void ScriptComponent::Tick(float deltaSeconds) {
     if (m_behaviour == nullptr) {
-        return;
+        return;   // the script is not compiled into this build
     }
-    // OnStart on the first TICK rather than at attach. At attach time a scene
-    // load may not have built the rest of the entity yet - components are
-    // attached one at a time - so a script looking for its sibling collider in
-    // OnAttach would find it only if the file listed the collider first.
+    // OnStart happens on the first TICK, not at attach. See ScriptComponent.h.
     if (!m_started) {
         m_started = true;
         m_behaviour->OnStart();
@@ -209,20 +195,20 @@ void ScriptComponent::Tick(f32 deltaSeconds) {
     m_behaviour->OnUpdate(deltaSeconds);
 }
 
-void ScriptComponent::DispatchCollision(StringId messageType, EntityHandle other) {
-    // A collision arriving before the first tick means OnStart has not run.
-    // Delivering OnCollisionEnter to a behaviour that has not started yet is
-    // exactly the kind of surprise that makes scripting feel unreliable, so
-    // the event is dropped rather than delivered out of order - it will fire
-    // again next step, because collision STAY repeats while overlapping.
+void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId other) {
+    // A collision arriving before the first tick would mean OnStart has not
+    // run yet, and delivering OnCollisionEnter to a behaviour that has not
+    // started is exactly the kind of surprise that makes scripting feel
+    // unreliable. It is dropped instead; a CollisionStay will arrive next step
+    // anyway, because "stay" repeats for as long as the two things overlap.
     if (m_behaviour == nullptr || !m_started) {
         return;
     }
-    if (messageType == MessageTypes::CollisionEnter()) {
+    if (messageType == MessageTypes::kCollisionEnter) {
         m_behaviour->OnCollisionEnter(other);
-    } else if (messageType == MessageTypes::CollisionStay()) {
+    } else if (messageType == MessageTypes::kCollisionStay) {
         m_behaviour->OnCollisionStay(other);
-    } else if (messageType == MessageTypes::CollisionExit()) {
+    } else if (messageType == MessageTypes::kCollisionExit) {
         m_behaviour->OnCollisionExit(other);
     }
 }
@@ -230,6 +216,7 @@ void ScriptComponent::DispatchCollision(StringId messageType, EntityHandle other
 // ---------------------------------------------------------------------------
 //  ScriptSystem
 // ---------------------------------------------------------------------------
+
 void ScriptSystem::Register(ScriptComponent& script) {
     if (std::find(g_scripts.begin(), g_scripts.end(), &script) == g_scripts.end()) {
         g_scripts.push_back(&script);
@@ -237,18 +224,14 @@ void ScriptSystem::Register(ScriptComponent& script) {
 }
 
 void ScriptSystem::Unregister(ScriptComponent& script) {
-    const auto it = std::find(g_scripts.begin(), g_scripts.end(), &script);
-    if (it != g_scripts.end()) {
-        g_scripts.erase(it);
-    }
+    std::erase(g_scripts, &script);
 }
 
-void ScriptSystem::Clear() { g_scripts.clear(); }
+void        ScriptSystem::Clear() { g_scripts.clear(); }
+std::size_t ScriptSystem::Count() { return g_scripts.size(); }
 
-usize ScriptSystem::Count() { return g_scripts.size(); }
-
-usize ScriptSystem::UnresolvedCount() {
-    usize count = 0;
+std::size_t ScriptSystem::UnresolvedCount() {
+    std::size_t count = 0;
     for (const ScriptComponent* script : g_scripts) {
         if (!script->IsResolved()) {
             ++count;
@@ -257,17 +240,12 @@ usize ScriptSystem::UnresolvedCount() {
     return count;
 }
 
-void ScriptSystem::Update(f32 deltaSeconds) {
-    // ITERATED BY INDEX OVER A SNAPSHOT OF THE SIZE, because a script's
-    // OnUpdate can attach another script - or destroy its own entity, which
-    // detaches and erases from this very vector. Range-for over g_scripts
-    // would invalidate its iterator on the first such call.
-    //
-    // Entries removed mid-loop shift the tail down, so an index can skip one
-    // script for one step. That is the trade against a copy of the vector
-    // every step, and a script missing one tick on the frame something was
-    // destroyed is not observable; the allocation would be.
-    for (usize i = 0; i < g_scripts.size(); ++i) {
+void ScriptSystem::Update(float deltaSeconds) {
+    // Walked by index with the size re-read each time. A script's OnUpdate is
+    // allowed to attach another script, or to destroy its own entity - which
+    // removes an entry from this very list. A range-for would be reading the
+    // list while it changed underneath.
+    for (std::size_t i = 0; i < g_scripts.size(); ++i) {
         g_scripts[i]->Tick(deltaSeconds);
     }
 }
@@ -280,7 +258,7 @@ void ScriptSystem::SubscribeToCollisions() {
 
     // ONE subscription per message type for ALL scripts, rather than one per
     // component. A hundred scripted entities would otherwise mean three
-    // hundred subscriptions the bus has to walk for every collision.
+    // hundred subscriptions for the bus to walk on every single collision.
     const auto forward = [](const Message& message) {
         Scene* scene = Scene::Active();
         if (scene == nullptr) {
@@ -288,22 +266,23 @@ void ScriptSystem::SubscribeToCollisions() {
         }
         Entity* entity = scene->Get(message.target);
         if (entity == nullptr) {
-            return;   // destroyed between the collision and the dispatch
+            return;   // destroyed between the collision and the delivery
         }
         if (auto* script = entity->Find<ScriptComponent>(); script != nullptr) {
             script->DispatchCollision(message.type, message.other);
         }
     };
 
-    MessageBus::SubscribeBroadcast(MessageTypes::CollisionEnter(), forward);
-    MessageBus::SubscribeBroadcast(MessageTypes::CollisionStay(), forward);
-    MessageBus::SubscribeBroadcast(MessageTypes::CollisionExit(), forward);
+    MessageBus::SubscribeBroadcast(MessageTypes::kCollisionEnter, forward);
+    MessageBus::SubscribeBroadcast(MessageTypes::kCollisionStay, forward);
+    MessageBus::SubscribeBroadcast(MessageTypes::kCollisionExit, forward);
 }
 
 void ScriptSystem::RegisterComponentTypes() {
-    ComponentFactory::Register(ScriptComponent::kTypeName, []() -> std::unique_ptr<Component> {
-        return std::make_unique<ScriptComponent>();
-    });
+    ComponentFactory::Register(ScriptComponent::kTypeName,
+                               []() -> std::unique_ptr<Component> {
+                                   return std::make_unique<ScriptComponent>();
+                               });
 }
 
 } // namespace eng

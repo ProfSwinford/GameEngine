@@ -1,53 +1,47 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 6 - 2D collision primitives, MATH ONLY.
+// ============================================================================
+//  Overlap.h - "are these two shapes touching?", and nothing else.
 //
-//  These are PURE FUNCTIONS. No state, no side effects, no engine dependency
-//  beyond Vec2. Given the same inputs they return the same answer, forever.
+//  Two shapes are supported, which is all a 2D game usually needs:
+//    * AABB   - an Axis-Aligned Bounding Box. A rectangle that is never
+//               rotated, described by its bottom-left and top-right corners.
+//    * Circle - a centre and a radius.
 //
-//  That property is why Week 10 builds an entire collision SYSTEM -
-//  components, layers, masks, events - on top of them without touching this
-//  file. Week 10 wrote no new intersection math, which was the point.
+//  Everything here is a PURE FUNCTION: it reads its arguments, returns an
+//  answer, and changes nothing anywhere. The same inputs always give the same
+//  result. That is what lets the collision system in physics/Collider.h build
+//  triggers, layers and enter/exit events on top of these without ever needing
+//  to change this file.
 //
-// =============================================================================
-//  *** THE DECISION, RECORDED BEFORE ANY CODE WAS WRITTEN: ***
+//  ==========================================================================
+//  ONE DECISION, APPLIED EVERYWHERE: TOUCHING COUNTS AS OVERLAPPING.
 //
-//      Touching counts as overlap:  YES.
+//  Two boxes that share exactly one edge overlap. Two circles touching at one
+//  point overlap. A point sitting exactly on a boundary is inside.
 //
-//  Two boxes sharing exactly one edge overlap. Two circles touching at exactly
-//  one point overlap. A point exactly on a boundary is Contained.
-//
-//  There is no universally right answer, only a consistent one. This engine
-//  picked "yes" because every comparison then reads as <= / >=, so there is
-//  exactly one relational operator to keep straight instead of a mixture, and
-//  because a trigger volume that fails to fire when the player is exactly on
-//  its edge is a bug report waiting to happen.
-//
-//  EVERY function below agrees with this, and tests/src/test_overlap.cpp pins
-//  it down in all four shape combinations plus Contains. If they ever
-//  disagree, Week 10 produces collision events that fire on one axis and not
-//  the other, and it takes a long time to believe that is what is happening.
-// =============================================================================
+//  Neither answer is more "correct" than the other; what matters is picking
+//  one and never wavering. This engine picked yes for two reasons: every
+//  comparison below then reads as <= or >=, so there is only one operator to
+//  keep straight, and a trigger that refuses to fire when the player is
+//  exactly on its edge is a bug report waiting to happen.
+//  ==========================================================================
+// ============================================================================
 
 #include <engine/math/Vec2.h>
 
 namespace eng {
 
+// A rectangle that is never rotated.
+//
+// It stores two corners rather than a centre and a size because the overlap
+// test is then four straight comparisons with no arithmetic at all.
 struct AABB {
-    Vec2 min;
-    Vec2 max;
+    Vec2 min;   // bottom-left
+    Vec2 max;   // top-right
 
-    // INVARIANT: min <= max on both axes. ASSUMED, not enforced - these are
-    // pure functions on plain data and a constructor that validated would make
-    // them not-plain-data. Every function here is written so that a degenerate
-    // box (min > max) simply reports no overlap rather than doing something
-    // undefined, and FromCenterHalfExtents cannot produce one for a
-    // non-negative half-extent.
-    //
-    // A ZERO-SIZE box (min == max) is legal and is a point. The provided test
-    // requires that a zero-size box inside a larger one overlaps it, which
-    // follows directly from "touching counts".
+    // Building a box from a centre point and its half-width/half-height, which
+    // is how a collider on an entity is described.
     static constexpr AABB FromCenterHalfExtents(Vec2 center, Vec2 halfExtents) {
         return AABB{Vec2{center.x - halfExtents.x, center.y - halfExtents.y},
                     Vec2{center.x + halfExtents.x, center.y + halfExtents.y}};
@@ -58,24 +52,27 @@ struct AABB {
     constexpr Vec2 Center() const {
         return Vec2{(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f};
     }
-    constexpr Vec2 Size() const { return Vec2{max.x - min.x, max.y - min.y}; }
+    constexpr Vec2 Size()    const { return Vec2{max.x - min.x, max.y - min.y}; }
     constexpr Vec2 Extents() const { return Vec2{Size().x * 0.5f, Size().y * 0.5f}; }
 
+    // A box with min above max on either axis is inside-out and cannot contain
+    // anything. Nothing forces this to be true - it is simply that every
+    // function below reports "no overlap" for such a box rather than doing
+    // something unpredictable.
     constexpr bool IsValid() const { return min.x <= max.x && min.y <= max.y; }
 
-    // Grows the box to contain a point. Used by the collision system when it
-    // takes the axis-aligned bounds of a rotated box.
+    // Grows the box just enough to include `point`. Used when working out the
+    // upright box that surrounds a rotated shape.
     void Encapsulate(Vec2 point);
 };
 
 struct Circle {
-    Vec2 center;
-    f32  radius = 0.0f;
+    Vec2  center;
+    float radius = 0.0f;
 };
 
-// The four shape-pair tests. Each has both argument orders so that callers
-// never have to remember which way round the overload was declared - the
-// provided test checks that order does not matter.
+// The four shape pairings. Each has both argument orders so that calling code
+// never has to remember which way round it was declared.
 bool Overlaps(const AABB& a, const AABB& b);
 bool Overlaps(const Circle& a, const Circle& b);
 bool Overlaps(const AABB& box, const Circle& circle);
@@ -84,11 +81,13 @@ bool Overlaps(const Circle& circle, const AABB& box);
 bool Contains(const AABB& box, Vec2 point);
 bool Contains(const Circle& circle, Vec2 point);
 
-// The nearest point on (or inside) a box to an arbitrary point. This is the
-// function that makes AABB-vs-Circle correct: comparing bounding boxes instead
-// of clamping to this point is the single most common AABB-circle bug, and the
-// provided test "a circle near a box corner is not fooled by the bounding box"
-// exists to catch exactly it.
+// The point on (or inside) the box that is nearest to `point`.
+//
+// This is the function that makes box-versus-circle correct. The tempting
+// shortcut is to put a box around the circle and compare the two boxes, but
+// that reports a hit when a circle is near a box CORNER while still being too
+// far away to touch it. Measuring to the closest point instead has no such
+// blind spot.
 Vec2 ClosestPointOnAABB(const AABB& box, Vec2 point);
 
 } // namespace eng

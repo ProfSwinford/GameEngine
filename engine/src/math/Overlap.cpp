@@ -1,5 +1,14 @@
-// WEEK 6 - overlap tests. Pure functions; see Overlap.h for the
-// touching-counts-as-overlap decision that every one of them honours.
+// ============================================================================
+//  Overlap.cpp - the shape tests declared in Overlap.h.
+//
+//  Every comparison below uses <= or >= rather than < or >, because this
+//  engine has decided that touching counts as overlapping. If you ever change
+//  that, change all of them together and update the note in the header.
+//
+//  <algorithm> is included for std::min, std::max and std::clamp - all three
+//  are standard-library functions, and writing them by hand with an if/else
+//  only creates somewhere for a typo to hide.
+// ============================================================================
 
 #include <engine/math/Overlap.h>
 
@@ -15,50 +24,54 @@ void AABB::Encapsulate(Vec2 point) {
 }
 
 bool Overlaps(const AABB& a, const AABB& b) {
-    // Separating axis, in its simplest possible form. If either axis
-    // separates them, they cannot overlap - that is the whole test, and the
-    // provided "separation on one axis is enough" case checks it.
-    //
-    // The comparisons are <= and >= because TOUCHING COUNTS. Change these to
-    // < and > and the recorded convention has to change with them, along with
-    // kTouchingCounts in the test file.
+    // Two upright rectangles miss each other if there is a gap on EITHER axis.
+    // So instead of proving they overlap, prove they cannot: if one box ends
+    // before the other begins on x, or on y, there is no contact.
     if (a.max.x < b.min.x || b.max.x < a.min.x) { return false; }
     if (a.max.y < b.min.y || b.max.y < a.min.y) { return false; }
     return true;
 }
 
 bool Overlaps(const Circle& a, const Circle& b) {
-    const f32 reach = a.radius + b.radius;
-    // Squared comparison: no square root, and the ordering is identical.
-    // Exactly touching gives distanceSquared == reach*reach, and <= keeps it
-    // an overlap.
+    // Two circles touch when the distance between their centres is no more
+    // than the sum of their radii.
+    const float reach = a.radius + b.radius;
+
+    // Both sides are squared so that no square root is needed. Squaring does
+    // not change which of two non-negative numbers is larger, so the answer is
+    // identical and the work is less.
     return DistanceSquared(a.center, b.center) <= reach * reach;
 }
 
 Vec2 ClosestPointOnAABB(const AABB& box, Vec2 point) {
+    // std::clamp(v, lo, hi) returns v pinned into the range [lo, hi]. Doing
+    // that on each axis independently is exactly "the nearest point in the
+    // rectangle", and it needs no branches or special cases.
     return Vec2{std::clamp(point.x, box.min.x, box.max.x),
                 std::clamp(point.y, box.min.y, box.max.y)};
 }
 
 bool Overlaps(const AABB& box, const Circle& circle) {
-    // Clamp the circle's centre into the box, then measure. This handles all
-    // three configurations with no branching: centre outside on a face,
-    // outside near a corner, and inside the box entirely (where the clamped
-    // point IS the centre and the distance is zero).
+    // Find the point of the box nearest the circle's centre, then ask whether
+    // that point is within one radius.
     //
-    // Comparing bounding boxes instead would report a false positive for a
-    // circle sitting diagonally off a corner - which is the provided test.
+    // This one expression handles all three situations without any branching:
+    //   * the centre is off one flat side  -> nearest point is on that side
+    //   * the centre is off a corner       -> nearest point is the corner
+    //   * the centre is inside the box     -> nearest point IS the centre, so
+    //                                         the distance is zero and it
+    //                                         always counts as an overlap
     const Vec2 closest = ClosestPointOnAABB(box, circle.center);
     return DistanceSquared(closest, circle.center) <= circle.radius * circle.radius;
 }
 
 bool Overlaps(const Circle& circle, const AABB& box) {
+    // The same question with the arguments swapped, so calling code never has
+    // to remember an order.
     return Overlaps(box, circle);
 }
 
 bool Contains(const AABB& box, Vec2 point) {
-    // The third place the touching decision shows up: a point exactly on the
-    // boundary is contained.
     return point.x >= box.min.x && point.x <= box.max.x &&
            point.y >= box.min.y && point.y <= box.max.y;
 }

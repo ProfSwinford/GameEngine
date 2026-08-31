@@ -1,40 +1,26 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 1 - the window. WEEK 3 - the RAII conversion.
+// ============================================================================
+//  Window.h - the actual operating-system window the game appears in.
 //
-//  Week 1 held raw SDL_Window* and SDL_Renderer* members and exposed
-//  RawRenderer() as an escape hatch so the sandbox could poll events. Week 2
-//  replaced that use with EventPump; Week 3 converted the members to
-//  unique_ptr with custom deleters and DELETED RawRenderer() - the hatch had
-//  expired.
+//  One of these exists for the whole program. It owns two things that SDL
+//  gives us: the window itself, and the "renderer" attached to it (SDL's name
+//  for the object that draws into a window).
 //
-//  What the header contains now: no SDL type name, anywhere. That is what
-//  allowed engine/CMakeLists.txt to change SDL from PUBLIC to PRIVATE, which
-//  is the actual architectural achievement of Milestone 0.
+//  NOTICE WHAT IS NOT IN THIS HEADER: the word SDL. Nothing outside the
+//  platform layer needs to know which library opens the window, and keeping
+//  that name out of the public headers is what would make swapping SDL for
+//  something else an edit to a handful of .cpp files rather than to the whole
+//  engine.
 //
-//  ---------------------------------------------------------------------------
-//  WHY THE COPY OPERATIONS ARE DELETED (the Week 1 question, answered):
-//
-//  A Window owns an OS resource. The default copy constructor copies members
-//  bitwise, so two Windows would hold the same SDL handles, and BOTH
-//  destructors would destroy them - a double free, plus a window that vanishes
-//  when a temporary copy goes out of scope. There is no sensible meaning for
-//  "a second copy of this window", so the type refuses to express it.
-//
-//  This is the first place C++ value semantics bite someone coming from C#,
-//  where copying a class variable copies a reference and the GC sorts out the
-//  rest. In C++ the compiler will happily write a copy constructor that is
-//  catastrophically wrong unless you tell it not to. `= delete` turns a
-//  runtime crash into a compile error.
-//
-//  (The same reasoning is why unique_ptr itself is move-only, which is a nice
-//  demonstration that the ownership model composes: because the members are
-//  non-copyable, this class would be non-copyable even without the = delete.
-//  The explicit deletion is kept because saying it out loud is documentation.)
-// =============================================================================
+//  WHY COPYING A WINDOW IS FORBIDDEN
+//  A Window owns a resource that belongs to the operating system. If you could
+//  copy one, both copies would refer to the SAME OS window, and both would try
+//  to close it when they were destroyed - closing something twice. There is no
+//  sensible meaning for "a second copy of this window", so the class refuses
+//  to compile the attempt (see the `= delete` lines below).
+// ============================================================================
 
-#include <engine/core/Types.h>
 #include <engine/platform/SdlHandles.h>
 
 #include <string>
@@ -43,23 +29,17 @@ namespace eng {
 
 class Window {
 public:
-    // Creates a window of the given size and title, plus a renderer for it.
-    // EVERY SDL call's return value is checked; on any failure the object is
-    // left INVALID rather than half-constructed, an explanation is logged, and
-    // IsValid() returns false. No exception is thrown: a display that will not
-    // open is an environment failure (Ch. 3.2), so the caller gets an error to
-    // respond to.
-    Window(const char* title, i32 width, i32 height);
-
-    // Tears down in the exact reverse of construction: renderer, then window,
-    // then the SDL video subsystem. The member declaration ORDER is what
-    // enforces the first two - members are destroyed in reverse declaration
-    // order, so m_renderer is declared after m_window and therefore dies
-    // first. Getting that backwards destroys a window out from under its own
-    // renderer, which SDL does not enjoy.
+    // Opens a window of the given size with the given title.
     //
-    // Survives a construction that failed partway: unique_ptr members are null
-    // and SDL's destroy functions accept null.
+    // If anything fails - no display attached, a driver problem - the object
+    // is left INVALID rather than half-built, an explanation is written to the
+    // log, and IsValid() returns false. No exception is thrown: a display that
+    // will not open is a problem with the machine, not a bug in the code, and
+    // the caller should be able to react to it and exit tidily.
+    Window(const char* title, int width, int height);
+
+    // Closes the renderer first and then the window, in that order. A window
+    // destroyed out from under its own renderer is a crash.
     ~Window();
 
     Window(const Window&)            = delete;
@@ -67,36 +47,39 @@ public:
 
     bool IsValid() const;
 
-    i32  Width() const;
-    i32  Height() const;
+    int  Width() const;
+    int  Height() const;
     void SetTitle(const char* title);
 
-    // Fills the whole window with one colour.
-    void Clear(u8 r, u8 g, u8 b);
+    // Fills the whole window with one colour. Each channel is 0-255, which is
+    // why they are `unsigned char` - that type holds exactly 0 to 255.
+    void Clear(unsigned char r, unsigned char g, unsigned char b);
 
-    // Pushes the finished frame to the screen.
+    // Shows the finished frame. Nothing drawn this frame is visible until this
+    // is called.
     void Present();
 
     // ---------------------------------------------------------------------
-    //  ENGINE-INTERNAL native handles.
+    //  Engine-internal access to the underlying SDL objects.
     //
-    //  Three engine-side consumers legitimately need the platform objects:
-    //  the ImGui backend (tools/EditorGui), the draw layer (platform/Renderer)
-    //  and the texture loader (resource/ResourceManager). All three live
-    //  inside the engine.
+    //  Three parts of the engine legitimately need them: the editor GUI layer,
+    //  the drawing layer, and the texture loader. All three live inside the
+    //  engine.
     //
-    //  They are typed `void*` deliberately. The alternative - naming the SDL
-    //  types here, even as forward declarations - would put SDL back in the
-    //  public interface and undo the PUBLIC->PRIVATE change. void* says "this
-    //  is not part of the game-facing API" as loudly as the type system can.
+    //  They are returned as `void*` on purpose. Naming the SDL types here
+    //  would put SDL back into the engine's public interface, which is exactly
+    //  what this header is arranged to avoid. A `void*` says "this is plumbing,
+    //  not part of the API" about as loudly as C++ can.
     //
-    //  Game code has no use for these and the gate exercise never touched them.
+    //  Game code never needs either of these.
     // ---------------------------------------------------------------------
     void* NativeWindowHandle() const;
     void* NativeRendererHandle() const;
 
 private:
-    // Declaration order IS destruction order, reversed. See ~Window.
+    // These two are declared in this order for a reason. C++ destroys members
+    // in the REVERSE of their declaration order, so m_renderer (declared
+    // second) is destroyed first - which is the order SDL requires.
     WindowPtr   m_window;
     RendererPtr m_renderer;
 

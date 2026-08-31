@@ -1,46 +1,30 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 6 - the component that makes Milestone 1 actually demonstrable.
+// ============================================================================
+//  SpinComponent.h - makes an entity turn on the spot, forever.
 //
-//  M1 requires that "a three-deep parented hierarchy ORBITS and ROTATES
-//  correctly" and that panning and zooming leave it visually correct. A scene
-//  file can describe the hierarchy, but nothing in the engine was moving it -
-//  `orbit_test.json` rendered 22 sprites that sat perfectly still, and the
-//  milestone was being claimed on the strength of the transform unit tests
-//  alone. Those tests are real evidence and they are not the same thing as the
-//  check the milestone asks for.
+//  It adds `radiansPerSecond * deltaSeconds` to its own transform's rotation
+//  every simulation step. That is the entire component.
 //
-//  This is the smallest component that closes that gap: it adds
-//  `radiansPerSecond * dt` to its own transform's LOCAL rotation, every
-//  simulation step.
+//  WHY ONE FIELD IS ENOUGH TO PRODUCE A WHOLE ORBITING SOLAR SYSTEM
+//  There is no orbit code here, and none is needed. Spinning a PARENT sweeps
+//  everything attached to it around in a circle, because a child's position in
+//  the world is worked out through its parent's transform. That is what the
+//  parent/child transform tree in Transform2D.h buys.
 //
-//  ---------------------------------------------------------------------------
-//  WHY THAT ONE FIELD IS ENOUGH TO PRODUCE AN ORBIT.
+//  So in assets/scenes/orbit_test.json:
+//     the root spins   -> the planet (its child, offset sideways) ORBITS the centre
+//     the planet spins -> the moon (its child) orbits the planet, and the
+//                         planet visibly turns as well
+//     the moon spins   -> the moon turns on its own axis
 //
-//  There is no orbit code here, and there does not need to be. Spinning a
-//  PARENT sweeps every child around it, because a child's world matrix is
-//  `local * parentWorld` - which is the entire point of the transform
-//  hierarchy and exactly what Week 6 built.
+//  Three numbers in a data file produce a three-deep orbiting system, with no
+//  code written for any of it.
 //
-//  So in `orbit_test.json`:
-//    SolarRoot spins  ->  Planet (its child, offset 160 units) ORBITS the origin
-//    Planet spins     ->  Moon (its child, offset 50 units) ORBITS the Planet,
-//                         AND the Planet visibly rotates
-//    Moon spins       ->  the Moon rotates on its own axis, backwards
-//
-//  Three numbers in a data file produce a three-deep orbiting system, and if
-//  the composition order in Mat3 were wrong it would be immediately, visibly
-//  wrong on screen rather than subtly wrong in a way you could talk yourself
-//  out of.
-//
-//  ---------------------------------------------------------------------------
-//  Component.h says "two component types is enough to prove the model. Resist
-//  adding more." That instinct is right and this is the exception it is worth
-//  making: without it the milestone's own acceptance criterion cannot be run.
-//  It lives in its own file rather than in Component.h so that the "required
-//  this week: Transform and Sprite" claim there stays true.
-// =============================================================================
+//  It is also a good first component to copy when writing your own: it is
+//  small enough to read in one go and it shows every piece - the type name,
+//  loading and saving, attach and detach, and the system that updates it.
+// ============================================================================
 
 #include <engine/scene/Component.h>
 #include <engine/scene/SystemOrder.h>
@@ -50,49 +34,46 @@ namespace eng {
 class SpinComponent final : public Component {
 public:
     static constexpr const char* kTypeName = "SpinComponent";
-    static StringId TypeIdStatic();
 
     ~SpinComponent() override;
 
-    StringId    TypeId() const override { return TypeIdStatic(); }
     const char* TypeName() const override { return kTypeName; }
 
-    // Scene-file fields:
-    //   "radiansPerSecond": 0.6     - signed; negative spins clockwise
-    //   "degreesPerSecond": 34.4    - the same thing in the unit a human
-    //                                 actually thinks in. If both are given,
-    //                                 radiansPerSecond wins and the conflict
-    //                                 is reported rather than silently
-    //                                 resolved.
-    bool Deserialize(const ConfigNode& node, std::string& outError) override;
-    bool Serialize(ConfigWriter& out) const override;
+    // Scene file fields - give ONE of these:
+    //   "radiansPerSecond": 0.6     negative turns the other way
+    //   "degreesPerSecond": 34.4    the same thing in the unit people think in
+    bool Deserialize(const Json& node, std::string& outError) override;
+    bool Serialize(Json& out) const override;
 
     void OnAttach() override;
     void OnDetach() override;
 
-    f32  RadiansPerSecond() const { return m_radiansPerSecond; }
-    void SetRadiansPerSecond(f32 rate) { m_radiansPerSecond = rate; }
+    float RadiansPerSecond() const { return m_radiansPerSecond; }
+    void  SetRadiansPerSecond(float rate) { m_radiansPerSecond = rate; }
 
 private:
-    f32 m_radiansPerSecond = 0.0f;
+    float m_radiansPerSecond = 0.0f;
 };
 
-// Updates every attached SpinComponent. Registered at SystemStage::kMovement,
-// which is stage 300 - BEFORE collision at 400, so colliders are tested at the
-// positions things actually moved to this tick rather than last tick's. That
-// is the one ordering pair SystemOrder.h calls out by name, and this is the
-// first system in the engine for which it matters.
+// Turns every attached SpinComponent, once per simulation step.
+//
+// It runs at stage 300 (Movement), which is BEFORE collision at stage 400 - so
+// collisions are checked at the positions things actually moved to this tick
+// rather than where they were last tick. That is the ordering pair
+// SystemOrder.h calls out by name.
 class SpinSystem final : public System {
 public:
-    void        Update(f32 deltaSeconds) override;
-    const char* Name() const override { return "SpinSystem"; }
-    i32         Order() const override { return SystemStage::kMovement; }
+    void        Update(float deltaSeconds) override;
+    const char* Name() const override  { return "SpinSystem"; }
+    int         Order() const override { return SystemStage::kMovement; }
 
-    static void Register(SpinComponent& spin);
-    static void Unregister(SpinComponent& spin);
-    static void Clear();
-    static usize Count();
+    static void        Register(SpinComponent& spin);
+    static void        Unregister(SpinComponent& spin);
+    static void        Clear();
+    static std::size_t Count();
 
+    // Tells the ComponentFactory that "SpinComponent" in a scene file means
+    // this class.
     static void RegisterComponentTypes();
 };
 

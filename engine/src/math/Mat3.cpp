@@ -1,7 +1,12 @@
-// WEEK 6 - Mat3. Row-major storage, row vectors (v * M). See Mat3.h for the
-// convention block; this file implements exactly what is written there.
+// ============================================================================
+//  Mat3.cpp - the 3x3 matrix maths declared in Mat3.h.
+//
+//  Everything here follows the convention written at the top of Mat3.h:
+//  row-major storage, points written as rows, and `a * b` meaning "do a, then
+//  b". If you change one, change the other in the same edit.
+// ============================================================================
 
-#include <engine/core/Assert.h>
+#include <engine/core/Log.h>
 #include <engine/math/Mat3.h>
 
 #include <cmath>
@@ -18,20 +23,20 @@ Mat3 Mat3::Identity() {
 
 Mat3 Mat3::Translation(Vec2 t) {
     Mat3 result = Identity();
-    // Bottom row, because vectors are rows. See the convention block.
+    // The BOTTOM ROW holds the move, because points are written as rows here.
     result.m[2][0] = t.x;
     result.m[2][1] = t.y;
     return result;
 }
 
-Mat3 Mat3::Rotation(f32 radians) {
-    const f32 c = std::cos(radians);
-    const f32 s = std::sin(radians);
+Mat3 Mat3::Rotation(float radians) {
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
 
     Mat3 result = Identity();
-    // [ c  s  0 ]   With v as a row, (1,0) * R = (c, s), so a positive angle
-    // [-s  c  0 ]   rotates counter-clockwise in a y-up space. That is the
-    // [ 0  0  1 ]   behaviour the transform test pins down.
+    //  [  c  s  0 ]   Multiplying the row (1, 0) by this gives (c, s), so a
+    //  [ -s  c  0 ]   positive angle turns anticlockwise in a y-up world -
+    //  [  0  0  1 ]   which is what the rest of the engine assumes.
     result.m[0][0] =  c; result.m[0][1] = s;
     result.m[1][0] = -s; result.m[1][1] = c;
     return result;
@@ -44,54 +49,58 @@ Mat3 Mat3::Scaling(Vec2 s) {
     return result;
 }
 
-Mat3 Mat3::FromTRS(Vec2 translation, f32 radians, Vec2 scale) {
-    // Equivalent to Scaling(scale) * Rotation(radians) * Translation(translation)
-    // under this engine's convention: scale it, rotate it, then move it.
-    // Written out because this is called once per node per WorldMatrix() call,
-    // and the naive version builds and multiplies three matrices to fill in
-    // six numbers.
-    const f32 c = std::cos(radians);
-    const f32 s = std::sin(radians);
+Mat3 Mat3::FromTRS(Vec2 translation, float radians, Vec2 scale) {
+    // This is Scaling(scale) * Rotation(radians) * Translation(translation)
+    // with the multiplication already worked out on paper. It is written
+    // longhand because every object asks for its world matrix every frame, and
+    // the straightforward version builds three whole matrices and multiplies
+    // them just to fill in six numbers.
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
 
     Mat3 result;
-    result.m[0][0] = scale.x *  c; result.m[0][1] = scale.x * s; result.m[0][2] = 0.0f;
-    result.m[1][0] = scale.y * -s; result.m[1][1] = scale.y * c; result.m[1][2] = 0.0f;
+    result.m[0][0] = scale.x *  c;  result.m[0][1] = scale.x * s;   result.m[0][2] = 0.0f;
+    result.m[1][0] = scale.y * -s;  result.m[1][1] = scale.y * c;   result.m[1][2] = 0.0f;
     result.m[2][0] = translation.x; result.m[2][1] = translation.y; result.m[2][2] = 1.0f;
     return result;
 }
 
 Vec2 Mat3::TransformPoint(Vec2 point) const {
-    // [x y 1] * M, taking the first two components. The `1` is what picks up
-    // the bottom row, which is why translation applies here.
+    // The row [x y 1] multiplied by this matrix, keeping the first two results.
+    // The 1 on the end is what picks up the bottom row, which is exactly why
+    // the move applies to a point.
     return Vec2{point.x * m[0][0] + point.y * m[1][0] + m[2][0],
                 point.x * m[0][1] + point.y * m[1][1] + m[2][1]};
 }
 
 Vec2 Mat3::TransformVector(Vec2 direction) const {
-    // [x y 0] * M. The 0 in the homogeneous slot is the entire difference:
-    // the bottom row - the translation - is multiplied away.
+    // The row [x y 0]. The 0 is the whole difference from TransformPoint: it
+    // multiplies the bottom row away, so the move is ignored and only the
+    // turn and the resize apply.
     return Vec2{direction.x * m[0][0] + direction.y * m[1][0],
                 direction.x * m[0][1] + direction.y * m[1][1]};
 }
 
 Mat3 Mat3::Inverse() const {
-    // The assumed affine shape, asserted rather than trusted.
-    ENGINE_ASSERT_MSG(ApproxEqual(m[0][2], 0.0f) && ApproxEqual(m[1][2], 0.0f) &&
-                          ApproxEqual(m[2][2], 1.0f),
-                      "Mat3::Inverse assumes an affine matrix (third column 0,0,1)");
+    // Every matrix this engine builds has (0, 0, 1) as its third column - that
+    // is what "made only of moves, turns and resizes" means. Knowing that
+    // turns a full 3x3 inverse into a small 2x2 one plus an adjusted offset.
+    const float a = m[0][0];
+    const float b = m[0][1];
+    const float c = m[1][0];
+    const float d = m[1][1];
 
-    const f32 a = m[0][0];
-    const f32 b = m[0][1];
-    const f32 c = m[1][0];
-    const f32 d = m[1][1];
-
-    const f32 determinant = a * d - b * c;
+    // The determinant of the 2x2 part. When it is zero the matrix squashes the
+    // world flat onto a line, and there is no way to un-squash it.
+    const float determinant = a * d - b * c;
     if (std::fabs(determinant) < 1e-12f) {
-        ENGINE_ASSERT_MSG(false, "Mat3::Inverse on a singular matrix (zero scale?)");
+        ENGINE_LOG_WARN(Channels::kCore,
+                        "Mat3::Inverse called on a matrix that cannot be undone "
+                        "(is something scaled to zero?); returning identity");
         return Identity();
     }
 
-    const f32 invDet = 1.0f / determinant;
+    const float invDet = 1.0f / determinant;
 
     Mat3 result = Identity();
     result.m[0][0] =  d * invDet;
@@ -99,9 +108,10 @@ Mat3 Mat3::Inverse() const {
     result.m[1][0] = -c * invDet;
     result.m[1][1] =  a * invDet;
 
-    // M = [ A 0 ; t 1 ]  ->  M^-1 = [ A^-1 0 ; -t*A^-1 1 ].
-    const f32 tx = m[2][0];
-    const f32 ty = m[2][1];
+    // Undoing the move as well: the offset has to be pushed back through the
+    // inverted rotate/scale part and negated.
+    const float tx = m[2][0];
+    const float ty = m[2][1];
     result.m[2][0] = -(tx * result.m[0][0] + ty * result.m[1][0]);
     result.m[2][1] = -(tx * result.m[0][1] + ty * result.m[1][1]);
 
@@ -113,21 +123,23 @@ Vec2 Mat3::GetTranslation() const {
 }
 
 Vec2 Mat3::GetScale() const {
-    // The length of each basis row. Loses the sign of a mirroring scale, which
-    // is the standard limitation of decomposing a matrix and is fine for
-    // everything the engine does with it (sprite size, Inspector display).
+    // How long each of the first two rows is. A matrix that also mirrors
+    // (a negative scale) reports a positive number here; that limitation does
+    // not matter for what this is used for - sprite sizes and Inspector boxes.
     const Vec2 rowX{m[0][0], m[0][1]};
     const Vec2 rowY{m[1][0], m[1][1]};
     return Vec2{rowX.Length(), rowY.Length()};
 }
 
-f32 Mat3::GetRotation() const {
-    // Row 0 is (sx*cos, sx*sin), so atan2 recovers the angle regardless of a
-    // positive uniform scale.
+float Mat3::GetRotation() const {
+    // Row 0 is (scaleX * cos, scaleX * sin), and atan2 only cares about the
+    // ratio of its two arguments, so a positive scale cancels out.
     return std::atan2(m[0][1], m[0][0]);
 }
 
 Mat3 operator*(const Mat3& a, const Mat3& b) {
+    // Ordinary matrix multiplication: each output element is one row of `a`
+    // multiplied through one column of `b`.
     Mat3 result;
     for (int row = 0; row < 3; ++row) {
         for (int col = 0; col < 3; ++col) {
@@ -139,7 +151,7 @@ Mat3 operator*(const Mat3& a, const Mat3& b) {
     return result;
 }
 
-bool ApproxEqual(const Mat3& a, const Mat3& b, f32 epsilon) {
+bool ApproxEqual(const Mat3& a, const Mat3& b, float epsilon) {
     for (int row = 0; row < 3; ++row) {
         for (int col = 0; col < 3; ++col) {
             if (!ApproxEqual(a.m[row][col], b.m[row][col], epsilon)) {

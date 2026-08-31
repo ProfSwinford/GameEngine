@@ -6,6 +6,7 @@
     {
       "name": "base",
       "hidden": true,
+      "description": "Settings shared by every preset below. 'hidden' means it cannot be selected on its own.",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
@@ -14,7 +15,7 @@
     {
       "name": "debug",
       "displayName": "Debug",
-      "description": "Assertions on, optimisations off. Your default all semester.",
+      "description": "No optimisation, full debugging information. Use this one unless you have a reason not to.",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -24,7 +25,7 @@
     {
       "name": "release",
       "displayName": "Release",
-      "description": "Optimised. Asserts compile out. Use for timing measurements from Week 4 onward.",
+      "description": "Optimised. Much faster to run and much harder to debug, because the compiler has rearranged the code.",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -33,62 +34,11 @@
     },
     {
       "name": "strict",
-      "displayName": "Debug (warnings as errors)",
-      "description": "Week 1 stretch goal. Run this before you push.",
+      "displayName": "Debug, warnings as errors",
+      "description": "The same as debug, except a compiler warning stops the build. Run this before handing work in.",
       "inherits": "debug",
       "cacheVariables": {
         "ENGINE_WARNINGS_AS_ERRORS": "ON"
-      }
-    },
-    {
-      "name": "asan",
-      "displayName": "Debug + AddressSanitizer",
-      "description": "Week 2 stretch goal 2. Heap overruns, use-after-free, double free, leaks.",
-      "inherits": "debug",
-      "binaryDir": "${sourceDir}/build/asan",
-      "cacheVariables": {
-        "CMAKE_C_FLAGS":   "-fsanitize=address -fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fsanitize=address -fno-omit-frame-pointer",
-        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address"
-      },
-      "condition": {
-        "type": "notEquals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "asan-msvc",
-      "displayName": "Debug + AddressSanitizer (MSVC)",
-      "description": "MSVC's ASan. Requires /fsanitize=address and no incremental link or /RTC.",
-      "inherits": "debug",
-      "binaryDir": "${sourceDir}/build/asan-msvc",
-      "cacheVariables": {
-        "CMAKE_C_FLAGS":   "/fsanitize=address /Zi",
-        "CMAKE_CXX_FLAGS": "/fsanitize=address /Zi",
-        "CMAKE_EXE_LINKER_FLAGS": "/INCREMENTAL:NO /DEBUG"
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
-      "name": "tsan",
-      "displayName": "Debug + ThreadSanitizer",
-      "description": "Week 5. Cannot be combined with asan - two presets, run separately.",
-      "inherits": "debug",
-      "binaryDir": "${sourceDir}/build/tsan",
-      "cacheVariables": {
-        "CMAKE_C_FLAGS":   "-fsanitize=thread -fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
-        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
-      },
-      "condition": {
-        "type": "notEquals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
       }
     }
   ],
@@ -98,18 +48,18 @@
       "name": "debug",
       "configurePreset": "debug",
       "configuration": "Debug",
-      "description": "Every build preset names its configuration explicitly. CMAKE_BUILD_TYPE is IGNORED by multi-config generators (Visual Studio, Xcode), which choose at build time - so without this, `cmake --build --preset release` silently builds Debug."
+      "description": "Every build preset names its configuration explicitly. Visual Studio picks Debug or Release at BUILD time rather than at configure time, so without this line 'cmake --build --preset release' would quietly build the Debug version."
     },
     {
       "name": "release",
       "configurePreset": "release",
-      "configuration": "Release",
-      "description": "Optimised. The Week 4 and Week 5 measurements MUST be taken here; without the explicit configuration above they would have been Debug numbers wearing a Release label."
+      "configuration": "Release"
     },
-    { "name": "strict",    "configurePreset": "strict",    "configuration": "Debug" },
-    { "name": "asan",      "configurePreset": "asan",      "configuration": "Debug" },
-    { "name": "asan-msvc", "configurePreset": "asan-msvc", "configuration": "Debug" },
-    { "name": "tsan",      "configurePreset": "tsan",      "configuration": "Debug" }
+    {
+      "name": "strict",
+      "configurePreset": "strict",
+      "configuration": "Debug"
+    }
   ],
 
   "testPresets": [
@@ -128,18 +78,6 @@
     {
       "name": "strict",
       "configurePreset": "strict",
-      "configuration": "Debug",
-      "output": { "outputOnFailure": true }
-    },
-    {
-      "name": "asan",
-      "configurePreset": "asan",
-      "configuration": "Debug",
-      "output": { "outputOnFailure": true }
-    },
-    {
-      "name": "tsan",
-      "configurePreset": "tsan",
       "configuration": "Debug",
       "output": { "outputOnFailure": true }
     }

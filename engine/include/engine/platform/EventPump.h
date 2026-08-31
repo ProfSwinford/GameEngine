@@ -1,30 +1,36 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 2 - the engine's first real subsystem.
+// ============================================================================
+//  EventPump.h - reads what the user did this frame.
 //
-//  It drains the platform event queue once per frame and hands out a coarse,
-//  platform-free description of what it found, instead of leaving a giant
-//  switch statement in main().
+//  The operating system collects everything the user does - key presses, mouse
+//  movement, clicking the window's close button - into a queue. Once per frame
+//  the EventPump empties that queue and stores what it found in a simple list
+//  that the rest of the engine can look at.
 //
-//  NO SDL TYPE APPEARS IN THIS HEADER. That is checked by the fact that
-//  editor/src/panels/EventInspectorPanel.cpp reads and displays every field
-//  below without including a single SDL header - which is exactly the test the
-//  panel was assigned to be. It is also what makes Week 8's InputMap
-//  straightforward: raw input has one door into the engine.
-// =============================================================================
-
-#include <engine/core/Types.h>
+//  WHY THIS LAYER EXISTS RATHER THAN CALLING SDL FROM THE GAME LOOP
+//  Two reasons.
+//
+//  First, it keeps SDL in one place. Nothing in this header mentions SDL, so
+//  game code, the editor, and the input system all read user input without
+//  ever including an SDL header.
+//
+//  Second, what comes out of here is deliberately RAW and low-level: "scancode
+//  44 went down". Game code should not be written against key numbers - see
+//  input/InputMap.h, which turns these into named actions like "Jump" that the
+//  player can rebind. This layer is the single doorway raw input comes through.
+// ============================================================================
 
 #include <vector>
 
 namespace eng {
 
-// Deliberately coarse. Week 8's InputMap turns these into named actions, and
-// nothing above that layer ever sees a key code again.
-enum class RawEventKind : u8 {
+// The kinds of thing that can happen. Deliberately coarse: InputMap turns
+// these into named actions, and nothing above that layer sees a key number
+// again.
+enum class RawEventKind {
     None,
-    Quit,
+    Quit,              // the user asked to close the program
     KeyDown,
     KeyUp,
     MouseButtonDown,
@@ -36,103 +42,80 @@ enum class RawEventKind : u8 {
 
 const char* ToString(RawEventKind kind);
 
-// WEEK 4 SIZEOF AUDIT SUBJECT, and one of the audit's honest NEGATIVE results.
-//
-// Members are ordered largest-alignment-first out of habit, and it makes no
-// difference at all: this measures 20 bytes either way. Four 4-byte members
-// plus one 1-byte enum is 17, rounded up to 20 for the struct's 4-byte
-// alignment - and declaring `kind` first would just move the same three
-// padding bytes from the end to the middle.
-//
-// A struct with only ONE sub-word member cannot be improved by reordering,
-// because there is only ever one run of padding to place. That is worth
-// knowing rather than guessing, and it is why docs/week04-sizeof-audit.md
-// reports "0 bytes saved" for five of six rows and shows the arithmetic
-// instead of hunting for a saving that is not there.
+// One thing that happened. Which fields are meaningful depends on `kind`:
+// a KeyDown fills in `code`, a MouseMove fills in `mouseX`/`mouseY`, and so on.
 struct RawEvent {
-    i32          code   = 0;      // key scancode, or mouse button index
-    f32          mouseX = 0.0f;   // window coordinates, pixels
-    f32          mouseY = 0.0f;
-    f32          wheelY = 0.0f;
+    int          code   = 0;      // which key, or which mouse button
+    float        mouseX = 0.0f;   // in window pixels, measured from the top-left
+    float        mouseY = 0.0f;
+    float        wheelY = 0.0f;   // positive is scroll up
     RawEventKind kind   = RawEventKind::None;
 };
 
 class EventPump {
 public:
-    // Drains the platform queue COMPLETELY and stores what it found. Call
-    // exactly once per frame.
+    // Empties the operating system's queue and records everything in it.
+    // Call this exactly once per frame.
     //
-    // Draining completely means looping until the queue reports empty. One
-    // event per call produces input that lags by a frame per queued event -
-    // a bug that is hard to recognise months later, and the reason this is
-    // stated twice.
+    // It keeps looping until the queue reports empty. Taking only one event
+    // per call would make input lag by one frame for every event still waiting
+    // - a bug that is very hard to recognise months later.
     //
-    // WEEK 2 (IMGUI): every event is offered to the editor GUI first. When the
-    // GUI reports that it wants the keyboard or the mouse - a text field has
-    // focus - the corresponding events are still RECORDED (so the Event
-    // Inspector can show them, and so the pause toggle means something) but
-    // are marked consumed, and InputMap skips consumed events. Otherwise
-    // typing an entity's name into the Inspector also makes the player jump.
+    // The editor's GUI gets first look at each event. When a text box has
+    // keyboard focus, the GUI claims the key presses; they are still recorded
+    // here (so the list is complete) but marked as consumed, and the input
+    // system skips those. Without that, typing a name into the Inspector would
+    // also make the player jump.
     void Poll();
 
     // How many events arrived in the most recent Poll().
-    usize Count() const;
+    std::size_t Count() const;
 
-    // Event `index` from the most recent Poll().
-    //
-    // OUT OF RANGE: asserts in debug, and returns a static None event in
-    // release rather than reading past the end. Week 2 answered this
-    // "undefined, and I said so out loud"; Week 3 made it an assert as
-    // promised.
-    const RawEvent& At(usize index) const;
+    // Event number `index` from the most recent Poll(). An index past the end
+    // returns an inert "None" event and logs a warning rather than reading
+    // memory that is not there.
+    const RawEvent& At(std::size_t index) const;
 
-    // True if a Quit event arrived in the most recent Poll().
+    // True when the user asked to close the window this frame.
     bool QuitRequested() const;
 
-    // True if the GUI swallowed event `index`. Gameplay input ignores these.
-    bool WasConsumed(usize index) const;
+    // True when the editor GUI claimed event `index`. Gameplay input ignores
+    // those.
+    bool WasConsumed(std::size_t index) const;
 
-    // Running totals per kind, for the Event Inspector. Cheap and it means the
-    // panel does not have to accumulate state the engine already has.
-    u64 TotalOfKind(RawEventKind kind) const;
-    void ResetTotals();
+    // Where the mouse is right now, in window pixels.
+    //
+    // Two separate floats rather than a Vec2 so that this header does not have
+    // to depend on the maths layer for one field.
+    float MouseX() const { return m_mouseX; }
+    float MouseY() const { return m_mouseY; }
 
-    // Last known cursor position in window pixels. Deliberately two scalars
-    // rather than a Vec2: this header sits below the math layer and including
-    // Vec2.h here would make the platform layer depend on it for one field.
-    f32 MouseX() const { return m_mouseX; }
-    f32 MouseY() const { return m_mouseY; }
-
-    // Human-readable name for a key code, so the Event Inspector and the CVar
-    // panel can show "Space" instead of 44 without either of them learning
-    // what a scancode is.
-    static const char* KeyName(i32 code);
-    // The inverse, for parsing bindings out of the config file.
-    static i32 KeyCodeFromName(const char* name);
-    static i32 MouseButtonFromName(const char* name);
+    // Turning key numbers into readable names and back. The config file stores
+    // bindings as text like "Space", and these are what translate between that
+    // and the numbers the operating system actually reports.
+    static const char* KeyName(int code);
+    static int         KeyCodeFromName(const char* name);
+    static int         MouseButtonFromName(const char* name);
 
 private:
-    // STORAGE NOTE (Week 2 question, answered).
-    //
-    // A std::vector, reserved once at construction and cleared - not freed -
-    // each frame. clear() keeps the capacity, so after the first frame that
-    // sees N events, no further frame allocates. Week 8's requirement is that
-    // the update path performs no heap allocation after warm-up, and this
-    // satisfies it without a custom container: the allocator counters in
-    // docs/week08-verification.md are flat over 600 frames.
-    //
-    // What would change it: if events could arrive in unbounded numbers, this
-    // would need a fixed-capacity ring with an overflow policy. They cannot -
-    // SDL's queue is bounded by what the OS delivers in one frame.
+    // A std::vector is used here and cleared (not destroyed) each frame.
+    // clear() empties the list but keeps the memory it already had, so after
+    // the first busy frame no further frame has to ask for more - which keeps
+    // a per-frame function from allocating.
     std::vector<RawEvent> m_events;
-    std::vector<u8>       m_consumed;   // parallel; u8 rather than bool because
-                                        // vector<bool> is a bitfield and hands
-                                        // out proxies instead of references
 
-    u64  m_totals[16]{};
-    f32  m_mouseX = 0.0f;
-    f32  m_mouseY = 0.0f;
-    bool m_quitRequested = false;
+    // Runs alongside m_events: one entry per event saying whether the GUI
+    // claimed it.
+    //
+    // It stores `char` rather than `bool` on purpose. std::vector<bool> is a
+    // special case in the standard library that packs its values into
+    // individual bits, and as a result it does not behave like other vectors.
+    // Avoiding it here avoids explaining that.
+    std::vector<char> m_consumed;
+
+    float m_mouseX = 0.0f;
+    float m_mouseY = 0.0f;
+    bool  m_quitRequested = false;
 };
 
 } // namespace eng

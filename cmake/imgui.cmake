@@ -1,5 +1,5 @@
 # =============================================================================
-#  Dear ImGui - the IDE's widget layer.
+#  Dear ImGui - the library the entire editor interface is drawn with.
 #
 #  ImGui ships NO CMakeLists.txt. FetchContent will download it but will not
 #  create a target, so we build one ourselves. This surprises everyone once;

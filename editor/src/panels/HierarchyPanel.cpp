@@ -1,61 +1,64 @@
-// WEEK 9 PANELS - hierarchy and resource browser. See HierarchyPanel.h.
+// ============================================================================
+//  HierarchyPanel.cpp - the tree of entities. See HierarchyPanel.h.
+// ============================================================================
 
 #include "panels/HierarchyPanel.h"
 
 #include "AssetDragDrop.h"
-
 #include "EditorApp.h"
 
 #include <imgui.h>
 
-#include <cstring>
+#include <cstdio>
 
 namespace editor {
 
 void HierarchyPanel::DrawNode(eng::Entity& entity) {
-    EditorState& state  = EditorState::Get();
-    eng::Scene&  scene  = eng::Engine::Get().GetScene();
+    EditorState&      state     = EditorState::Get();
+    eng::Scene&       scene     = eng::Engine::Get().GetScene();
     eng::Transform2D& transform = entity.Transform();
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
                                ImGuiTreeNodeFlags_SpanAvailWidth |
                                ImGuiTreeNodeFlags_DefaultOpen;
+
+    // An entity with no children is a leaf: no expand arrow, and no matching
+    // TreePop needed later.
     if (transform.Children().empty()) {
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     }
-    if (state.selected == entity.Handle()) {
+    if (state.selected == entity.Id()) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
 
-    // The ## id is the entity's handle value, not its name: two entities may
-    // legitimately end up with the same display name after a deferred spawn
-    // appends a suffix, and ImGui would treat them as one node.
-    char label[160];
-    std::snprintf(label, sizeof(label), "%s##%u", entity.Name().c_str(),
-                  entity.Handle().value);
+    // The hidden part after ## is the entity's id rather than its name,
+    // because two entities can end up displaying the same name and ImGui would
+    // treat them as one row. See the note about widget identity in Panel.h.
+    char label[192];
+    std::snprintf(label, sizeof(label), "%s##%d_%d", entity.Name().c_str(),
+                  entity.Id().index, entity.Id().generation);
 
     const bool open = ImGui::TreeNodeEx(label, flags);
 
+    // IsItemToggledOpen tells clicking the expand arrow apart from clicking
+    // the row, so opening a branch does not also change the selection.
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-        state.selected = entity.Handle();   // A HANDLE. Never a pointer.
+        state.selected = entity.Id();   // an ID. Never a pointer.
     }
 
-    // A DROP TARGET PER ROW. Immediately after TreeNodeEx, because the target
-    // binds to the last submitted item, and the row is what the user is aiming
-    // at. Drop a script here to attach it; drop a texture to give this entity
-    // that sprite.
-    //
-    // The handle is captured, NOT the Entity*: this runs inside a ForEach over
-    // the scene, and what is attached may add a component and reallocate.
-    AcceptAssetDropOnEntity(entity.Handle());
+    // A drop target for this row, placed immediately after the row was drawn
+    // because ImGui attaches drop targets to the most recently drawn item.
+    // Drop a texture here to give this entity a sprite; drop a .cpp to attach
+    // that script.
+    AcceptAssetDropOnEntity(entity.Id());
 
     DrawContextMenu(entity);
 
     if (open && !transform.Children().empty()) {
         for (eng::Transform2D* child : transform.Children()) {
-            // Walking child transforms back to their entities: the transform
-            // tree is the authority on parenting, and the scene's slot array
-            // is flat, so the tree view has to come from here.
+            // The transform tree knows about parenting; the scene's list of
+            // entities is flat. So finding the child ENTITY for a child
+            // TRANSFORM means searching for the entity whose transform this is.
             eng::Entity* childEntity = nullptr;
             scene.ForEach([&](eng::Entity& candidate) {
                 if (&candidate.Transform() == child) {
@@ -63,7 +66,7 @@ void HierarchyPanel::DrawNode(eng::Entity& entity) {
                 }
             });
             if (childEntity != nullptr) {
-                DrawNode(*childEntity);
+                DrawNode(*childEntity);   // recursion: a child may have children
             }
         }
         ImGui::TreePop();
@@ -71,25 +74,27 @@ void HierarchyPanel::DrawNode(eng::Entity& entity) {
 }
 
 void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
+    // BeginPopupContextItem opens a menu when the previous item is
+    // right-clicked, and returns false on every frame it is not open.
     if (!ImGui::BeginPopupContextItem()) {
         return;
     }
     eng::Scene& scene = eng::Engine::Get().GetScene();
 
     if (ImGui::MenuItem("Rename...")) {
-        m_renameTarget    = entity.Handle();
+        m_renameTarget    = entity.Id();
         m_openRenamePopup = true;
         std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", entity.Name().c_str());
     }
 
     if (ImGui::MenuItem("Duplicate")) {
-        std::string error;
-        const eng::EntityHandle copy = scene.DuplicateEntity(entity.Handle(), error);
+        std::string        error;
+        const eng::EntityId copy = scene.DuplicateEntity(entity.Id(), error);
         if (copy.IsNull()) {
-            ENGINE_LOG_ERROR(eng::Channels::kEditor, "duplicate failed: {}", error);
+            ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not duplicate: {}", error);
         } else {
-            // Select the copy, because the next thing anyone does after
-            // duplicating is move it.
+            // Select the copy, because the next thing anybody does after
+            // duplicating something is move it.
             EditorState::Get().selected = copy;
             EditorState::Get().dirty    = true;
         }
@@ -98,10 +103,11 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
     ImGui::Separator();
 
     if (ImGui::MenuItem("Destroy")) {
-        // THROUGH THE DEFERRED QUEUE. Deleting directly from a panel is
-        // exactly the iterator-invalidation bug DeferredOps exists to
-        // prevent, and THE IDE IS NOT EXEMPT FROM THE ENGINE'S RULES.
-        eng::DeferredOps::QueueDestroy(entity.Handle());
+        // Through the DEFERRED QUEUE, not straight away. Deleting an entity
+        // from inside a panel, mid-frame, is exactly the problem DeferredOps
+        // exists to prevent - and the editor does not get an exemption from
+        // the engine's own rules. The entity disappears at the end of the tick.
+        eng::DeferredOps::QueueDestroy(entity.Id());
         EditorState::Get().dirty = true;
     }
     ImGui::EndPopup();
@@ -113,6 +119,8 @@ void HierarchyPanel::DrawRenamePopup() {
         m_openRenamePopup = false;
     }
 
+    // Centred, because a dialog that opens under the mouse in a docked editor
+    // is as likely to be half off the screen as not.
     const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
@@ -125,7 +133,8 @@ void HierarchyPanel::DrawRenamePopup() {
     eng::Entity* target = scene.Get(m_renameTarget);
 
     if (target == nullptr) {
-        // Destroyed while the dialog was open. Detected, not dereferenced.
+        // Destroyed while the dialog was open. Noticed, not crashed on - which
+        // is the whole reason the dialog remembers an id.
         ImGui::TextUnformatted("that entity no longer exists");
         if (ImGui::Button("Close", ImVec2(120, 0))) {
             ImGui::CloseCurrentPopup();
@@ -139,12 +148,13 @@ void HierarchyPanel::DrawRenamePopup() {
         ImGui::InputText("##rename", m_renameBuffer, sizeof(m_renameBuffer),
                          ImGuiInputTextFlags_EnterReturnsTrue);
 
-    // Names index the scene's lookup map, so a duplicate is refused rather
-    // than silently shadowing the entity that already had it.
+    // Names are how the scene looks entities up, so two entities cannot share
+    // one. Refused up front rather than after pressing the button.
     const bool taken = !scene.Find(m_renameBuffer).IsNull() &&
                        scene.Find(m_renameBuffer) != m_renameTarget;
     if (taken) {
-        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "that name is already used");
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f),
+                           "something else is already called that");
     }
 
     ImGui::BeginDisabled(taken || m_renameBuffer[0] == '\0');
@@ -167,12 +177,10 @@ void HierarchyPanel::Draw() {
     eng::Scene& scene = eng::Engine::Get().GetScene();
 
     if (ImGui::Button("+ Create Entity")) {
-        const eng::EntityHandle created = scene.CreateEntity(scene.MakeUniqueName("Entity"));
+        const eng::EntityId created = scene.CreateEntity(scene.MakeUniqueName("Entity"));
         if (!created.IsNull()) {
-            // Every entity gets a transform on demand; touching it here means a
-            // newly created entity has one immediately rather than the first
-            // time something asks, which matters because the Inspector is about
-            // to ask.
+            // Put it where the camera is looking, so it is on screen rather
+            // than at the world origin somewhere off in the distance.
             if (eng::Entity* entity = scene.Get(created); entity != nullptr) {
                 entity->Transform().SetLocalPosition(
                     eng::Engine::Get().GetCamera().Position());
@@ -182,9 +190,9 @@ void HierarchyPanel::Draw() {
         }
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(spawns at the camera centre)");
+    ImGui::TextDisabled("(appears where the camera is looking)");
 
-    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::SetNextItemWidth(-1.0f);   // -1 means "use all the remaining width"
     ImGui::InputTextWithHint("##filter", "filter by name...", m_filter, sizeof(m_filter));
 
     ImGui::TextDisabled("%zu entities", scene.EntityCount());
@@ -193,52 +201,52 @@ void HierarchyPanel::Draw() {
     const bool filtering = m_filter[0] != '\0';
 
     if (filtering) {
-        // A flat list while filtering: a tree with most of its nodes hidden is
-        // harder to read than a list, and the point of the filter is to find
+        // A flat list while filtering. A tree with most of its branches hidden
+        // is harder to read than a list, and the point of a filter is to find
         // one thing.
         scene.ForEach([&](eng::Entity& entity) {
             if (entity.Name().find(m_filter) == std::string::npos) {
                 return;
             }
-            char label[160];
-            std::snprintf(label, sizeof(label), "%s##%u", entity.Name().c_str(),
-                          entity.Handle().value);
-            if (ImGui::Selectable(label, EditorState::Get().selected == entity.Handle())) {
-                EditorState::Get().selected = entity.Handle();
+            char label[192];
+            std::snprintf(label, sizeof(label), "%s##%d_%d", entity.Name().c_str(),
+                          entity.Id().index, entity.Id().generation);
+            if (ImGui::Selectable(label, EditorState::Get().selected == entity.Id())) {
+                EditorState::Get().selected = entity.Id();
             }
             DrawContextMenu(entity);
         });
     } else {
+        // Only the entities with no parent are drawn here; DrawNode draws each
+        // one's children itself.
         scene.ForEach([&](eng::Entity& entity) {
             if (entity.Transform().Parent() == nullptr) {
-                DrawNode(entity);   // roots only; children come from the tree
+                DrawNode(entity);
             }
         });
     }
 
-    // The selected entity's bounds, highlighted through DebugDraw. One call,
-    // and it is what makes selection feel real rather than like a list row.
+    // Outline whatever is selected, in the Scene view.
     //
-    // Resolved from the HANDLE every frame - which is the rule. A destroyed
-    // selection simply resolves to null and nothing is drawn.
+    // Looked up from the ID every frame, which is the rule. A selection that
+    // was destroyed simply comes back as nothing and no outline is drawn.
     if (eng::Entity* selected = scene.Get(EditorState::Get().selected);
         selected != nullptr) {
         const eng::Vec2 position = selected->Transform().WorldPosition();
-        eng::DebugDraw::Box(eng::AABB::FromCenterHalfExtents(position,
-                                                             eng::Vec2{22.0f, 22.0f}),
-                            eng::Color::Yellow(), 0.0f, eng::DebugSpace::World,
-                            eng::DebugCategory::Bounds);
-        // ABOVE the box rather than beside it. Beside it is where the Scene
-        // view's gizmo puts its X-axis handle, and a name label sitting on top
-        // of the handle you are trying to grab is the kind of small thing that
-        // makes a tool feel broken.
-        eng::DebugDraw::Text(position + eng::Vec2{-20.0f, 34.0f}, selected->Name().c_str(),
-                             eng::Color::Yellow(), 0.0f, eng::DebugSpace::World,
-                             eng::DebugCategory::Bounds);
+        eng::Gizmos::Box(
+            eng::AABB::FromCenterHalfExtents(position, eng::Vec2{22.0f, 22.0f}),
+            eng::Color::Yellow(), 0.0f, eng::GizmoSpace::World,
+            eng::GizmoCategory::Bounds);
+
+        // ABOVE the outline rather than beside it. Beside it is where the
+        // Scene view puts its move handle, and a name label sitting on top of
+        // the handle you are trying to grab makes a tool feel broken.
+        eng::Gizmos::Text(position + eng::Vec2{-20.0f, 34.0f}, selected->Name(),
+                          eng::Color::Yellow(), 0.0f, eng::GizmoSpace::World,
+                          eng::GizmoCategory::Bounds);
     }
 
     DrawRenamePopup();
 }
-
 
 } // namespace editor

@@ -1,24 +1,26 @@
-// =============================================================================
-//  WEEK 6 - PARTIALLY PROVIDED.
+// ============================================================================
+//  Tests for the shape-overlap functions in math/Overlap.h.
 //
-//  The hard cases are given because they are the ones that get skipped, and
-//  they are the exact ones that produce mysterious Week 10 behaviour. The
-//  ordinary cases are yours to write.
+//  The awkward cases are the interesting ones: shapes that touch exactly,
+//  shapes nested completely inside one another, and a circle sitting off the
+//  CORNER of a box. That last one is where the tempting shortcut - comparing
+//  bounding boxes - gives the wrong answer.
 //
-//  NOTE: several cases below reference a constant kTouchingCounts. Set it to
-//  match the decision you recorded in Overlap.h. The point is not which answer
-//  you choose - it is that every function agrees with the same choice.
-// =============================================================================
+//  kTouchingCounts below matches the decision recorded at the top of
+//  Overlap.h. The point is not which answer is chosen; it is that every
+//  function agrees with the same choice.
+// ============================================================================
 
 #include <doctest/doctest.h>
 #include <engine/math/Overlap.h>
 
 using namespace eng;
 
-// TODO(week6): set this to match your documented convention in Overlap.h.
+// Matches the decision recorded at the top of Overlap.h. Every case below is
+// written in terms of this, so the whole file agrees with one answer.
 static constexpr bool kTouchingCounts = true;
 
-// --- PROVIDED: the edge cases ----------------------------------------------
+// --- the awkward cases -----------------------------------------------------
 
 TEST_CASE("boxes sharing exactly one edge") {
     const AABB left {{0.0f, 0.0f}, {1.0f, 1.0f}};
@@ -77,14 +79,7 @@ TEST_CASE("separation on one axis is enough to rule out overlap") {
     CHECK_FALSE(Overlaps(a, b));
 }
 
-// --- YOURS ------------------------------------------------------------------
-//
-// TODO(week6): the ordinary cases for every function in Overlap.h.
-//   Clearly overlapping, clearly separated, in each of the four combinations.
-//   Also: Contains() for a point exactly on a boundary, which is the same
-//   kTouchingCounts decision in a third place. Make it agree.
-
-// --- MINE: the ordinary cases ------------------------------------------------
+// --- the ordinary cases -----------------------------------------------------
 //
 // Four shape combinations, each clearly overlapping and clearly separated,
 // plus Contains() on a boundary - which is the kTouchingCounts decision in a

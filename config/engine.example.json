@@ -1,45 +1,59 @@
 {
-  "_comment": "WEEK 8 EXAMPLE. Your schema does not have to match this one. It is here so you have something concrete to react to rather than a blank file. Copy it to config/engine.json, change it to suit your engine, and commit BOTH - the example is documentation, the real one is configuration.",
+  "_comment": "A documented copy of every setting the engine understands, with an explanation of each. The engine does NOT read this file - it reads config/engine.json next to it. Both are kept in the project: this one is the documentation, that one is the configuration.",
 
   "window": {
+    "_note": "The size the window opens at, and what appears in its title bar. The window can still be resized by dragging it.",
     "title": "Engine2D",
     "width": 1280,
     "height": 720
   },
 
   "logging": {
+    "_note": "threshold is the least important level that still gets through. Set it to Warning while you are hunting a specific problem, and the Console stops filling with routine progress messages. file is where a copy of everything is written, so it survives a crash.",
     "threshold": "Info",
     "file": "logs/engine.log"
   },
 
   "tunables": {
-    "workerThreadCount": 4,
-    "debugCircleSegments": 24,
-    "frameAllocatorBytes": 1048576,
-    "entityPoolBlocks": 4096
+    "_fixedTimestepSeconds": "How much time one simulation step represents. 0.016666667 is one sixtieth of a second, i.e. sixty steps per second. This is NOT the frame rate - drawing happens as often as it can, separately.",
+    "fixedTimestepSeconds": 0.016666667,
+
+    "_maxStepsPerFrame": "The most simulation steps one frame is allowed to run. It stops a slow frame from asking for more and more steps until the program locks up. Anything over the limit is discarded and reported.",
+    "maxStepsPerFrame": 5,
+
+    "_logBufferCapacity": "How many log messages the Console window remembers. Older ones are dropped.",
+    "logBufferCapacity": 4096,
+
+    "_gizmoCircleSegments": "How many short straight lines a drawn circle is made of. More looks rounder.",
+    "gizmoCircleSegments": 24
   },
 
-  "cvars": {
-    "debug.drawColliders": true,
-    "debug.showAllocatorHud": true,
-    "camera.defaultZoom": 1.0
+  "startup": {
+    "_note": "The scene opened when the game starts. Even the first level is data - there is no scene name written into the engine anywhere.",
+    "scene": "scenes/orbit_test.json"
   },
 
   "input": {
+    "_note": "Game code asks about ACTIONS - 'MoveLeft' - and never about keys. This section is what connects the two, which is why the controls can be changed here without rebuilding anything.",
+    "_binding_format": "Device.Name. 'Key.' followed by any key name (A, Space, Left, Escape...), or 'Mouse.' followed by Left, Right or Middle. An action can list several, which is how WASD and the arrow keys can both work at once.",
+    "_contexts": "A context is a set of bindings that can be switched on and off as a group. They stack: pushing 'menu' on top of 'gameplay' means the menu's bindings win for the keys it uses, and the game still sees the rest.",
     "contexts": {
       "gameplay": {
-        "MoveLeft":  ["Key.A", "Key.Left",  "Gamepad.LeftStick.X-"],
-        "MoveRight": ["Key.D", "Key.Right", "Gamepad.LeftStick.X+"],
-        "Jump":      ["Key.Space", "Gamepad.A"],
-        "Pause":     ["Key.Escape", "Gamepad.Start"]
+        "MoveLeft":  ["Key.A", "Key.Left"],
+        "MoveRight": ["Key.D", "Key.Right"],
+        "MoveUp":    ["Key.W", "Key.Up"],
+        "MoveDown":  ["Key.S", "Key.Down"],
+        "Jump":      ["Key.Space"],
+        "Interact":  ["Key.E", "Mouse.Left"],
+        "Pause":     ["Key.Escape"],
+        "Quit":      ["Key.Q"]
       },
       "menu": {
         "NavigateUp":   ["Key.W", "Key.Up"],
         "NavigateDown": ["Key.S", "Key.Down"],
-        "Confirm":      ["Key.Space", "Key.Return", "Gamepad.A"],
-        "Back":         ["Key.Escape", "Gamepad.B"]
+        "Confirm":      ["Key.Space", "Key.Return"],
+        "Back":         ["Key.Escape"]
       }
-    },
-    "deadZone": 0.18
+    }
   }
 }

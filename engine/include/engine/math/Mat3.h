@@ -1,104 +1,100 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 6 - Mat3. Ch. 5.3.
+// ============================================================================
+//  Mat3.h - a 3x3 matrix, used to move, turn and resize things in 2D.
 //
-//  A 3x3 matrix used for 2D transforms in HOMOGENEOUS coordinates. A 2x2
-//  matrix can rotate and scale but cannot translate, because translation is
-//  not a linear operation. The third row and column make translation
-//  expressible as a matrix multiply, which is the entire reason transform
-//  hierarchies work.
+//  WHY A 3x3 MATRIX FOR A 2D GAME
+//  A 2x2 matrix can rotate and scale, but it cannot MOVE anything: multiplying
+//  (0, 0) by any 2x2 matrix always gives (0, 0) back. The trick is to pretend
+//  every 2D point is really a 3D point with a 1 stuck on the end - (x, y, 1) -
+//  and use a 3x3 matrix. Now the extra row can add an offset, so moving,
+//  turning and resizing are all "multiply by a matrix" and they can be
+//  combined by multiplying the matrices together. That is what makes a parent/
+//  child transform hierarchy possible at all.
 //
-// =============================================================================
-//  *** CONVENTION USED BY THIS ENGINE. WRITTEN DOWN BEFORE ANY CODE. ***
+//  ==========================================================================
+//  THE CONVENTION THIS ENGINE USES. Read this before touching any of it.
 //
-//    Storage:  ROW-MAJOR.  m[row][col]. m[0] is the first ROW.
-//    Vectors:  ROW vectors. A point is [x y 1] and transforms as v' = v * M.
-//    Compose:  to apply A and THEN B, write   A * B.
+//    Storage:      m[row][col]. m[0] is the first ROW.
+//    Points:       written as a ROW, [x y 1], transformed as  v' = v * M.
+//    Combining:    to do A and THEN B, write  A * B.
 //
-//  This matches Gregory Ch. 5.3, which uses row vectors and row-major storage
-//  and is explicit about it. Matching the book means the worked examples in
-//  the reading transcribe directly instead of needing transposing in your head
-//  at 1am.
+//  Two consequences that trip everybody up at least once:
 //
-//  Consequences that follow from the choice, spelled out because they are what
-//  people get wrong:
+//    * THE MOVE (translation) LIVES IN THE BOTTOM ROW: m[2][0], m[2][1].
+//      Plenty of engines and textbooks put it in the right-hand COLUMN
+//      instead. Those use the other convention (M * v, points as columns).
+//      Both are correct; mixing them is not.
 //
-//    - TRANSLATION LIVES IN THE BOTTOM ROW: m[2][0], m[2][1]. (In a column
-//      vector convention it lives in the right-hand column instead. If you
-//      ever read engine code that puts it there, that engine uses M*v.)
+//    * COMBINING READS LEFT TO RIGHT, which is the reason for the choice:
+//         Scaling * Rotation * Translation
+//      means "shrink it, then turn it, then move it", in that order, read
+//      normally. Under the other convention you read that line backwards.
 //
-//    - COMPOSITION READS LEFT TO RIGHT, which is the whole practical benefit:
-//      LocalMatrix = Scale * Rotation * Translation means "scale it, then
-//      rotate it, then move it", in that order, reading normally.
-//
-//    - A CHILD'S WORLD MATRIX IS  local * parentWorld.  Local first.
-//
-//    - ROTATION IS COUNTER-CLOCKWISE for a positive angle in a
-//      y-up coordinate system. (1,0) rotated by +90 degrees is (0,1). The test
-//      "a child orbits when its parent rotates" pins exactly this down: if you
-//      get (0,-1), the convention and the code have drifted apart. Fix this
-//      comment block first, then the code, so the two stay in agreement.
-//
-//  The engine's world space is Y-UP. The screen is y-down, and the single
-//  place that flip happens is Camera::ViewMatrix - see Camera.h.
-// =============================================================================
+//  The world is Y-UP: increasing y goes up the screen, and a positive rotation
+//  turns anticlockwise. The screen itself is y-down. The one and only place
+//  those are reconciled is Camera::ViewMatrix - see Camera.h.
+//  ==========================================================================
+// ============================================================================
 
 #include <engine/math/Vec2.h>
 
 namespace eng {
 
 struct Mat3 {
-    // Row-major: m[row][col].
-    //
-    // Week 4 note: 9 floats, 36 bytes, alignment 4, no padding. This is one of
-    // the structs in the sizeof audit where prediction and measurement agree
-    // exactly, and it agrees for a reason worth stating - every member has the
-    // same alignment, so there is nowhere for the compiler to insert anything.
-    f32 m[3][3]{};
+    // A plain 3-by-3 array of floats, indexed [row][column].
+    // The `{}` gives every element the value 0 when a Mat3 is declared without
+    // one, so there is no such thing as a Mat3 full of leftover memory.
+    float m[3][3]{};
 
+    // The "do nothing" matrix. Multiplying by it leaves a point where it was.
     static Mat3 Identity();
-    static Mat3 Translation(Vec2 t);
-    static Mat3 Rotation(f32 radians);
-    static Mat3 Scaling(Vec2 s);
 
-    // The standard TRS build, in this engine's order. Equivalent to
-    // Scaling(s) * Rotation(r) * Translation(t) and written out longhand
-    // because it is on the hot path of every WorldMatrix call.
-    static Mat3 FromTRS(Vec2 translation, f32 radians, Vec2 scale);
+    // Each of these builds a matrix that does ONE thing.
+    static Mat3 Translation(Vec2 t);      // move by t
+    static Mat3 Rotation(float radians);  // turn anticlockwise
+    static Mat3 Scaling(Vec2 s);          // resize
 
-    // v' = v * M. Translation APPLIES: a position moves when the space moves.
+    // Builds scale-then-rotate-then-move in one step. Exactly the same result
+    // as Scaling(s) * Rotation(r) * Translation(t), written out longhand
+    // because every object's world position goes through this every frame.
+    static Mat3 FromTRS(Vec2 translation, float radians, Vec2 scale);
+
+    // Transforms a POSITION. The move part applies: if the space slides right,
+    // so does the point.
     Vec2 TransformPoint(Vec2 point) const;
 
-    // Translation does NOT apply: a direction or a velocity is unaffected by
-    // moving the origin. Two functions because the type system cannot tell a
-    // position from a direction when both are Vec2 - and getting this wrong
-    // makes velocities drift when an object moves, which is a memorable bug.
+    // Transforms a DIRECTION (a velocity, an offset, a "which way is up").
+    // The move part does NOT apply: sliding the whole world sideways does not
+    // change which way something is facing.
+    //
+    // There are two functions because C++ cannot tell a position from a
+    // direction - both are just a Vec2. Using the wrong one makes velocities
+    // drift as an object moves, which is a memorable afternoon of debugging.
     Vec2 TransformVector(Vec2 direction) const;
 
-    // Inverse of an AFFINE transform-rotate-scale matrix.
+    // The matrix that undoes this one. Used by the camera to turn a mouse
+    // position on screen back into a position in the world.
     //
-    // ASSUMED (and asserted): the third column is (0, 0, 1) - i.e. this is an
-    // affine transform, not a projective one. That assumption turns a general
-    // 3x3 inverse into a 2x2 inverse plus a translated offset, which is a
-    // handful of operations instead of a cofactor expansion.
-    //
-    // Also assumed: the 2x2 part is invertible (no zero scale on an axis). A
-    // zero-scale matrix has no inverse; this asserts and returns identity so
-    // that a release build degrades to "camera does nothing" rather than
-    // producing NaNs that spread.
+    // This only works for matrices built out of moves, turns and resizes,
+    // which is all this engine ever makes. A matrix with a scale of zero on an
+    // axis cannot be undone (the information is gone), so that case returns
+    // the identity and logs a warning rather than producing NaNs.
     Mat3 Inverse() const;
 
-    // Extraction helpers used by the sprite renderer and the Inspector.
-    Vec2 GetTranslation() const;
-    Vec2 GetScale() const;
-    f32  GetRotation() const;   // radians, counter-clockwise
+    // Pulls the individual pieces back out of a finished matrix. The Inspector
+    // uses these to show position/rotation/scale boxes.
+    Vec2  GetTranslation() const;
+    Vec2  GetScale() const;
+    float GetRotation() const;   // radians, anticlockwise
 };
 
-// C = A * B, meaning "apply A, then B" under this engine's row-vector
-// convention.
+// Combines two matrices. Under this engine's convention, `a * b` means
+// "do a, then b".
 Mat3 operator*(const Mat3& a, const Mat3& b);
 
-bool ApproxEqual(const Mat3& a, const Mat3& b, f32 epsilon = kDefaultEpsilon);
+// Compares every element with a tolerance, for the same reason Vec2 has an
+// ApproxEqual: matrix arithmetic almost never lands on exact values.
+bool ApproxEqual(const Mat3& a, const Mat3& b, float epsilon = kDefaultEpsilon);
 
 } // namespace eng

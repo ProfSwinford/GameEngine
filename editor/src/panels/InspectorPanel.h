@@ -1,45 +1,43 @@
 #pragma once
-// =============================================================================
-//  WEEK 10 PANELS - inspector and toolbar. The IDE becomes an IDE.
+
+// ============================================================================
+//  InspectorPanel.h - the Inspector and the Toolbar.
 //
-//  INSPECTOR: every component on the entity selected in the Hierarchy, fields
-//  editable and taking effect immediately - transform position/rotation/scale
-//  as draggable fields, the sprite's texture and tint, collider bounds with
-//  layer and mask as a CHECKBOX GRID.
+//  INSPECTOR: every component on whichever entity is selected in the
+//  Hierarchy, with its fields editable and taking effect immediately - the
+//  transform's position, rotation and scale; the sprite's image and colour;
+//  the collider's size and layers; a script's binding. Plus an "Add Component"
+//  row at the bottom. Same panel Unity puts on the right.
 //
-//  TOOLBAR: Play / Pause / Step driving the GameClock, a time-scale slider,
-//  the tick count and frame time.
+//  TOOLBAR: Play, Pause and Step, plus a time-scale slider and a readout of
+//  how far the simulation has got.
 //
-//  ---------------------------------------------------------------------------
-//  PAUSE + STEP + INSPECTOR IS THE PAYOFF FOR THE WHOLE SEMESTER. Pause the
-//  simulation, step exactly one tick, and watch one entity's position change
-//  by exactly one integration step in a table while its collider is
-//  highlighted in the viewport. Ch. 10.5 argues for exactly this, and there is
-//  no faster way to find out why a collision is not firing.
+//  ==========================================================================
+//  PAUSE + STEP + INSPECTOR IS THE BEST DEBUGGING TOOL IN THE EDITOR.
 //
-//  THE LAYER MASK GRID IS A MILESTONE 4 VERIFICATION ITEM: uncheck one box,
-//  watch the collision events stop; check it, watch them resume.
+//  Pause the game, press Step once, and watch a single entity's position
+//  change by exactly one simulation step in the Inspector while its collider
+//  is outlined in the Scene view. There is no faster way to find out why a
+//  collision is not firing.
 //
-//  ---------------------------------------------------------------------------
-//  *** EDITING IS WHERE THIS GETS GENUINELY HARD. The three answers: ***
+//  ==========================================================================
+//  EDITING IS WHERE THIS GETS GENUINELY AWKWARD. Three answers:
 //
-//  1. EDIT WHILE PAUSED - safe, and where most editing should happen. Nothing
-//     is running to overwrite the value.
+//  1. EDITING WHILE PAUSED is safe, and is where most editing should happen.
+//     Nothing is running to overwrite what you type.
 //
-//  2. EDIT WHILE RUNNING - a system may overwrite the value on the very next
-//     tick. Confusing rather than dangerous. THIS PANEL SHOWS SYSTEM-OWNED
-//     FIELDS AS READ-ONLY WHILE RUNNING and says so, rather than letting
-//     someone drag a position that a movement system puts straight back.
+//  2. EDITING WHILE RUNNING may be undone on the very next tick by whichever
+//     system owns that value. Confusing rather than dangerous. This panel
+//     shows system-owned fields as READ-ONLY while the game runs, and says so,
+//     rather than letting somebody drag a position that a movement system puts
+//     straight back.
 //
-//  3. DESTROY FROM THE INSPECTOR - goes through the DEFERRED DESTROY QUEUE.
-//     Deleting directly from a panel mid-frame is exactly the
-//     iterator-invalidation bug DeferredOps exists to prevent, and the IDE is
-//     not exempt from the engine's rules. This is where you discover the
-//     editor is a system with the same constraints as any other.
-//
-//  THE GATE IS UNAFFECTED: adding an Inspector field is editor work and
-//  touches no engine internals.
-// =============================================================================
+//  3. DESTROYING FROM THE INSPECTOR goes through the deferred queue, exactly
+//     like everything else. Deleting an entity from a panel in the middle of a
+//     frame is precisely the problem DeferredOps exists to prevent, and the
+//     editor does not get an exemption from the engine's rules.
+// ============================================================================
+
 #include "Panel.h"
 
 namespace editor {

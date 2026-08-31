@@ -1,49 +1,48 @@
 #pragma once
 
-// =============================================================================
-//  SCRIPTS - the behaviour layer, and the seam a scripting language plugs into.
+// ============================================================================
+//  ScriptComponent.h - writing your own behaviour for an entity.
 //
-//  Unity's model, with the one honest difference this engine has to state up
-//  front: a script here is COMPILED C++, not an interpreted file. There is no
-//  VM, and pretending otherwise by "hot-loading" a .cpp would be a lie the
-//  first time someone pressed Play.
+//  This is the engine's version of a Unity MonoBehaviour. You write a class
+//  with the hooks you care about, attach it to an entity in the editor, and it
+//  runs:
 //
-//  What that costs, said plainly: creating a script in the editor writes the
-//  file and reconfigures nothing. It runs after a rebuild. What it does NOT
-//  cost is the rest of the workflow - a script can be attached to an entity,
-//  saved into a scene, and survive a Play/Stop cycle before it has ever been
-//  compiled, because the binding is BY NAME.
+//      class Bouncer final : public eng::ScriptBehaviour {
+//          void OnStart() override { ... }
+//          void OnUpdate(float dt) override { Transform()->Translate({0, dt * 50}); }
+//      };
+//      ENGINE_REGISTER_SCRIPT(Bouncer)      // without this it can never be found
 //
-//  ---------------------------------------------------------------------------
-//  THE THREE PIECES.
+//  ONE HONEST DIFFERENCE FROM UNITY
+//  A script here is COMPILED C++, not an interpreted file. There is no
+//  scripting language and no virtual machine. So creating a script in the
+//  editor writes the .cpp file and nothing more - it runs after you rebuild.
 //
-//    ScriptBehaviour   what you write. Virtual hooks, Unity's names.
-//    ScriptRegistry    name -> factory. Populated by REGISTER_SCRIPT.
-//    ScriptComponent   the engine component. Stores a NAME and, if that name
-//                      is registered in this build, an instance.
+//  What that does NOT cost is the rest of the workflow. A script can be
+//  attached to an entity, saved into a scene, and survive a Play/Stop cycle
+//  before it has ever been compiled, because the connection is BY NAME.
 //
-//  ---------------------------------------------------------------------------
-//  WHY THE COMPONENT STORES A NAME RATHER THAN A TYPE.
+//  THE THREE PIECES
+//    ScriptBehaviour   what you write. Hooks named the way Unity names them.
+//    ScriptRegistry    a table of name -> "how to make one", filled in by the
+//                      ENGINE_REGISTER_SCRIPT macro.
+//    ScriptComponent   the engine component. It stores a NAME, and an instance
+//                      if that name exists in this build.
 //
-//  Because the editor has to attach a script it cannot link against. Drop
-//  `PlayerController` onto an entity in a build where PlayerController.cpp has
-//  not been compiled yet, and the component attaches, serialises, and reports
-//  itself UNRESOLVED in the Inspector. Recompile, reload the scene, and the
-//  same file now produces a live behaviour with no edit to the scene.
+//  WHY THE COMPONENT STORES A NAME RATHER THAN A TYPE
+//  Because the editor has to be able to attach a script that has not been
+//  compiled yet. Drop "PlayerController" onto an entity in a build where
+//  PlayerController.cpp does not exist and the component attaches, saves, and
+//  shows as UNRESOLVED in red in the Inspector. Rebuild, reload, and the same
+//  scene file produces a working behaviour with nothing reattached.
 //
-//  A component that refused to attach until the type existed would make the
-//  editor useless for authoring anything not already built - and "author the
-//  scene, then write the code" is a completely normal order to work in.
+//  Refusing to attach until the type existed would make it impossible to lay
+//  out a level before writing its code - and that is a completely normal order
+//  to work in.
 //
-//  This is the same argument Component.h makes for identity being a runtime
-//  STRING rather than a C++ type, followed one step further.
-//
-//  ---------------------------------------------------------------------------
-//  UNRESOLVED IS REPORTED, NEVER SILENT. A script that does nothing because
-//  its name is misspelled, and says nothing about it, is an afternoon lost.
-//  Every unresolved binding is logged once at attach and shown in red in the
-//  Inspector.
-// =============================================================================
+//  UNRESOLVED IS ALWAYS REPORTED. A script that does nothing because its name
+//  is misspelled, and says nothing about it, is an afternoon lost.
+// ============================================================================
 
 #include <engine/scene/Component.h>
 #include <engine/scene/SystemOrder.h>
@@ -57,43 +56,41 @@ namespace eng {
 class ScriptComponent;
 
 // ---------------------------------------------------------------------------
-//  What you inherit from when you write a script.
+//  The class you inherit from.
 //
-//  Every hook is optional and does nothing by default, so a script that only
-//  needs OnUpdate overrides only OnUpdate. The template the editor generates
-//  has all of them, commented, and says so.
+//  Every hook does nothing by default, so a script that only needs OnUpdate
+//  overrides only OnUpdate.
 // ---------------------------------------------------------------------------
 class ScriptBehaviour {
 public:
     virtual ~ScriptBehaviour() = default;
 
-    // Once, on the first simulation step after the script is attached and its
-    // entity is live. NOT at attach time: at attach time the rest of the
-    // entity may not exist yet - a scene load attaches components one at a
-    // time, so a script that looked for its sibling collider in OnAttach would
-    // find it only if the file happened to list the collider first.
+    // Once, on the first simulation step after the script is attached.
+    //
+    // NOT at attach time. While a scene is loading, components are attached
+    // one at a time, so a script looking for its entity's collider at attach
+    // time would only find it if the file happened to list the collider first.
+    // By the first update, the whole entity exists.
     virtual void OnStart() {}
 
-    // Every FIXED simulation step, with the fixed delta. Not a render frame:
-    // this engine simulates on a fixed timestep and renders separately, so
-    // this is called a whole number of times per frame and sometimes zero.
-    virtual void OnUpdate(f32 deltaSeconds) { (void)deltaSeconds; }
+    // Every fixed simulation step. `deltaSeconds` is always the same value -
+    // see GameClock.h for why that matters.
+    virtual void OnUpdate(float deltaSeconds) { (void)deltaSeconds; }
 
-    // The entity is going away, either destroyed or unloaded with the scene.
-    // Still safe to touch the entity here; after this returns it is not.
+    // The entity is going away. The entity is still safe to touch here; after
+    // this returns it is not.
     virtual void OnDestroy() {}
 
-    // Collision, forwarded from the Week 10 message bus. `other` is a HANDLE,
-    // not a pointer, and may already be dead by the time you resolve it -
-    // which is exactly why it is a handle.
-    virtual void OnCollisionEnter(EntityHandle other) { (void)other; }
-    virtual void OnCollisionStay(EntityHandle other)  { (void)other; }
-    virtual void OnCollisionExit(EntityHandle other)  { (void)other; }
+    // Collisions, forwarded from the message bus. `other` is an EntityId
+    // rather than a pointer, and may already have been destroyed by the time
+    // you look it up - which is exactly why it is an id. See EntityId.h.
+    virtual void OnCollisionEnter(EntityId other) { (void)other; }
+    virtual void OnCollisionStay(EntityId other)  { (void)other; }
+    virtual void OnCollisionExit(EntityId other)  { (void)other; }
 
-    // Set by ScriptComponent immediately after construction, before any hook
-    // runs, so every accessor below is valid inside OnStart.
+    // Handy accessors, all valid from OnStart onwards.
     Entity*      Owner() const;
-    EntityHandle OwnerHandle() const;
+    EntityId     OwnerId() const;
     Scene*       GetScene() const;
     Transform2D* Transform() const;
 
@@ -103,8 +100,8 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-//  name -> factory. The same shape as ComponentFactory, and for the same
-//  reason: something has to turn a string from a file into an object.
+//  The table of script names. Same idea as ComponentFactory: something has to
+//  turn a name in a file into an object.
 // ---------------------------------------------------------------------------
 class ScriptRegistry {
 public:
@@ -113,14 +110,22 @@ public:
     static void Register(std::string_view scriptName, CreateFn create);
     static bool IsRegistered(std::string_view scriptName);
     static std::unique_ptr<ScriptBehaviour> Create(std::string_view scriptName);
-    static void ForEachScript(const std::function<void(const char*)>& fn);
-    static usize Count();
+    static void        ForEachScript(const std::function<void(const char*)>& fn);
+    static std::size_t Count();
 };
 
-// The macro a generated script ends with. A file-scope object whose
-// constructor registers, which is the one case where a static initialiser is
-// the right tool: there is no ordering hazard because the registry is a
-// function-local static that constructs on first use.
+// ----------------------------------------------------------------------------
+//  ENGINE_REGISTER_SCRIPT(MyScript) - put this at the bottom of your .cpp.
+//
+//  It creates one small object whose constructor adds your class to the
+//  registry. Because that object exists at file scope, its constructor runs
+//  automatically when the program starts, before main() - which is how the
+//  engine learns your script's name without anybody editing a shared list.
+//
+//  The ## in Type##_Registrar is the preprocessor's "glue these together"
+//  operator, so ENGINE_REGISTER_SCRIPT(Bouncer) produces a class called
+//  Bouncer_Registrar. The #Type turns the name into the text "Bouncer".
+// ----------------------------------------------------------------------------
 #define ENGINE_REGISTER_SCRIPT(Type)                                                   \
     namespace {                                                                        \
     struct Type##_Registrar {                                                          \
@@ -135,40 +140,38 @@ public:
     }
 
 // ---------------------------------------------------------------------------
-//  The component itself.
+//  The component that holds a script.
 // ---------------------------------------------------------------------------
 class ScriptComponent final : public Component {
 public:
     static constexpr const char* kTypeName = "ScriptComponent";
-    static StringId TypeIdStatic();
 
     ~ScriptComponent() override;
 
-    StringId    TypeId() const override { return TypeIdStatic(); }
     const char* TypeName() const override { return kTypeName; }
 
-    // Scene-file field:
+    // Scene file field:
     //   "script": "PlayerController"
-    bool Deserialize(const ConfigNode& node, std::string& outError) override;
-    bool Serialize(ConfigWriter& out) const override;
+    bool Deserialize(const Json& node, std::string& outError) override;
+    bool Serialize(Json& out) const override;
 
     void OnAttach() override;
     void OnDetach() override;
 
     const std::string& ScriptName() const { return m_scriptName; }
 
-    // Rebinds to a different script. Destroys any live behaviour first, so
-    // swapping a script in the Inspector runs OnDestroy on the old one rather
-    // than dropping it on the floor.
+    // Switches to a different script. Any running behaviour gets its OnDestroy
+    // first, so swapping a script in the Inspector tidies up properly rather
+    // than dropping the old one on the floor.
     void SetScriptName(std::string_view name);
 
-    // False when the name is not registered in this build - the "written but
-    // not compiled yet" case. The Inspector shows this in red.
+    // False when the name is not compiled into this build - the "written but
+    // not built yet" case. The Inspector shows it in red.
     bool IsResolved() const { return m_behaviour != nullptr; }
 
-    // For the ScriptSystem only.
-    void Tick(f32 deltaSeconds);
-    void DispatchCollision(StringId messageType, EntityHandle other);
+    // Called by ScriptSystem only.
+    void Tick(float deltaSeconds);
+    void DispatchCollision(const std::string& messageType, EntityId other);
 
 private:
     void Bind();
@@ -180,35 +183,33 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-//  The system that ticks them.
+//  The system that runs them.
 //
-//  kGameplay (200) - BEFORE movement at 300 and collision at 400, so a script
-//  that sets a velocity this step has it integrated this step rather than
-//  next. That is the ordering SystemOrder.h exists to make arguable rather
-//  than accidental.
+//  Stage 200 (Gameplay) - BEFORE movement at 300 and collision at 400, so a
+//  script that decides to move something this step has that movement applied
+//  and checked in the same step rather than the next one.
 // ---------------------------------------------------------------------------
 class ScriptSystem final : public System {
 public:
-    void        Update(f32 deltaSeconds) override;
-    const char* Name() const override { return "ScriptSystem"; }
-    i32         Order() const override { return SystemStage::kGameplay; }
+    void        Update(float deltaSeconds) override;
+    const char* Name() const override  { return "ScriptSystem"; }
+    int         Order() const override { return SystemStage::kGameplay; }
 
-    static void Register(ScriptComponent& script);
-    static void Unregister(ScriptComponent& script);
-    static void Clear();
-    static usize Count();
+    static void        Register(ScriptComponent& script);
+    static void        Unregister(ScriptComponent& script);
+    static void        Clear();
+    static std::size_t Count();
 
-    // How many attached scripts could NOT be bound. Surfaced in the editor,
-    // because "nothing happens when I press Play" and "three scripts are not
-    // compiled into this build" are the same fact and only one of them is
-    // actionable.
-    static usize UnresolvedCount();
+    // How many attached scripts could not be found in this build. Shown in the
+    // editor, because "nothing happens when I press Play" and "three of my
+    // scripts are not compiled in" are the same fact, and only one of them
+    // tells you what to do about it.
+    static std::size_t UnresolvedCount();
 
     static void RegisterComponentTypes();
 
-    // Subscribes to the collision messages and forwards them to behaviours.
-    // Separate from Register so the subscription happens once at boot rather
-    // than once per component.
+    // Listens for collision messages and passes them to the right behaviours.
+    // Done once at start-up rather than once per component.
     static void SubscribeToCollisions();
 };
 

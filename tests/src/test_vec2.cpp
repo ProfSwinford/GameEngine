@@ -1,11 +1,11 @@
-// =============================================================================
-//  WEEK 6 - Vec2. The type everything with a position uses, so it is worth
-//  pinning down completely.
+// ============================================================================
+//  Tests for Vec2, the type everything with a position uses.
 //
 //  Every comparison of a COMPUTED vector uses ApproxEqual rather than ==,
-//  because floating point equality is not equality: rotating (1,0) by 90
-//  degrees gives an x of about -4.4e-8, not 0.
-// =============================================================================
+//  because floating point equality is not equality: rotating (1, 0) by 90
+//  degrees produces an x of about -0.000000044, not 0. See the note at the
+//  bottom of Vec2.h.
+// ============================================================================
 
 #include <doctest/doctest.h>
 #include <engine/math/Vec2.h>
@@ -144,7 +144,7 @@ TEST_CASE("Perpendicular rotates 90 degrees counter-clockwise") {
 }
 
 TEST_CASE("FromAngle and AngleOf round-trip") {
-    for (f32 angle = -3.0f; angle < 3.0f; angle += 0.37f) {
+    for (float angle = -3.0f; angle < 3.0f; angle += 0.37f) {
         CHECK(AngleOf(FromAngle(angle)) == doctest::Approx(angle).epsilon(0.001));
     }
 }

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  WEEK 1 STRETCH GOAL 2 - finished.
+#  The fresh-clone check.
 #
-#  The fresh-clone drill, automated. This clones the pushed `main` into a
-#  throwaway directory and builds it from nothing, which is the only honest way
-#  to find out whether everything that matters was committed.
-#
-#  Run it before every milestone. It will catch the file you forgot to
-#  `git add`, and it will catch it in a couple of minutes instead of in the lab.
+#  It clones the project into a temporary folder and builds it from nothing,
+#  which is the only honest way to find out whether everything that matters was
+#  actually committed. It catches the file you forgot to "git add", and it
+#  catches it in a couple of minutes instead of in the lab.
 #
 #  usage:  scripts/fresh-clone-check.sh <repo-url-or-path> [preset]
 # =============================================================================
@@ -90,7 +88,7 @@ echo "==> Running the test suite"
 ctest --preset "$PRESET" --output-on-failure || fail "the test suite did not pass on a fresh clone"
 
 # --- assets actually arrived -----------------------------------------------
-# The Week 9 milestone failure mode: a scene that loads on the author's machine
+# The classic failure: a scene that loads on the author's machine
 # and not on a fresh clone, because a .bmp was never committed. Checking for the
 # files is cheaper than discovering it from a magenta screen.
 for asset in \
@@ -108,7 +106,7 @@ done
 echo "    all assets and the config file are present"
 
 # --- the check that proves .gitignore is complete --------------------------
-# STRETCH ON THE STRETCH, and the part actually relied on before a milestone.
+# The part worth relying on before handing work in.
 # A clean build must leave the working tree clean. If it does not, the build is
 # writing something that is tracked, or .gitignore has a hole - and either way
 # the next person to clone gets a spurious diff.

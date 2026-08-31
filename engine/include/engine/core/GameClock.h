@@ -1,54 +1,50 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 10 - the fixed timestep. Ch. 8.5. This replaces Week 1's naive loop.
+// ============================================================================
+//  GameClock.h - how time is measured, and how often the game is simulated.
 //
-//  Nine weeks is a long time to live with a placeholder, and it was
-//  deliberate: by now the reason the naive version is wrong is obvious.
+//  ==========================================================================
+//  WHY THE SIMULATION RUNS AT A FIXED RATE
 //
-//  ---------------------------------------------------------------------------
-//  WHY A FIXED TIMESTEP. The naive loop steps the simulation once per rendered
-//  frame by however much real time elapsed, so physics behaves differently at
-//  30 and 144 FPS - objects tunnel through walls on slow machines, jumps reach
-//  different heights, and a bug on a classmate's laptop cannot be reproduced.
+//  The obvious game loop advances the world by however much real time went by
+//  since the last frame. That means the physics behaves differently at 30
+//  frames per second than at 144: objects pass through walls on a slow
+//  machine, jumps reach different heights, and a bug on a classmate's laptop
+//  cannot be reproduced on yours.
 //
-//  The accumulator:
-//      accumulator += realElapsed
-//      while (accumulator >= kFixedStep) { Simulate(kFixedStep); accumulator -= kFixedStep; }
-//      Render()
+//  The fix is to separate the two rates. Real time is collected in an
+//  "accumulator", and the world is advanced in identical fixed-size steps:
 //
-//  Simulation advances in identical discrete steps regardless of frame rate.
-//  Render as often as you can; simulate at a fixed rate.
+//      accumulator += realTimeThisFrame
+//      while (accumulator >= step) { Simulate(step); accumulator -= step; }
+//      Draw()
 //
-//  ---------------------------------------------------------------------------
-//  THE SPIRAL OF DEATH, and the clamp.
+//  Draw as often as you can; simulate at a fixed rate. Every step is the same
+//  size on every machine, so the game behaves identically everywhere.
 //
-//  If one simulation step takes longer than the step it represents, the
-//  accumulator grows faster than the loop drains it, so the next frame does
-//  more steps, which takes longer still. The engine locks up hard and never
-//  recovers.
+//  ==========================================================================
+//  THE RUNAWAY PROBLEM, AND THE LIMIT
 //
-//  MaxStepsPerFrame clamps it and the surplus accumulator is DISCARDED, which
-//  means the simulation falls behind real time. That is the correct trade: a
-//  game running in slow motion is recoverable, a frozen one is not. Every
-//  clamp is logged at Warning, because silently running in slow motion is its
-//  own confusing bug.
+//  If one simulation step takes longer than the slice of time it represents,
+//  the accumulator grows faster than the loop can drain it. The next frame
+//  runs more steps, which takes even longer, and the program locks up
+//  completely and never recovers.
 //
-//  ---------------------------------------------------------------------------
-//  THREE TIMELINES, and they are genuinely different things:
+//  MaxStepsPerFrame puts a ceiling on it, and any time left over is THROWN
+//  AWAY - so the simulation falls behind real time. That is the right trade: a
+//  game briefly running in slow motion is recoverable, a frozen one is not.
+//  Every time it happens is written to the log, because silently running in
+//  slow motion is its own baffling bug.
 //
-//    REAL time  - wall clock. Never pauses, never scales. Profilers use it.
-//    GAME time  - affected by pause and time scale. Gameplay uses it.
-//    LOCAL time - per-entity, so one object can be slowed while the world runs
-//                 normally. Exposed as a scale a caller multiplies by, rather
-//                 than as a clock per entity, which would be a clock per
-//                 entity.
+//  ==========================================================================
+//  TWO DIFFERENT CLOCKS, AND THEY ARE GENUINELY DIFFERENT THINGS
+//
+//    REAL time - the wall clock. Never pauses, never speeds up or slows down.
+//    GAME time - affected by pause and by the time-scale slider.
 //
 //  The accessors are named so that using the wrong one has to be deliberate:
 //  RealSeconds() and GameSeconds(), never Time() and OtherTime().
-// =============================================================================
-
-#include <engine/core/Types.h>
+// ============================================================================
 
 namespace eng {
 
@@ -56,78 +52,67 @@ class GameClock {
 public:
     void Init();
 
-    // Called once per frame with real elapsed seconds. Returns HOW MANY
-    // simulation steps to run - clamped, see the spiral-of-death note.
-    i32 BeginFrame(f64 realDeltaSeconds);
+    // Called once per frame with how much real time has passed. Returns HOW
+    // MANY simulation steps should run this frame - which may be 0, 1, or
+    // several, and is capped by MaxStepsPerFrame.
+    int BeginFrame(double realDeltaSeconds);
 
-    // Called by the engine after each simulation step, so the clock can
-    // advance game time and the tick counter.
+    // Called by the engine after each simulation step, so the clock can move
+    // game time forward and count the tick.
     void OnStepConsumed();
 
-    // --- control ----------------------------------------------------------
-    void SetTimeScale(f32 scale);
-    f32  TimeScale() const { return m_timeScale; }
+    // ---- control (this is what the editor's toolbar drives) ---------------
+
+    // 1.0 is normal speed, 0.5 is half speed, 2.0 is double.
+    //
+    // Notice what this does NOT do: it does not change the size of a step. It
+    // changes how much time is collected per frame, so FEWER OR MORE steps
+    // run. The steps themselves are always the same size, which is the whole
+    // point of the design.
+    void  SetTimeScale(float scale);
+    float TimeScale() const { return m_timeScale; }
 
     void Pause()  { m_paused = true; }
     void Resume() { m_paused = false; }
     void SetPaused(bool paused) { m_paused = paused; }
     bool IsPaused() const { return m_paused; }
 
-    // Advances EXACTLY ONE simulation tick while paused. Not "approximately
-    // one" - BeginFrame returns exactly 1 and the accumulator is untouched, so
-    // stepping ten times advances exactly ten ticks. Stepping the accumulator
-    // instead is the bug where single-step advances a variable amount.
+    // Advances EXACTLY ONE step while paused. Not roughly one - stepping ten
+    // times advances exactly ten ticks.
     //
     // This is the best debugging tool in the engine: it lets you watch a
     // collision happen one tick at a time.
     void RequestSingleStep() { m_singleStepRequested = true; }
 
-    // --- the three timelines ----------------------------------------------
-    f64 RealSeconds() const { return m_realSeconds; }
-    f64 GameSeconds() const { return m_gameSeconds; }
-    f32 RealDeltaSeconds() const { return m_realDelta; }
+    // ---- reading the time -------------------------------------------------
+    double RealSeconds() const      { return m_realSeconds; }
+    double GameSeconds() const      { return m_gameSeconds; }
+    float  RealDeltaSeconds() const { return m_realDelta; }
 
-    // The step size, in GAME seconds. This is what a simulation step is handed
-    // and it never varies - that is the whole point.
-    f32 FixedStepSeconds() const { return m_fixedStep; }
-    void SetFixedStepSeconds(f32 seconds);
+    // The size of one simulation step, in seconds. This is the value handed to
+    // every Update, and it never varies - that is the point.
+    float FixedStepSeconds() const { return m_fixedStep; }
+    void  SetFixedStepSeconds(float seconds);
 
-    // A per-entity clock is a scale applied to the fixed step by whatever is
-    // integrating. Kept as a helper rather than as state, because state would
-    // mean a clock per entity.
-    f32 LocalStepSeconds(f32 localTimeScale) const { return m_fixedStep * localTimeScale; }
+    // How many simulation steps have run since the program started.
+    unsigned long long TickCount() const { return m_ticks; }
 
-    u64 TickCount() const { return m_ticks; }
-
-    i32  MaxStepsPerFrame() const { return m_maxSteps; }
-    void SetMaxStepsPerFrame(i32 steps);
-    u64  ClampEventCount() const { return m_clampEvents; }
-
-    // accumulator / fixedStep, in [0, 1). Lets the renderer interpolate
-    // BETWEEN simulation ticks instead of snapping to them.
-    //
-    // IMPLEMENTED AND EXPOSED, BUT NOT USED BY THE DEFAULT RENDER PATH, and
-    // that is noted rather than left silent: interpolating means drawing every
-    // sprite at a position no simulation tick ever held, which makes a paused
-    // single-step comparison between the Inspector's numbers and the screen
-    // disagree by up to one step. For an engine whose main debugging tool this
-    // week is pause-and-step, that trade is not worth the smoothness. A
-    // gameplay layer that wants it can multiply by Alpha() itself.
-    f32 Alpha() const;
+    int  MaxStepsPerFrame() const { return m_maxSteps; }
+    void SetMaxStepsPerFrame(int steps);
 
 private:
-    f32 m_fixedStep = 1.0f / 60.0f;
-    f32 m_timeScale = 1.0f;
-    i32 m_maxSteps  = 5;
+    float m_fixedStep = 1.0f / 60.0f;   // 60 simulation steps per second
+    float m_timeScale = 1.0f;
+    int   m_maxSteps  = 5;
 
-    f64 m_accumulator = 0.0;
-    f64 m_realSeconds = 0.0;
-    f64 m_gameSeconds = 0.0;
-    f32 m_realDelta   = 0.0f;
-    u64 m_ticks       = 0;
-    u64 m_clampEvents = 0;
+    double m_accumulator = 0.0;   // real time collected but not yet simulated
+    double m_realSeconds = 0.0;
+    double m_gameSeconds = 0.0;
+    float  m_realDelta   = 0.0f;
 
-    bool m_paused = false;
+    unsigned long long m_ticks = 0;
+
+    bool m_paused              = false;
     bool m_singleStepRequested = false;
 };
 

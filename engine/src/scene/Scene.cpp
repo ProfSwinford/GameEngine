@@ -1,25 +1,37 @@
-// WEEK 9 - the scene loader. See Scene.h.
+// ============================================================================
+//  Scene.cpp - loading, saving and holding a level. See Scene.h.
 //
-// Note what is NOT in this file: no entity name, no position, no texture
-// filename. That is the Milestone 3 bar, and grepping for any of them is how
-// it is checked.
+//  Notice what is NOT in this file: no entity name, no position, no texture
+//  filename. Every one of those lives in a .json file. That is what makes it
+//  possible to build a level without writing any C++.
+// ============================================================================
 
 #include <engine/core/Log.h>
-#include <engine/debug/DebugDraw.h>
+#include <engine/fs/FileSystem.h>
+#include <engine/render/Gizmos.h>
 #include <engine/resource/ResourceManager.h>
 #include <engine/scene/Component.h>
-#include <engine/fs/FileSystem.h>
 #include <engine/scene/Scene.h>
 
-#include <nlohmann/json.hpp>
+#include <unordered_map>
 
 namespace eng {
-
-using Json = nlohmann::json;
-
 namespace {
 
+// The scene the engine is currently running. There is only ever one.
 Scene* g_active = nullptr;
+
+// Returns the named part of a Json object, or an empty object when it is not
+// there. Used instead of `document["entities"]` because square brackets INSERT
+// a missing key, which would modify the document just by reading it.
+const Json& Field(const Json& object, const char* name) {
+    static const Json kEmpty = Json::object();
+    if (!object.is_object()) {
+        return kEmpty;
+    }
+    const auto it = object.find(name);
+    return (it != object.end()) ? *it : kEmpty;
+}
 
 } // namespace
 
@@ -32,113 +44,97 @@ Scene::~Scene() {
     }
 }
 
-Scene* Scene::Active() { return g_active; }
+Scene* Scene::Active()                { return g_active; }
 void   Scene::SetActive(Scene* scene) { g_active = scene; }
 
-EntityHandle Scene::CreateEntity(std::string_view name) {
-    u32 index = 0;
+// ---------------------------------------------------------------------------
+//  Creating and destroying entities
+// ---------------------------------------------------------------------------
+
+EntityId Scene::CreateEntity(std::string_view name) {
+    int index = 0;
 
     if (!m_freeIndices.empty()) {
-        // FIFO reuse - front, not back. See the note in Scene.h about keeping
-        // the generation counter away from its wrap point.
-        index = m_freeIndices.front();
-        m_freeIndices.pop_front();
+        // Reuse a slot from something that was destroyed earlier.
+        index = m_freeIndices.back();
+        m_freeIndices.pop_back();
     } else {
-        index = static_cast<u32>(m_slots.size());
-        if (index > EntityHandle::kMaxIndex) {
-            ENGINE_LOG_ERROR(Channels::kScene,
-                             "entity index space exhausted ({} slots) - widen the index "
-                             "bits in Handle.h", EntityHandle::kMaxIndex);
-            return EntityHandle{};
-        }
+        index = static_cast<int>(m_slots.size());
         m_slots.emplace_back();
     }
 
-    Slot& slot = m_slots[index];
+    Slot& slot    = m_slots[static_cast<std::size_t>(index)];
     slot.entity   = std::make_unique<Entity>();
     slot.occupied = true;
 
-    slot.entity->m_handle = MakeHandle<EntityTag>(index, slot.generation);
-    slot.entity->m_scene  = this;
-    slot.entity->m_alive  = true;
+    slot.entity->m_id    = EntityId{index, slot.generation};
+    slot.entity->m_scene = this;
+    slot.entity->m_alive = true;
     slot.entity->SetName(name);
 
-    m_byName[slot.entity->NameId().Value()] = slot.entity->m_handle;
+    m_byName[std::string(name)] = slot.entity->m_id;
     ++m_liveCount;
 
-    return slot.entity->m_handle;
+    return slot.entity->m_id;
 }
 
-void Scene::DestroyEntityImmediate(EntityHandle handle) {
-    if (!IsValid(handle)) {
-        // Double destroy is HARMLESS and silent at this level - gameplay code
-        // does it constantly (two bullets hit the same enemy in one tick) and
-        // DeferredOps filters most of it, but the last line of defence is
-        // here.
+void Scene::DestroyEntityImmediate(EntityId id) {
+    if (!IsValid(id)) {
+        // Destroying something twice is harmless and silent. Game code does it
+        // constantly - two bullets hitting the same enemy on the same tick -
+        // and treating it as an error would fill the Console during perfectly
+        // ordinary play.
         return;
     }
 
-    Slot& slot = m_slots[handle.Index()];
+    Slot& slot = m_slots[static_cast<std::size_t>(id.index)];
 
     if (slot.entity != nullptr) {
-        m_byName.erase(slot.entity->NameId().Value());
+        m_byName.erase(slot.entity->Name());
         slot.entity->DestroyInternal();
     }
     slot.entity.reset();
     slot.occupied = false;
 
-    // Bump the generation LAST. From this moment every outstanding handle to
-    // this slot is detectably stale rather than dangling - which is the whole
-    // mechanism, and the reason the editor can hold a selection across a
-    // destroy without crashing.
-    //
-    // Wrapping back to 1, not 0: generation 0 combined with index 0 is the
-    // null handle, so a live slot must never be at generation 0.
-    slot.generation = (slot.generation + 1) & EntityHandle::kMaxGeneration;
-    if (slot.generation == 0) {
-        slot.generation = 1;
-    }
+    // The generation goes up LAST. From this moment every EntityId still
+    // referring to this slot can be recognised as out of date, which is what
+    // lets the editor keep a selection across a delete without crashing.
+    ++slot.generation;
 
-    m_freeIndices.push_back(handle.Index());
+    m_freeIndices.push_back(id.index);
     if (m_liveCount > 0) {
         --m_liveCount;
     }
 }
 
-Entity* Scene::Get(EntityHandle handle) {
-    if (!IsValid(handle)) {
+Entity* Scene::Get(EntityId id) {
+    if (!IsValid(id)) {
         return nullptr;
     }
-    return m_slots[handle.Index()].entity.get();
+    return m_slots[static_cast<std::size_t>(id.index)].entity.get();
 }
 
-bool Scene::IsValid(EntityHandle handle) const {
-    if (handle.IsNull()) {
+bool Scene::IsValid(EntityId id) const {
+    if (id.IsNull() || id.index >= static_cast<int>(m_slots.size())) {
         return false;
     }
-    const u32 index = handle.Index();
-    if (index >= m_slots.size()) {
-        return false;
-    }
-    const Slot& slot = m_slots[index];
-    return slot.occupied && slot.generation == handle.Generation();
+    const Slot& slot = m_slots[static_cast<std::size_t>(id.index)];
+
+    // Both halves are checked: the slot has to be occupied AND still hold the
+    // same occupant it did when the id was made.
+    return slot.occupied && slot.generation == id.generation;
 }
 
-EntityHandle Scene::Find(StringId name) const {
-    const auto it = m_byName.find(name.Value());
-    return (it != m_byName.end()) ? it->second : EntityHandle{};
-}
-
-EntityHandle Scene::Find(std::string_view name) const {
-    return Find(StringId(name));
+EntityId Scene::Find(std::string_view name) const {
+    const auto it = m_byName.find(std::string(name));
+    return (it != m_byName.end()) ? it->second : EntityId{};
 }
 
 void Scene::ForEach(const std::function<void(Entity&)>& fn) {
-    // By index, and the size is re-read: a callback may create an entity, and
-    // m_slots would then reallocate under an iterator. Newly created entities
-    // are visited this pass, which is deliberate for load-time use and is
-    // exactly why gameplay spawns go through DeferredOps instead.
-    for (usize i = 0; i < m_slots.size(); ++i) {
+    // Looped by index, re-reading the size each time: the callback is allowed
+    // to create an entity, and adding to m_slots can move the whole list
+    // elsewhere in memory.
+    for (std::size_t i = 0; i < m_slots.size(); ++i) {
         Slot& slot = m_slots[i];
         if (slot.occupied && slot.entity != nullptr) {
             fn(*slot.entity);
@@ -146,86 +142,82 @@ void Scene::ForEach(const std::function<void(Entity&)>& fn) {
     }
 }
 
-EntityHandle Scene::CreateEntityFromNode(const ConfigNode& node,
-                                         std::string_view nameOverride,
-                                         std::string& outError) {
+// ---------------------------------------------------------------------------
+//  Building entities from JSON
+// ---------------------------------------------------------------------------
+
+EntityId Scene::CreateEntityFromJson(const Json& node, std::string_view nameOverride,
+                                     std::string& outError) {
     std::string name(nameOverride);
     if (name.empty()) {
-        name = node.Child("name").AsString("");
+        name = ReadString(node, "name", "");
     }
     if (name.empty()) {
-        outError = node.Path() + " has no 'name'";
-        return EntityHandle{};
+        outError = "an entity in this scene has no \"name\"";
+        return EntityId{};
     }
 
-    const EntityHandle handle = CreateEntity(name);
-    Entity*            entity = Get(handle);
+    const EntityId id     = CreateEntity(name);
+    Entity*        entity = Get(id);
     if (entity == nullptr) {
-        outError = "could not allocate an entity slot for '" + name + "'";
-        return EntityHandle{};
+        outError = "could not create an entity called '" + name + "'";
+        return EntityId{};
     }
 
-    const ConfigNode components = node.Child("components");
-    if (!components.IsValid()) {
-        return handle;   // an entity with only a transform is legal
-    }
-    if (!components.IsArray()) {
-        outError = components.Path() + " must be an array";
-        return handle;
+    const Json& components = Field(node, "components");
+    if (components.is_null() || !components.is_array()) {
+        return id;   // an entity with only a transform is perfectly legal
     }
 
-    for (usize i = 0; i < components.Size(); ++i) {
-        const ConfigNode componentNode = components.At(i);
-        const std::string typeName     = componentNode.Child("type").AsString("");
+    for (const Json& componentNode : components) {
+        const std::string typeName = ReadString(componentNode, "type", "");
         if (typeName.empty()) {
-            // Reported with the ENTITY and the FIELD, not "parse error".
-            ENGINE_LOG_ERROR(Channels::kScene, "{}: component {} has no 'type'", name, i);
+            ENGINE_LOG_ERROR(Channels::kScene,
+                             "'{}': a component entry has no \"type\"", name);
             continue;
         }
 
-        // *** DESERIALIZE BEFORE ATTACH, AND THE ORDER IS LOAD-BEARING. ***
+        // ==================================================================
+        //  DESERIALIZE FIRST, THEN ATTACH. The order matters.
         //
-        // OnAttach is where a component registers with its system and acquires
-        // its resources - SpriteComponent::OnAttach calls AcquireTexture on the
-        // path it was given. Attaching first and deserialising second means it
-        // acquires an EMPTY path, and the scene renders nothing while the
-        // resource panel shows one texture resident instead of four.
-        //
-        // That is exactly the "scene loads but nothing appears" symptom the
-        // Week 9 troubleshooting list describes, and it is why Component.h
-        // insists registration belongs in OnAttach rather than the constructor
-        // and why the data has to be in place before OnAttach runs.
+        //  OnAttach is where a component hooks itself up and loads what it
+        //  needs - SpriteComponent::OnAttach loads the image named in
+        //  m_texturePath. Attaching first and filling in the fields afterwards
+        //  would have it load an EMPTY path, and the level would render
+        //  nothing at all with no obvious explanation.
+        // ==================================================================
         std::unique_ptr<Component> component = ComponentFactory::Create(typeName);
         if (component == nullptr) {
             ENGINE_LOG_ERROR(Channels::kScene,
-                             "{}: unknown component type '{}' - is it registered with "
-                             "ComponentFactory?", name, typeName);
+                             "'{}': there is no component type called '{}'", name,
+                             typeName);
             continue;
         }
 
         std::string componentError;
         if (!component->Deserialize(componentNode, componentError)) {
-            // Reported with the ENTITY and the FIELD, then attached anyway: a
-            // sprite with a bad tint is still a sprite, and dropping the whole
-            // component would turn one typo into an invisible entity.
-            ENGINE_LOG_ERROR(Channels::kScene, "{}.{}: {}", name, typeName, componentError);
+            // Reported naming the entity and the component, then attached
+            // anyway. A sprite with a bad tint is still a sprite, and throwing
+            // the whole component away would turn one typo into an invisible
+            // entity.
+            ENGINE_LOG_ERROR(Channels::kScene, "'{}' / {}: {}", name, typeName,
+                             componentError);
         }
 
         entity->AddComponent(std::move(component));
     }
 
-    return handle;
+    return id;
 }
 
-void Scene::ResolveParents(const ConfigNode& entitiesNode) {
-    // A second pass, because a child may name a parent that appears later in
-    // the file. Doing it in one pass would make the scene file order-sensitive
-    // for no reason, and "your entity vanished because you moved it up three
-    // lines" is a bad afternoon.
-    for (usize i = 0; i < entitiesNode.Size(); ++i) {
-        const ConfigNode node       = entitiesNode.At(i);
-        const std::string childName = node.Child("name").AsString("");
-        const std::string parentName = node.Child("parent").AsString("");
+void Scene::ResolveParents(const Json& entitiesArray) {
+    // A SECOND pass over the file, because a child may name a parent that
+    // appears further down. Doing it in one pass would make the order of the
+    // file matter, and "my entity disappeared because I moved it three lines
+    // up" is a bad afternoon.
+    for (const Json& node : entitiesArray) {
+        const std::string childName  = ReadString(node, "name", "");
+        const std::string parentName = ReadString(node, "parent", "");
         if (childName.empty() || parentName.empty()) {
             continue;
         }
@@ -236,39 +228,34 @@ void Scene::ResolveParents(const ConfigNode& entitiesNode) {
             continue;
         }
         if (parent == nullptr) {
-            ENGINE_LOG_ERROR(Channels::kScene, "{}: parent '{}' does not exist in this scene",
-                             childName, parentName);
+            ENGINE_LOG_ERROR(Channels::kScene,
+                             "'{}' says its parent is '{}', but there is no entity with "
+                             "that name in this scene", childName, parentName);
             continue;
         }
         child->Transform().SetParent(&parent->Transform());
     }
 }
 
-// Builds the live scene from whatever is already in m_document. Shared by
-// Load (from a file) and LoadFromString (from a Play-mode snapshot), so the two
-// cannot drift apart - and a snapshot restore therefore goes through exactly
-// the same code path as a normal load.
 bool Scene::BuildFromDocument(std::string& outError) {
-    const ConfigNode root = m_document.Root();
-    m_name = root.Child("name").AsString("<unnamed>");
+    m_name = ReadString(m_document, "name", "<unnamed>");
 
-    if (const ConfigNode camera = root.Child("camera"); camera.IsValid()) {
-        f32 position[2] = {0.0f, 0.0f};
-        camera.Child("position").AsFloatArray(position, 2);
-        m_cameraPosition = Vec2{position[0], position[1]};
-        m_cameraZoom     = static_cast<f32>(camera.Child("zoom").AsFloat(1.0));
+    const Json& camera = Field(m_document, "camera");
+    if (camera.is_object()) {
+        m_cameraPosition = ReadVec2(camera, "position", Vec2{0.0f, 0.0f}, "camera");
+        m_cameraZoom     = ReadFloat(camera, "zoom", 1.0f, "camera");
     }
 
-    const ConfigNode entities = root.Child("entities");
-    if (!entities.IsValid() || !entities.IsArray()) {
-        outError = "scene has no 'entities' array";
+    const Json& entities = Field(m_document, "entities");
+    if (!entities.is_array()) {
+        outError = "this scene file has no \"entities\" list";
         ENGINE_LOG_ERROR(Channels::kScene, "{}", outError);
         return false;
     }
 
-    for (usize i = 0; i < entities.Size(); ++i) {
+    for (const Json& node : entities) {
         std::string entityError;
-        if (CreateEntityFromNode(entities.At(i), {}, entityError).IsNull()) {
+        if (CreateEntityFromJson(node, {}, entityError).IsNull()) {
             ENGINE_LOG_ERROR(Channels::kScene, "{}", entityError);
         }
     }
@@ -283,45 +270,54 @@ bool Scene::BuildFromDocument(std::string& outError) {
 bool Scene::Load(std::string_view virtualPath, std::string& outError) {
     Unload();
 
-    if (!m_document.LoadFromVirtualPath(virtualPath, outError)) {
-        ENGINE_LOG_ERROR(Channels::kScene, "scene {}: {}", virtualPath, outError);
+    std::string text;
+    if (!FileSystem::ReadTextFile(virtualPath, text, outError)) {
+        ENGINE_LOG_ERROR(Channels::kScene, "{}", outError);
         return false;
     }
+
+    m_document = ParseJson(text, outError);
+    if (!outError.empty()) {
+        ENGINE_LOG_ERROR(Channels::kScene, "{}: {}", virtualPath, outError);
+        return false;
+    }
+
     m_sourcePath.assign(virtualPath);
 
     if (!BuildFromDocument(outError)) {
         return false;
     }
 
-    ENGINE_LOG_INFO(Channels::kScene,
-                    "scene '{}' loaded from {}: {} entities, {} textures resident, "
-                    "total refcount {}",
-                    m_name, virtualPath, m_liveCount, ResourceManager::LoadedCount(),
-                    ResourceManager::TotalRefCount());
+    ENGINE_LOG_INFO(Channels::kScene, "scene '{}' loaded from {}: {} entities, {} image(s)",
+                    m_name, virtualPath, m_liveCount, ResourceManager::LoadedCount());
     return true;
 }
 
+// ---------------------------------------------------------------------------
+//  Saving
+// ---------------------------------------------------------------------------
+
 namespace {
 
-// Free rather than a member, so its signature never has to appear in a public
-// header - see the note in Scene.h. Handed the few private fields it needs.
+// Builds the JSON for the whole scene. Kept as a free function in this file
+// rather than a member, because it is only ever used here.
+//
+// `existing` is the document the scene was loaded from, so that any key this
+// build does not understand survives being saved. Only "name", "camera" and
+// "entities" are regenerated. A tool that silently drops the parts of a file
+// it did not understand is a tool people stop trusting with their files.
 Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraPosition,
-                        f32 cameraZoom, usize& outSkipped, const Json* existing) {
-    // PRESERVE WHAT WE DID NOT WRITE - `_comment`, `prefabs` and any key a
-    // newer build understands. Only name / camera / entities are regenerated.
-    Json root = (existing != nullptr && existing->is_object()) ? *existing : Json::object();
+                        float cameraZoom, std::size_t& outSkipped, const Json& existing) {
+    Json root = existing.is_object() ? existing : Json::object();
 
     root["name"] = sceneName.empty() ? std::string("Untitled") : sceneName;
-
-    // Engine::SaveScene pushes the LIVE camera in via SetCameraState before
-    // calling this, so framing a shot in the editor and saving keeps the
-    // framing rather than silently rewriting whatever the file said at load.
     root["camera"]["position"] = Json::array({cameraPosition.x, cameraPosition.y});
     root["camera"]["zoom"]     = cameraZoom;
 
-    // Parenting comes from the TRANSFORM TREE, not from the source file, so an
-    // entity reparented in the editor saves correctly. Names are resolved
-    // through a transform -> name map built in the same pass.
+    // Parent/child relationships are read from the LIVE transform tree, not
+    // from whatever the original file said, so an entity reparented in the
+    // editor saves correctly. This first pass builds a table from each
+    // transform to its entity's name so the second pass can look parents up.
     std::unordered_map<const Transform2D*, std::string> transformNames;
     scene.ForEach([&](Entity& entity) {
         transformNames[&entity.Transform()] = entity.Name();
@@ -342,20 +338,19 @@ Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraP
 
         Json components = Json::array();
         entity.ForEachComponent([&](Component& component) {
-            ConfigWriter writer;
-            if (!component.Serialize(writer)) {
-                // REPORTED, not silently dropped. A save that loses a component
-                // without saying so is worse than one that refuses.
+            Json componentJson = Json::object();
+            if (!component.Serialize(componentJson)) {
+                // Reported, not silently dropped. A save that loses a
+                // component without saying so is worse than one that refuses.
                 ENGINE_LOG_WARN(Channels::kScene,
-                                "saving '{}': component '{}' does not support saving and "
-                                "was not written",
+                                "saving '{}': the component '{}' cannot be saved and was "
+                                "left out of the file",
                                 entity.Name(), component.TypeName());
                 ++outSkipped;
                 return;
             }
-            Json componentJson = *static_cast<const Json*>(writer.NativeHandle());
-            // The type key is written HERE rather than by each component, so no
-            // component can get its own name wrong.
+            // The "type" key is written HERE rather than by each component, so
+            // no component can get its own name wrong.
             componentJson["type"] = component.TypeName();
             components.push_back(std::move(componentJson));
         });
@@ -372,35 +367,31 @@ Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraP
 
 bool Scene::Save(std::string_view virtualPath, std::string& outError) {
     if (virtualPath.empty()) {
-        outError = "no path to save to";
+        outError = "no file to save to";
         return false;
     }
 
-    // The document as LOADED, so keys this build does not understand survive a
-    // round trip. Null when the scene was built in memory rather than loaded.
-    const Json* existing = nullptr;
-    if (m_document.IsLoaded()) {
-        existing = static_cast<const Json*>(m_document.Root().NativeHandle());
-    }
+    std::size_t skipped = 0;
+    const Json  root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom,
+                                          skipped, m_document);
 
-    usize      skipped = 0;
-    const Json root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom,
-                                         skipped, existing);
-
+    // dump(2) turns the document back into text, indented by two spaces so a
+    // person can read it and a version-control diff makes sense.
     const std::string text = root.dump(2);
-    if (!FileSystem::WriteFile(virtualPath, text.data(), text.size(), outError)) {
-        ENGINE_LOG_ERROR(Channels::kScene, "could not save '{}': {}", virtualPath, outError);
+    if (!FileSystem::WriteTextFile(virtualPath, text, outError)) {
+        ENGINE_LOG_ERROR(Channels::kScene, "could not save '{}': {}", virtualPath,
+                         outError);
         return false;
     }
 
-    // Save As RETARGETS the scene, so a subsequent Ctrl+S goes to the new file
+    // "Save As" retargets the scene, so a later Ctrl+S goes to the new file
     // rather than back to the one it was opened from.
     m_sourcePath.assign(virtualPath);
 
     if (skipped > 0) {
         ENGINE_LOG_WARN(Channels::kScene,
-                        "saved '{}' with {} component(s) SKIPPED - the file is not a "
-                        "complete record of the scene", virtualPath, skipped);
+                        "saved '{}', but {} component(s) were left out - the file is not "
+                        "a complete record of the scene", virtualPath, skipped);
     } else {
         ENGINE_LOG_INFO(Channels::kScene, "saved '{}': {} entities", virtualPath,
                         m_liveCount);
@@ -410,25 +401,20 @@ bool Scene::Save(std::string_view virtualPath, std::string& outError) {
 }
 
 bool Scene::SaveToString(std::string& outText, std::string& outError) {
-    const Json* existing = nullptr;
-    if (m_document.IsLoaded()) {
-        existing = static_cast<const Json*>(m_document.Root().NativeHandle());
-    }
+    std::size_t skipped = 0;
+    const Json  root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom,
+                                          skipped, m_document);
 
-    usize      skipped = 0;
-    const Json root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom,
-                                         skipped, existing);
-
-    // A SKIPPED COMPONENT MAKES THIS FAIL, where Save only warns - and the
-    // difference is deliberate. A file with a component missing is a file the
-    // user can look at and fix; a Play-mode snapshot with a component missing
-    // silently DELETES that component when Stop restores it. So Engine
-    // refuses to enter Play mode rather than promising a restore it cannot
-    // deliver.
+    // A skipped component makes this FAIL, where Save() only warns, and the
+    // difference is deliberate. A saved file with a component missing is
+    // something you can open and fix. A Play-mode snapshot with a component
+    // missing would silently DELETE that component when Stop restores the
+    // scene - so the editor refuses to enter Play mode rather than promise a
+    // restore it cannot deliver.
     if (skipped > 0) {
-        outError = "the scene contains " + std::to_string(skipped) +
-                   " component(s) that cannot be saved, so a snapshot would not "
-                   "restore the scene faithfully";
+        outError = "this scene contains " + std::to_string(skipped) +
+                   " component(s) that cannot be saved, so pressing Stop would not put "
+                   "the scene back the way it was";
         return false;
     }
 
@@ -440,11 +426,12 @@ bool Scene::SaveToString(std::string& outText, std::string& outError) {
 bool Scene::LoadFromString(std::string_view text, std::string& outError) {
     Unload();
 
-    // NOTE that m_sourcePath is NOT touched. Restoring a Play-mode snapshot
-    // must not make the scene forget which file it came from - Ctrl+S after
-    // Stop still saves to the right place.
-    if (!m_document.LoadFromText(text, outError)) {
-        ENGINE_LOG_ERROR(Channels::kScene, "restoring scene: {}", outError);
+    // m_sourcePath is deliberately left alone. Restoring a Play-mode snapshot
+    // must not make the scene forget which file it came from, or Ctrl+S after
+    // pressing Stop would have nowhere to go.
+    m_document = ParseJson(text, outError);
+    if (!outError.empty()) {
+        ENGINE_LOG_ERROR(Channels::kScene, "could not restore the scene: {}", outError);
         return false;
     }
 
@@ -456,11 +443,9 @@ void Scene::Unload() {
         return;
     }
 
-    // Destroy every entity, which detaches every component, which RELEASES
-    // EVERY RESOURCE. After this TotalRefCount() must read zero - the M3
-    // check, watched live on the resource panel.
-    for (usize i = 0; i < m_slots.size(); ++i) {
-        Slot& slot = m_slots[i];
+    // Destroying every entity detaches every component, which lets go of every
+    // texture. Anything no longer used unloads itself at that point.
+    for (Slot& slot : m_slots) {
         if (slot.occupied && slot.entity != nullptr) {
             slot.entity->DestroyInternal();
             slot.entity.reset();
@@ -473,25 +458,23 @@ void Scene::Unload() {
     m_byName.clear();
     m_liveCount = 0;
 
-    // Otherwise a three-second debug marker outlives the entity it was
-    // marking, and points at a position nothing occupies any more.
-    DebugDraw::Clear();
+    // Otherwise a three-second gizmo would outlive the entity it was marking
+    // and hang in the air pointing at nothing.
+    Gizmos::Clear();
 
-    ENGINE_LOG_INFO(Channels::kScene, "scene unloaded; {} texture(s) resident, total "
-                                      "refcount {}",
-                    ResourceManager::LoadedCount(), ResourceManager::TotalRefCount());
+    ResourceManager::PruneCache();
+    ENGINE_LOG_INFO(Channels::kScene, "scene unloaded; {} image(s) still loaded",
+                    ResourceManager::LoadedCount());
 
     m_name.clear();
 
-    // m_sourcePath is DELIBERATELY NOT CLEARED. It is "the path this scene was
-    // last loaded from", and after an unload that is still true and still the
-    // only way back.
-    //
-    // Clearing it was a real bug: the editor's File > Unload Scene is the
-    // Milestone 3 demonstration, and File > Reload Scene immediately afterwards
-    // reloaded the empty string and failed. Unloading the scene made the scene
-    // unloadable-from, which is a small and very annoying dead end.
+    // m_sourcePath is NOT cleared. It means "the file this scene came from",
+    // and that is still true after an unload - it is the only way back.
 }
+
+// ---------------------------------------------------------------------------
+//  Editing
+// ---------------------------------------------------------------------------
 
 std::string Scene::MakeUniqueName(std::string_view base) const {
     std::string candidate(base);
@@ -501,7 +484,7 @@ std::string Scene::MakeUniqueName(std::string_view base) const {
     if (Find(candidate).IsNull()) {
         return candidate;
     }
-    for (u32 suffix = 1; suffix < 100000u; ++suffix) {
+    for (int suffix = 1; suffix < 100000; ++suffix) {
         std::string attempt = std::string(base) + "_" + std::to_string(suffix);
         if (Find(attempt).IsNull()) {
             return attempt;
@@ -510,113 +493,105 @@ std::string Scene::MakeUniqueName(std::string_view base) const {
     return candidate;
 }
 
-bool Scene::RenameEntity(EntityHandle handle, std::string_view newName) {
-    Entity* entity = Get(handle);
+bool Scene::RenameEntity(EntityId id, std::string_view newName) {
+    Entity* entity = Get(id);
     if (entity == nullptr || newName.empty()) {
         return false;
     }
     if (entity->Name() == newName) {
-        return true;   // renaming to itself is a no-op, not a failure
+        return true;   // renaming something to what it is already called
     }
     if (!Find(newName).IsNull()) {
-        ENGINE_LOG_WARN(Channels::kScene, "cannot rename '{}': '{}' is already taken",
+        ENGINE_LOG_WARN(Channels::kScene,
+                        "cannot rename '{}': something is already called '{}'",
                         entity->Name(), newName);
         return false;
     }
 
-    // The map key changes with the name. Doing this through Entity::SetName
-    // alone would leave m_byName holding the OLD name pointing at this handle
-    // and no entry for the new one - so Find() would answer questions about a
-    // name that no longer exists and fail on the one that does.
-    m_byName.erase(entity->NameId().Value());
+    // The lookup table is keyed on the name, so both the old and the new key
+    // have to be fixed. Calling Entity::SetName on its own would leave Find()
+    // answering for a name that no longer exists.
+    m_byName.erase(entity->Name());
     entity->SetName(newName);
-    m_byName[entity->NameId().Value()] = handle;
+    m_byName[std::string(newName)] = id;
     return true;
 }
 
-EntityHandle Scene::DuplicateEntity(EntityHandle handle, std::string& outError) {
-    Entity* source = Get(handle);
+EntityId Scene::DuplicateEntity(EntityId id, std::string& outError) {
+    Entity* source = Get(id);
     if (source == nullptr) {
-        outError = "nothing to duplicate";
-        return EntityHandle{};
+        outError = "there is nothing selected to duplicate";
+        return EntityId{};
     }
 
-    // Serialize, then rebuild from that. A hand-written member-by-member copy
-    // would need extending every time a component type is added, and would be
-    // forgotten exactly once.
-    ConfigWriter entityWriter;
-    std::vector<ConfigWriter> componentWriters;
-    std::vector<std::string>  componentTypes;
+    // Write the entity out to JSON and read it straight back in. Doing it this
+    // way means a duplicate is automatically a complete copy of every
+    // component, including component types added later by somebody else.
+    Json                     componentBlobs = Json::array();
+    std::vector<std::string> componentTypes;
 
     source->ForEachComponent([&](Component& component) {
-        ConfigWriter writer;
-        if (!component.Serialize(writer)) {
+        Json blob = Json::object();
+        if (!component.Serialize(blob)) {
             ENGINE_LOG_WARN(Channels::kScene,
-                            "duplicating '{}': component '{}' cannot be serialised and "
-                            "will be created with its defaults",
+                            "duplicating '{}': '{}' cannot be copied and will be created "
+                            "with its default settings",
                             source->Name(), component.TypeName());
         }
-        componentWriters.push_back(std::move(writer));
+        componentBlobs.push_back(std::move(blob));
         componentTypes.emplace_back(component.TypeName());
     });
 
-    const std::string name = MakeUniqueName(source->Name());
-    const EntityHandle copyHandle = CreateEntity(name);
-    Entity* copy = Get(copyHandle);
+    const std::string name       = MakeUniqueName(source->Name());
+    const EntityId    copyId     = CreateEntity(name);
+    Entity*           copy       = Get(copyId);
     if (copy == nullptr) {
-        outError = "could not allocate an entity slot";
-        return EntityHandle{};
+        outError = "could not create the copy";
+        return EntityId{};
     }
 
-    for (usize i = 0; i < componentTypes.size(); ++i) {
+    for (std::size_t i = 0; i < componentTypes.size(); ++i) {
         std::unique_ptr<Component> component = ComponentFactory::Create(componentTypes[i]);
         if (component == nullptr) {
             continue;
         }
-        // Deserialize BEFORE attach, for the same reason Scene::Load does -
-        // OnAttach acquires resources from fields that must already be set.
-        const ConfigNode node = componentWriters[i].AsNode(name + "." + componentTypes[i]);
+        // Fill it in BEFORE attaching, for the same reason loading does. See
+        // the note in CreateEntityFromJson.
         std::string componentError;
-        if (!component->Deserialize(node, componentError)) {
+        if (!component->Deserialize(componentBlobs[i], componentError)) {
             ENGINE_LOG_WARN(Channels::kScene, "duplicating '{}': {}", name, componentError);
         }
         copy->AddComponent(std::move(component));
     }
 
-    // Same parent as the original, keeping its LOCAL transform - so a
-    // duplicate lands exactly on top of what it was copied from, which is what
-    // makes "duplicate then drag it aside" the obvious next action.
+    // The copy gets the same parent as the original and keeps the same local
+    // position, so it lands exactly on top of what it was copied from - which
+    // makes "duplicate, then drag it aside" the obvious next action.
     if (Transform2D* sourceParent = source->Transform().Parent(); sourceParent != nullptr) {
         copy->Transform().SetParent(sourceParent);
     }
 
     outError.clear();
-    return copyHandle;
+    return copyId;
 }
 
-bool Scene::HasPrefab(StringId name) const {
-    if (!m_document.IsLoaded()) {
-        return false;
-    }
-    return m_document.Root().Child("prefabs").Child(name.ToString()).IsValid();
+// ---------------------------------------------------------------------------
+//  Prefabs
+// ---------------------------------------------------------------------------
+
+bool Scene::HasPrefab(std::string_view name) const {
+    const Json& prefabs = Field(m_document, "prefabs");
+    return prefabs.is_object() && prefabs.contains(std::string(name));
 }
 
-ConfigNode Scene::Prefab(StringId name) const {
-    if (!m_document.IsLoaded()) {
-        return ConfigNode{};
+EntityId Scene::InstantiatePrefab(std::string_view prefab, std::string_view name,
+                                  std::string& outError) {
+    const Json& prefabs = Field(m_document, "prefabs");
+    if (!prefabs.is_object() || !prefabs.contains(std::string(prefab))) {
+        outError = "this scene has no prefab called '" + std::string(prefab) + "'";
+        return EntityId{};
     }
-    return m_document.Root().Child("prefabs").Child(name.ToString());
-}
-
-EntityHandle Scene::InstantiatePrefab(StringId prefab, std::string_view name,
-                                      std::string& outError) {
-    const ConfigNode node = Prefab(prefab);
-    if (!node.IsValid()) {
-        outError = std::string("no prefab named '") + prefab.ToString() +
-                   "' in this scene";
-        return EntityHandle{};
-    }
-    return CreateEntityFromNode(node, name, outError);
+    return CreateEntityFromJson(prefabs[std::string(prefab)], name, outError);
 }
 
 } // namespace eng

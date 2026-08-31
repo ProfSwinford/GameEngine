@@ -1,4 +1,7 @@
-// THE ASSET BROWSER. See AssetBrowserPanel.h for the two-roots argument.
+// ============================================================================
+//  AssetBrowserPanel.cpp - the Assets panel. See AssetBrowserPanel.h for the
+//  two-roots argument.
+// ============================================================================
 
 #include "panels/AssetBrowserPanel.h"
 
@@ -14,18 +17,18 @@
 namespace editor {
 namespace {
 
-// The two roots. Not discovered, because "which directories are meaningful" is
-// a project decision rather than something to infer from what happens to be on
-// disk - listing the repository root would show build/, engine/ and .git.
+// The two roots. They are written down rather than discovered, because "which
+// folders matter" is a decision about this project rather than something to
+// work out from whatever happens to be on disk - listing the project root
+// would show build/, engine/ and .git.
 //
-// THE ASSETS ROOT IS THE EMPTY STRING, and that is not a shortcut. The virtual
-// path space is ALREADY rooted at assets/ - "scenes/orbit_test.json" resolves
-// to <root>/assets/scenes/orbit_test.json - so the virtual path OF assets/ is
-// "". Using "assets" here asked for <root>/assets/assets, which does not
-// exist, and the panel correctly reported that it did not.
+// THE ASSETS ROOT IS THE EMPTY STRING, and that is not a shortcut. Virtual
+// paths are ALREADY relative to assets/ - "scenes/level1.json" resolves to
+// <project>/assets/scenes/level1.json - so the virtual path OF assets/ itself
+// is "". Writing "assets" here would ask for <project>/assets/assets.
 //
-// gamescripts/ is the exception FileSystem::Resolve already knows about, so it
-// keeps its name.
+// gamescripts/ is the exception that FileSystem::Resolve already knows about,
+// so it keeps its name.
 constexpr const char* kRootAssets  = "";
 constexpr const char* kRootScripts = "gamescripts";
 
@@ -33,7 +36,8 @@ bool IsScriptsRoot(const std::string& directory) {
     return directory == kRootScripts || directory.starts_with("gamescripts/");
 }
 
-// What to show the user. "" is a real virtual path and a terrible label.
+// What to show at the top of the panel. "" is a real virtual path and a
+// terrible thing to display.
 std::string DisplayPath(const std::string& directory) {
     if (IsScriptsRoot(directory)) {
         return directory;
@@ -62,29 +66,14 @@ const char* LabelFor(AssetKind kind) {
 }
 
 std::string ParentOf(const std::string& directory) {
-    const eng::usize slash = directory.find_last_of('/');
-    return slash == std::string::npos ? std::string() : directory.substr(0, slash);
+    const std::size_t slash = directory.find_last_of('/');
+    return (slash == std::string::npos) ? std::string() : directory.substr(0, slash);
 }
 
 } // namespace
 
-AssetBrowserPanel::AssetBrowserPanel() { Refresh(); }
-
-AssetBrowserPanel::~AssetBrowserPanel() {
-    // EVERY Acquire has a matching Release, and the destructor is one of the
-    // places that has to be true. A panel that leaked a handle per navigation
-    // would show up as a refcount that never returns to zero on unload - and
-    // would then be blamed on the scene.
-    ReleaseThumbnails();
-}
-
-void AssetBrowserPanel::ReleaseThumbnails() {
-    for (eng::Handle<eng::Texture>& handle : m_thumbnails) {
-        if (!handle.IsNull()) {
-            eng::ResourceManager::Release(handle);
-        }
-    }
-    m_thumbnails.clear();
+AssetBrowserPanel::AssetBrowserPanel() {
+    Refresh();
 }
 
 void AssetBrowserPanel::Navigate(const std::string& virtualDirectory) {
@@ -93,7 +82,10 @@ void AssetBrowserPanel::Navigate(const std::string& virtualDirectory) {
 }
 
 void AssetBrowserPanel::Refresh() {
-    ReleaseThumbnails();
+    // Clearing the old thumbnails lets go of this panel's share of those
+    // images. Any that no sprite in the scene is also using will unload
+    // themselves at this point - see render/Texture.h.
+    m_thumbnails.clear();
 
     m_valid = eng::FileSystem::ListDirectory(m_directory, m_entries);
     if (!m_valid) {
@@ -101,23 +93,18 @@ void AssetBrowserPanel::Refresh() {
     }
 
     m_thumbnails.resize(m_entries.size());
-    for (eng::usize i = 0; i < m_entries.size(); ++i) {
+    for (std::size_t i = 0; i < m_entries.size(); ++i) {
         if (m_entries[i].isDirectory ||
             ClassifyAsset(m_entries[i].virtualPath) != AssetKind::Texture) {
             continue;
         }
-        // SYNCHRONOUS, not the async path. A thumbnail is wanted THIS frame and
-        // a directory holds tens of images, not thousands; the async queue
-        // exists for a scene load that must not stall, which is a different
-        // problem. If this ever becomes slow the fix is AcquireTextureAsync
-        // plus a placeholder, which the resource manager already supports.
-        m_thumbnails[i] = eng::ResourceManager::AcquireTexture(m_entries[i].virtualPath);
+        m_thumbnails[i] = eng::ResourceManager::LoadTexture(m_entries[i].virtualPath);
     }
 }
 
 void AssetBrowserPanel::DrawBreadcrumb() {
-    // Root switcher. Two buttons rather than a tree, because there are exactly
-    // two roots and a tree control for two items is ceremony.
+    // Two buttons rather than a tree, because there are exactly two roots and
+    // a tree control for two items is ceremony.
     const bool inScripts = IsScriptsRoot(m_directory);
 
     ImGui::BeginDisabled(!inScripts);
@@ -137,15 +124,16 @@ void AssetBrowserPanel::DrawBreadcrumb() {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // Up. Disabled AT a root rather than hidden, so the toolbar keeps its shape
-    // as you navigate. "At a root" is a comparison against the root itself, not
-    // an empty-parent test: the assets root IS the empty string, so an
-    // empty-parent test would have disabled Up in every first-level folder.
-    const std::string root   = inScripts ? kRootScripts : kRootAssets;
-    const std::string parent = ParentOf(m_directory);
+    // "Up" is greyed out AT a root rather than hidden, so the toolbar keeps
+    // its shape as you navigate and the buttons stay where your hand expects.
+    //
+    // Being "at a root" is a comparison against the root itself, not a test
+    // for an empty parent - because the assets root IS the empty string, and
+    // an empty-parent test would grey Up out inside every first-level folder.
+    const std::string root = inScripts ? kRootScripts : kRootAssets;
     ImGui::BeginDisabled(m_directory == root);
     if (ImGui::SmallButton("Up")) {
-        Navigate(parent);
+        Navigate(ParentOf(m_directory));
     }
     ImGui::EndDisabled();
 
@@ -161,7 +149,7 @@ void AssetBrowserPanel::DrawBreadcrumb() {
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("+ Folder")) {
-        m_openNewFolder = true;
+        m_openNewFolder    = true;
         m_newFolderName[0] = '\0';
     }
 
@@ -173,60 +161,64 @@ void AssetBrowserPanel::DrawBreadcrumb() {
 }
 
 void AssetBrowserPanel::DrawEntry(const eng::FileSystem::DirEntry& entry, int index) {
-    const AssetKind kind = entry.isDirectory ? AssetKind::Unknown
-                                             : ClassifyAsset(entry.virtualPath);
+    const AssetKind kind =
+        entry.isDirectory ? AssetKind::Unknown : ClassifyAsset(entry.virtualPath);
 
+    // PushID(index) makes every widget in this tile unique, so twenty tiles
+    // drawn by the same code are twenty separate things as far as ImGui is
+    // concerned. BeginGroup makes the icon and its label behave as one item
+    // for layout purposes.
     ImGui::PushID(index);
     ImGui::BeginGroup();
 
     const ImVec2 iconSize(m_iconSize, m_iconSize);
 
-    // The thumbnail, or a coloured type tile. A tile rather than a blank space
-    // so every entry is the same size and the grid does not go ragged.
+    // The thumbnail, or a coloured tile with a three-letter type on it. A tile
+    // rather than blank space, so every entry is the same size and the grid
+    // does not go ragged.
     bool drewImage = false;
-    if (index < static_cast<int>(m_thumbnails.size()) && !m_thumbnails[index].IsNull()) {
-        if (const eng::Texture* texture = eng::ResourceManager::Get(m_thumbnails[index]);
-            texture != nullptr && texture->native != nullptr) {
-            ImGui::Image(reinterpret_cast<ImTextureID>(texture->native), iconSize);
-            drewImage = true;
-        }
+    if (index < static_cast<int>(m_thumbnails.size()) && m_thumbnails[index] &&
+        m_thumbnails[index]->native != nullptr) {
+        ImGui::Image(reinterpret_cast<ImTextureID>(m_thumbnails[index]->native), iconSize);
+        drewImage = true;
     }
     if (!drewImage) {
-        const ImVec4 colour = entry.isDirectory ? ImVec4(0.85f, 0.75f, 0.45f, 1.0f)
-                                                : ColourFor(kind);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(colour.x * 0.35f, colour.y * 0.35f,
-                                                      colour.z * 0.35f, 1.0f));
+        const ImVec4 colour =
+            entry.isDirectory ? ImVec4(0.85f, 0.75f, 0.45f, 1.0f) : ColourFor(kind);
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImVec4(colour.x * 0.35f, colour.y * 0.35f,
+                                     colour.z * 0.35f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, colour);
         ImGui::Button(entry.isDirectory ? "DIR" : LabelFor(kind), iconSize);
         ImGui::PopStyleColor(2);
     }
 
-    const bool iconClicked  = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0);
-    const bool iconHovered  = ImGui::IsItemHovered();
+    const bool iconHovered = ImGui::IsItemHovered();
+    const bool iconClicked = iconHovered && ImGui::IsMouseDoubleClicked(0);
 
-    // ---- DRAG SOURCE ------------------------------------------------------
+    // ---- this tile is a DRAG SOURCE --------------------------------------
     //
-    // On the ICON, and the source is begun before the label is drawn so the
-    // whole tile is grabbable. Directories are not draggable: there is nothing
-    // sensible to do with a folder dropped on an entity.
+    // Folders are not draggable: there is nothing sensible to do with a folder
+    // dropped onto an entity.
     if (!entry.isDirectory) {
         if (const char* payloadId = PayloadIdFor(kind); payloadId != nullptr) {
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-                // The VIRTUAL PATH is the payload, with its terminator, so the
-                // receiving end can use it as a C string directly. Paths are
-                // short and the payload is copied by ImGui - passing a pointer
-                // into m_entries would dangle the moment a Refresh happened
-                // mid-drag.
+                // The virtual path is what gets carried, including its
+                // terminating zero so the receiving end can use it directly as
+                // a C string. ImGui takes a COPY of it, which matters: passing
+                // a pointer into m_entries would dangle the moment a refresh
+                // happened mid-drag.
                 ImGui::SetDragDropPayload(payloadId, entry.virtualPath.c_str(),
                                           entry.virtualPath.size() + 1);
 
-                // The drag preview. Worth the four lines: a drag with no
-                // feedback feels broken even when it works.
+                // What the cursor carries while dragging. Worth the four
+                // lines: a drag with no feedback feels broken even when it is
+                // working perfectly.
                 ImGui::TextColored(ColourFor(kind), "%s", LabelFor(kind));
                 ImGui::SameLine();
                 ImGui::TextUnformatted(entry.name.c_str());
                 if (kind == AssetKind::Script) {
-                    ImGui::TextDisabled("drop on an entity to attach");
+                    ImGui::TextDisabled("drop on an entity to attach it");
                 } else if (kind == AssetKind::Texture) {
                     ImGui::TextDisabled("drop in the Scene view to place it");
                 }
@@ -235,8 +227,8 @@ void AssetBrowserPanel::DrawEntry(const eng::FileSystem::DirEntry& entry, int in
         }
     }
 
-    // The name under the tile, wrapped to the tile width so a long file name
-    // does not push the grid apart.
+    // The name under the tile, wrapped to the tile's width so that one long
+    // filename does not push the whole grid apart.
     ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + m_iconSize);
     ImGui::TextUnformatted(entry.name.c_str());
     ImGui::PopTextWrapPos();
@@ -247,8 +239,7 @@ void AssetBrowserPanel::DrawEntry(const eng::FileSystem::DirEntry& entry, int in
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(entry.virtualPath.c_str());
         if (!entry.isDirectory) {
-            ImGui::TextDisabled("%llu bytes",
-                                static_cast<unsigned long long>(entry.byteSize));
+            ImGui::TextDisabled("%llu bytes", entry.byteSize);
         }
         switch (kind) {
             case AssetKind::Texture:
@@ -275,6 +266,9 @@ void AssetBrowserPanel::DrawEntry(const eng::FileSystem::DirEntry& entry, int in
         if (entry.isDirectory) {
             Navigate(entry.virtualPath);
         } else if (kind == AssetKind::Scene) {
+            // Recorded rather than loaded here - loading destroys every
+            // entity, and other panels are still using them this frame. See
+            // EditorState::requestedScene.
             EditorState::Get().requestedScene = entry.virtualPath;
         }
     }
@@ -298,15 +292,17 @@ void AssetBrowserPanel::Draw() {
         return;
     }
 
-    // A wrapping grid, laid out by hand from the available width. ImGui has no
-    // flow layout; this is the standard way to build one.
+    // A grid that wraps, laid out by hand from the available width. ImGui has
+    // no automatic flow layout, so this is the usual way to build one:
+    // work out how many fit across, then call SameLine() after each tile
+    // except the last in a row.
     const float cellWidth = m_iconSize + ImGui::GetStyle().ItemSpacing.x;
     const float available = ImGui::GetContentRegionAvail().x;
     const int   columns   = std::max(1, static_cast<int>(available / cellWidth));
 
     ImGui::BeginChild("##grid", ImVec2(0, 0), ImGuiChildFlags_None);
     int column = 0;
-    for (eng::usize i = 0; i < m_entries.size(); ++i) {
+    for (std::size_t i = 0; i < m_entries.size(); ++i) {
         DrawEntry(m_entries[i], static_cast<int>(i));
         if (++column % columns != 0 && i + 1 < m_entries.size()) {
             ImGui::SameLine();
@@ -331,15 +327,15 @@ bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outEr
         return false;
     }
 
-    // Always into gamescripts/, never into the folder currently being browsed.
-    // The build globs gamescripts/*.cpp non-recursively, so a script written into
-    // a subfolder would be created, listed, and never compiled - which is a
-    // worse outcome than refusing to put it there.
+    // Always into gamescripts/, never into whichever folder is being browsed.
+    // The build only compiles gamescripts/*.cpp and does not look in
+    // sub-folders, so a script written into one would be created, listed, and
+    // never compiled - a worse outcome than refusing to put it there.
     const std::string path = std::string(kRootScripts) + "/" + name + ".cpp";
 
     if (eng::FileSystem::Exists(path)) {
-        outError = "'" + path + "' already exists - overwriting it would destroy whatever "
-                                "is in it";
+        outError = "'" + path + "' already exists - overwriting it would destroy "
+                                "whatever is in it";
         return false;
     }
 
@@ -348,12 +344,11 @@ bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outEr
     }
 
     const std::string text = DefaultScriptText(name);
-    if (!eng::FileSystem::WriteFile(path, text.data(), text.size(), outError)) {
+    if (!eng::FileSystem::WriteTextFile(path, text, outError)) {
         return false;
     }
 
-    ENGINE_LOG_INFO(eng::Channels::kEditor, "created script '{}' ({} bytes)", path,
-                    text.size());
+    ENGINE_LOG_INFO(eng::Channels::kEditor, "created the script '{}'", path);
     return true;
 }
 
@@ -365,22 +360,24 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
 
     const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal("New Script", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (!ImGui::BeginPopupModal("New Script", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
     }
 
     ImGui::TextUnformatted("Script name");
     ImGui::SetNextItemWidth(320.0f);
-    const bool submitted = ImGui::InputText("##scriptname", m_newScriptName,
-                                            sizeof(m_newScriptName),
-                                            ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool submitted =
+        ImGui::InputText("##scriptname", m_newScriptName, sizeof(m_newScriptName),
+                         ImGuiInputTextFlags_EnterReturnsTrue);
 
-    // The name is validated AS IT IS TYPED, not on submit. Telling someone the
-    // name is illegal only after they commit to it is a worse experience than
-    // greying the button out while they can still see why.
-    std::string     error;
-    const bool      nameOk = IsValidScriptName(m_newScriptName, error);
-    const std::string path = std::string(kRootScripts) + "/" + m_newScriptName + ".cpp";
+    // The name is checked AS IT IS TYPED rather than when Create is pressed.
+    // Telling somebody their name is illegal only after they commit to it is a
+    // worse experience than greying the button out while they can still see
+    // the reason.
+    std::string       error;
+    const bool        nameOk = IsValidScriptName(m_newScriptName, error);
+    const std::string path   = std::string(kRootScripts) + "/" + m_newScriptName + ".cpp";
 
     if (!nameOk) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", error.c_str());
@@ -389,11 +386,11 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped("The file is created from the default template, with every "
-                       "lifecycle hook stubbed and commented. It is COMPILED C++ - "
-                       "build and relaunch before it will run. Until then the "
-                       "Inspector shows it as unresolved, and it can still be "
-                       "attached and saved into a scene.");
+    ImGui::TextWrapped("The file is created from a template with every lifecycle hook "
+                       "written out and explained. It is COMPILED C++ - build the "
+                       "project and start the editor again before it will run. Until "
+                       "then it can still be attached to an entity and saved into a "
+                       "scene.");
     ImGui::Separator();
 
     ImGui::BeginDisabled(!nameOk);
@@ -406,7 +403,7 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
             ImGui::CloseCurrentPopup();
         } else {
             std::snprintf(m_status, sizeof(m_status), "%s", createError.c_str());
-            ENGINE_LOG_ERROR(eng::Channels::kEditor, "new script: {}", createError);
+            ENGINE_LOG_ERROR(eng::Channels::kEditor, "{}", createError);
         }
     }
     ImGui::EndDisabled();
@@ -426,19 +423,22 @@ void AssetBrowserPanel::DrawNewFolderPopup() {
 
     const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal("New Folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (!ImGui::BeginPopupModal("New Folder", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
     }
 
     ImGui::TextUnformatted("Folder name");
     ImGui::SetNextItemWidth(320.0f);
-    const bool submitted = ImGui::InputText("##foldername", m_newFolderName,
-                                            sizeof(m_newFolderName),
-                                            ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool submitted =
+        ImGui::InputText("##foldername", m_newFolderName, sizeof(m_newFolderName),
+                         ImGuiInputTextFlags_EnterReturnsTrue);
 
-    const bool nameOk = m_newFolderName[0] != '\0' &&
-                        std::string_view(m_newFolderName).find_first_of("/\\:*?\"<>|") ==
-                            std::string_view::npos;
+    const bool nameOk =
+        m_newFolderName[0] != '\0' &&
+        std::string_view(m_newFolderName).find_first_of("/\\:*?\"<>|") ==
+            std::string_view::npos;
+
     if (!nameOk) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
                            "a folder name cannot be empty or contain / \\ : * ? \" < > |");
@@ -448,13 +448,13 @@ void AssetBrowserPanel::DrawNewFolderPopup() {
 
     ImGui::BeginDisabled(!nameOk);
     if (submitted || ImGui::Button("Create", ImVec2(120, 0))) {
-        // Joined rather than concatenated, because the assets root is the empty
-        // string and "" + "/" + name is an ABSOLUTE path on the way to
-        // resolving somewhere nobody intended.
+        // Joined carefully rather than just concatenated, because the assets
+        // root is the empty string and "" + "/" + name would start with a
+        // slash - which means something quite different.
         const std::string path = m_directory.empty()
                                      ? std::string(m_newFolderName)
                                      : m_directory + "/" + m_newFolderName;
-        std::string       error;
+        std::string error;
         if (eng::FileSystem::CreateDirectory(path, error)) {
             std::snprintf(m_status, sizeof(m_status), "created %s", path.c_str());
             Refresh();

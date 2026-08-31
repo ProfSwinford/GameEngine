@@ -1,124 +1,114 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 10 - entity messaging. Ch. 8.7. *** BUILT BEFORE THE COLLIDERS. ***
+// ============================================================================
+//  Messaging.h - how entities tell each other things.
 //
-//  Entities need to tell each other things. A bullet hits an enemy and the
-//  enemy needs to lose health. The direct approach - the bullet calls
-//  enemy->TakeDamage() - requires the bullet to know what an enemy IS, and
-//  every new pairing adds another dependency until everything includes
-//  everything.
+//  A bullet hits an enemy and the enemy needs to lose health. The direct
+//  approach is for the bullet to call enemy->TakeDamage(), which means the
+//  bullet's code has to know what an enemy IS - and every new pairing adds
+//  another such dependency until everything includes everything else.
 //
-//  A message is a NAMED EVENT with a payload, and the sender does not know or
-//  care who is listening. Same decoupling the component model gave structure,
-//  applied to communication.
+//  A message is a NAMED EVENT with a little bit of data attached. The sender
+//  does not know or care who is listening. That is the same decoupling the
+//  component model gives structure, applied to communication.
 //
-//  Messages are identified by StringId so a C# layer can eventually send and
-//  receive them BY NAME. That is not incidental - it is why messaging is worth
-//  building rather than calling methods directly.
+//  ==========================================================================
+//  THREE RULES, WRITTEN DOWN
 //
-// =============================================================================
-//  *** THE THREE DECISIONS, WRITTEN DOWN. ***
+//  1. MESSAGES ARE QUEUED, NOT DELIVERED IMMEDIATELY.
 //
-//  1. QUEUED, NOT IMMEDIATE.
+//     Delivering straight away is simpler to picture but it can loop - A tells
+//     B, which tells A - and it happens in the middle of whatever system was
+//     running when the message was sent. Queueing means every handler runs at
+//     ONE known point (stage 500 in the system order) with nothing halfway
+//     through anything.
 //
-//     Immediate dispatch is simpler to reason about but can recurse - A tells
-//     B which tells A - so it needs a depth limit, and the recursion happens
-//     in the middle of whatever system was iterating when the send happened.
-//     Queued means every handler runs at ONE KNOWN POINT (stage 500,
-//     CollisionResponse) with nothing mid-iteration.
+//     The cost is that the effect lands a fraction of a tick later than the
+//     send, which no player can perceive.
 //
-//     The cost is that the effect lands one stage later than the send, which
-//     within a single tick is invisible to a player. Queued wins because the
-//     alternative reintroduces exactly the mid-iteration mutation that
-//     DeferredOps exists to prevent, one file over.
+//  2. A HANDLER MAY DESTROY THE ENTITY IT IS HANDLING A MESSAGE FOR.
+//     Game code does this constantly - "on damage, if health is zero, destroy
+//     me". It is safe because destroying goes through DeferredOps, which runs
+//     at stage 600, AFTER delivery at stage 500. The entity stays valid for
+//     the rest of that handler and for every other handler on the same message.
 //
-//     SendImmediate exists for the rare case that genuinely needs it, with the
-//     depth limit that implies.
+//  3. A MESSAGE SENT TO AN ENTITY THAT NO LONGER EXISTS IS QUIETLY DROPPED.
+//     Not a crash, and not an error either - two bullets hitting the same
+//     enemy on one tick is completely ordinary, and an error message per
+//     occurrence would bury the Console during exactly the moment you were
+//     trying to watch.
 //
-//  2. CAN A HANDLER DESTROY THE ENTITY IT IS HANDLING A MESSAGE FOR? YES, and
-//     gameplay code does it constantly - "on damage, if health <= 0, destroy
-//     me." It is safe because the destroy goes through DeferredOps, which
-//     applies at stage 600, AFTER dispatch at stage 500. The entity stays
-//     valid for the rest of the handler and for every other handler on the
-//     same message. That path is exercised by the 1000-frame stress run.
-//
-//  3. A MESSAGE SENT TO A DESTROYED ENTITY IS SILENTLY DROPPED, with a Debug
-//     log line naming the handle. Not a crash, and not an Error either - it is
-//     a completely ordinary race between two bullets hitting the same enemy in
-//     one tick, and an Error-level line per occurrence would drown the log
-//     during exactly the situation you were trying to observe.
-//
-//  UNSUBSCRIBING FROM INSIDE A HANDLER works. A subscription is marked dead
-//  and the list is compacted after dispatch finishes, never during - the same
-//  iterator-invalidation problem as DeferredOps, in a smaller box, solved the
-//  same way.
-// =============================================================================
+//  UNSUBSCRIBING FROM INSIDE A HANDLER WORKS. A subscription is marked dead
+//  and the list is tidied up after delivery finishes, never during - the same
+//  problem DeferredOps solves for entities, in a smaller box.
+//  ==========================================================================
+// ============================================================================
 
-#include <engine/core/StringId.h>
-#include <engine/scene/Entity.h>
+#include <engine/scene/EntityId.h>
 
 #include <functional>
+#include <string>
 
 namespace eng {
 
 struct Message {
-    StringId     type;
-    EntityHandle sender{};
-    EntityHandle target{};
+    std::string type;       // e.g. "CollisionEnter", "Damage"
+    EntityId    sender{};
+    EntityId    target{};   // null means "everybody listening"
 
-    // A SMALL payload, deliberately. Two floats, an int and a handle covers
-    // every message Phase 1 and Phase 2 need: damage amounts, collision
-    // partners, trigger ids. A general variant payload is a Phase 2 project,
-    // not a Week 10 one, and every field added here is paid for by every
-    // message ever queued.
-    f32          f0 = 0.0f;
-    f32          f1 = 0.0f;
-    i32          i0 = 0;
-    EntityHandle other{};
+    // A deliberately SMALL payload. Two decimals, a whole number and one more
+    // entity covers everything this engine needs to say: how much damage, what
+    // was hit, which trigger. A general "any value at all" payload is a much
+    // bigger piece of machinery, and every field added here is paid for by
+    // every message ever sent.
+    float    f0 = 0.0f;
+    float    f1 = 0.0f;
+    int      i0 = 0;
+    EntityId other{};
 };
 
+// std::function is the standard "any callable thing" type: a plain function, a
+// lambda, or a lambda that captured some state all fit in one. That is what
+// lets a subscriber be written inline at the point where it is registered.
 using MessageHandler = std::function<void(const Message&)>;
-using SubscriptionId = u32;
 
-// The message types the engine itself sends. Gameplay may define its own; the
-// type is just a StringId.
+// Handed back when you subscribe, so you can unsubscribe later.
+using SubscriptionId = unsigned int;
+
+// The messages the engine itself sends. Game code is free to invent its own -
+// a message type is just a name.
 namespace MessageTypes {
-StringId CollisionEnter();
-StringId CollisionStay();
-StringId CollisionExit();
+inline constexpr const char* kCollisionEnter = "CollisionEnter";
+inline constexpr const char* kCollisionStay  = "CollisionStay";
+inline constexpr const char* kCollisionExit  = "CollisionExit";
 } // namespace MessageTypes
 
 class MessageBus {
 public:
-    // Listen for one message type on one entity.
-    static SubscriptionId Subscribe(EntityHandle target, StringId type, MessageHandler handler);
-    // Listen for one message type from anywhere. Used by the gate game's
-    // score keeper, and by the editor's collision log.
-    static SubscriptionId SubscribeBroadcast(StringId type, MessageHandler handler);
-    // Safe to call from inside a handler.
-    static void Unsubscribe(SubscriptionId id);
-    static void UnsubscribeAll(EntityHandle target);
+    // Listen for one kind of message aimed at one entity.
+    static SubscriptionId Subscribe(EntityId target, std::string_view type,
+                                    MessageHandler handler);
 
-    // Queued. The handler runs at the dispatch point, not here.
+    // Listen for one kind of message from anywhere. Used by the sample game's
+    // score keeper.
+    static SubscriptionId SubscribeBroadcast(std::string_view type,
+                                             MessageHandler handler);
+
+    // Both are safe to call from inside a handler.
+    static void Unsubscribe(SubscriptionId id);
+    static void UnsubscribeAll(EntityId target);
+
+    // Queue a message. The handlers run at the delivery point, not here.
     static void Send(const Message& message);
     static void Broadcast(const Message& message);
 
-    // Runs the handler now, on this stack. Depth-limited; a recursion deeper
-    // than kMaxImmediateDepth is dropped with an Error, because an unbounded
-    // A-tells-B-tells-A is a stack overflow with no diagnostic.
-    static void SendImmediate(const Message& message);
-    static constexpr u32 kMaxImmediateDepth = 8;
-
-    // Drains the queue. Called once per simulation step at stage 500.
+    // Delivers everything queued. Called once per simulation step, at stage 500.
     static void Dispatch();
 
     static void Clear();
 
-    // Instrumentation for the editor.
-    static usize QueuedCount();
-    static usize SubscriptionCount();
-    static u64   TotalDispatched();
+    static std::size_t QueuedCount();
+    static std::size_t SubscriptionCount();
 };
 
 } // namespace eng

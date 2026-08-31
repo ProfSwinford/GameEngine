@@ -1,20 +1,22 @@
-// The default script text. See ScriptTemplate.h.
+// ============================================================================
+//  ScriptTemplate.cpp - the text of a new script. See ScriptTemplate.h.
+// ============================================================================
 
 #include "ScriptTemplate.h"
 
 #include <cctype>
 #include <format>
-#include <unordered_set>
+#include <set>
 
 namespace editor {
 namespace {
 
-// Not exhaustive - just the keywords someone might plausibly type as a script
-// name. A name that slips through produces a compile error in a file the user
-// can see and rename, which is a recoverable outcome; the point of the list is
-// to catch the likely ones at the moment of typing.
-const std::unordered_set<std::string>& ReservedNames() {
-    static const std::unordered_set<std::string> reserved = {
+// The C++ keywords somebody might plausibly type as a script name. Not a
+// complete list - one that slips through produces a compile error in a file
+// you can see and rename, which is recoverable. The point is to catch the
+// likely ones at the moment of typing.
+const std::set<std::string>& ReservedNames() {
+    static const std::set<std::string> reserved = {
         "class",  "struct", "union",  "enum",   "namespace", "template", "typename",
         "public", "private", "protected", "virtual", "static", "const",  "constexpr",
         "int",    "float",  "double", "char",   "bool",      "void",     "auto",
@@ -36,21 +38,21 @@ bool IsValidScriptName(std::string_view name, std::string& outError) {
         return false;
     }
     if (std::isdigit(static_cast<unsigned char>(name.front())) != 0) {
-        outError = "a script name cannot start with a digit - it becomes a C++ class name";
+        outError = "a script name cannot start with a digit, because it becomes a C++ "
+                   "class name";
         return false;
     }
     for (const char c : name) {
         const bool ok = (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_';
         if (!ok) {
-            outError = std::format("'{}' is not allowed in a script name - letters, digits "
-                                   "and underscore only, because the name becomes a C++ "
-                                   "class name",
-                                   c);
+            outError = std::format("'{}' is not allowed in a script name - letters, "
+                                   "digits and underscores only, because the name "
+                                   "becomes a C++ class name", c);
             return false;
         }
     }
     if (ReservedNames().contains(std::string(name))) {
-        outError = std::format("'{}' is a C++ keyword", name);
+        outError = std::format("'{}' is a C++ keyword and cannot be a class name", name);
         return false;
     }
     outError.clear();
@@ -58,81 +60,75 @@ bool IsValidScriptName(std::string_view name, std::string& outError) {
 }
 
 std::string DefaultScriptText(std::string_view scriptName) {
-    // std::format with {0} positional arguments, so the name can appear as
-    // many times as the template needs from one argument. The literal braces
-    // of the C++ being generated are escaped as {{ and }}, which is the one
-    // genuinely awkward part of generating code with format - and the reason
-    // the body below is a single raw string rather than assembled in pieces.
+    // std::format is used with a positional argument, {0}, so the script's
+    // name can appear as many times as the template needs from one value.
+    //
+    // The braces of the C++ being GENERATED have to be doubled - {{ and }} -
+    // because a single brace is how std::format marks a place to substitute.
+    // That is the one genuinely awkward part of generating code this way.
+    //
+    // R"(...)" is a raw string: everything between the quotes is taken
+    // literally, including newlines and backslashes, which is what makes it
+    // possible to write a whole file inside one string.
     return std::format(R"(// =============================================================================
 //  {0} - a script.
 //
-//  Attach it by dragging this file from the Asset Browser onto an entity in
-//  the Hierarchy or the Inspector. The entity gets a ScriptComponent bound to
-//  the name "{0}".
+//  Attach it by dragging this file from the Assets panel onto an entity in the
+//  Hierarchy or the Inspector.
 //
-//  ---------------------------------------------------------------------------
-//  *** THIS IS COMPILED C++, NOT AN INTERPRETED SCRIPT. ***
+//  -----------------------------------------------------------------------------
+//  THIS IS COMPILED C++, NOT AN INTERPRETED SCRIPT.
 //
 //  Saving this file changes nothing in a running editor. Build the project and
-//  relaunch, and the binding resolves by itself - the scene already refers to
+//  start the editor again, and it connects itself - the scene already refers to
 //  "{0}" by name, so nothing needs reattaching.
 //
-//  Until then the Inspector shows this script as UNRESOLVED, which is the
-//  editor telling you the truth rather than pretending.
+//  Until then the Inspector shows this script as NOT FOUND, which is the editor
+//  telling you the truth rather than pretending.
 //
-//  ---------------------------------------------------------------------------
-//  THE LIFECYCLE. Every hook is optional; delete the ones you do not need.
+//  -----------------------------------------------------------------------------
+//  THE LIFECYCLE. Every one of these is optional; delete the ones you do not
+//  need.
 //
 //    OnStart()            Once, on the first simulation step after this script
 //                         is attached and its entity is fully built. NOT at
-//                         attach time - during a scene load, components are
-//                         attached one at a time, so a sibling component you
-//                         look for at attach time may not exist yet. This is
-//                         the first moment the entity is whole. Cache things
-//                         here.
+//                         attach time: while a scene loads, components are
+//                         attached one at a time, so another component you look
+//                         for at attach time may not exist yet.
 //
-//    OnUpdate(dt)         Every FIXED simulation step, with the fixed delta.
-//                         NOT once per rendered frame: this engine simulates on
-//                         a fixed timestep and renders separately, so this runs
-//                         a whole number of times per frame - sometimes twice,
-//                         sometimes zero. That is what makes the simulation
-//                         reproducible, and it is why you multiply by dt rather
-//                         than assuming a frame rate.
+//    OnUpdate(dt)         Every FIXED simulation step. NOT once per drawn frame -
+//                         this engine simulates at a steady rate and draws
+//                         separately, so this runs a whole number of times per
+//                         frame, sometimes twice and sometimes not at all. That
+//                         is what makes the game behave the same on every
+//                         machine, and it is why you multiply by dt instead of
+//                         assuming a frame rate.
 //
-//                         Runs at stage 200 (gameplay), BEFORE movement at 300
-//                         and collision at 400 - so a position you set here is
-//                         the position collision tests this step, not next.
+//    OnDestroy()          The entity is going away. It is still safe to touch
+//                         here and not afterwards.
 //
-//    OnDestroy()          The entity is going away - destroyed, or unloaded
-//                         with the scene. The entity is still valid here and is
-//                         not afterwards, so this is the place to release
-//                         anything you took.
+//    OnCollisionEnter     ENTER fires once when an overlap begins, STAY every
+//    OnCollisionStay      step it continues, and EXIT once when it ends -
+//    OnCollisionExit      including when the other entity is destroyed while
+//                         still overlapping.
 //
-//    OnCollisionEnter/    Forwarded from the message bus. ENTER fires once when
-//    OnCollisionStay/     an overlap begins, STAY every step it continues, EXIT
-//    OnCollisionExit      once when it ends - including when the other entity is
-//                         destroyed while overlapping.
+//                         `other` is an EntityId, not a pointer, and the thing
+//                         it refers to may already be gone. Look it up through
+//                         the scene every time; never keep a pointer to it.
 //
-//                         `other` is an EntityHandle, NOT a pointer, and it may
-//                         already be dead by the time you look at it. Resolve
-//                         it through the scene every time; never cache it as a
-//                         pointer. That rule is not specific to scripts - it is
-//                         how the whole engine works.
+//                         These need a collider on BOTH entities, and each one's
+//                         "collides with" list has to include the other's layer.
 //
-//                         These need a collider on BOTH entities, and each
-//                         one's mask must include the other's layer.
+//  -----------------------------------------------------------------------------
+//  WHAT YOU CAN REACH from inside any of them:
 //
-//  ---------------------------------------------------------------------------
-//  WHAT YOU CAN REACH from inside any hook:
+//    Owner()       Entity*        this script's entity
+//    Transform()   Transform2D*   its position, rotation and scale
+//    GetScene()    Scene*         to find or create other entities
+//    OwnerId()     EntityId       this entity's id, for sending messages
 //
-//    Owner()        Entity*       this script's entity
-//    Transform()    Transform2D*  its transform - the usual one
-//    GetScene()     Scene*        to find or spawn other entities
-//    OwnerHandle()  EntityHandle  this entity's handle, for messages
-//
-//  All four are valid from OnStart onwards. Any of them can return null if the
-//  entity has been destroyed, so check before dereferencing in a hook that can
-//  run late.
+//  All four work from OnStart onwards. Any of them can return null if the
+//  entity has been destroyed, so check before using one.
 // =============================================================================
 
 #include <engine/core/Log.h>
@@ -150,44 +146,44 @@ public:
                         Owner() != nullptr ? Owner()->Name() : "<none>");
     }}
 
-    void OnUpdate(eng::f32 deltaSeconds) override {{
+    void OnUpdate(float deltaSeconds) override {{
         eng::Transform2D* transform = Transform();
         if (transform == nullptr) {{
             return;
         }}
 
-        // Delete this. It is here so that a brand new script does something
-        // visible the first time you press Play - a template that compiles and
-        // then appears to do nothing is indistinguishable from one that failed
-        // to attach.
+        // Replace this with whatever your script should do. It is here so that
+        // a brand new script does something visible the first time you press
+        // Play - a template that compiles and then appears to do nothing is
+        // indistinguishable from one that failed to attach.
         m_secondsAlive += deltaSeconds;
-        (void)transform;
     }}
 
     void OnDestroy() override {{
-        ENGINE_LOG_INFO(eng::Channels::kGame, "{0} lived {{:.2f}}s", m_secondsAlive);
+        ENGINE_LOG_INFO(eng::Channels::kGame, "{0} lived {{:.2f}} seconds",
+                        m_secondsAlive);
     }}
 
-    void OnCollisionEnter(eng::EntityHandle other) override {{
-        // The partner is resolved through the scene rather than cached,
-        // because it may already have been destroyed this step.
+    void OnCollisionEnter(eng::EntityId other) override {{
+        // The other entity is looked up fresh rather than remembered, because
+        // it may already have been destroyed this step.
         eng::Scene* scene = GetScene();
         if (scene == nullptr) {{
             return;
         }}
         const eng::Entity* partner = scene->Get(other);
         ENGINE_LOG_INFO(eng::Channels::kGame, "{0} touched '{{}}'",
-                        partner != nullptr ? partner->Name() : "<destroyed>");
+                        partner != nullptr ? partner->Name() : "<already gone>");
     }}
 
 private:
-    eng::f32 m_secondsAlive = 0.0f;
+    float m_secondsAlive = 0.0f;
 }};
 
 }} // namespace
 
-// Registers the name "{0}" so a scene file and the editor can bind to it.
-// WITHOUT THIS LINE the file compiles and the script can never be found.
+// Registers the name "{0}" so that a scene file and the editor can find it.
+// WITHOUT THIS LINE the file compiles and the script can never be attached.
 ENGINE_REGISTER_SCRIPT({0})
 )",
                        scriptName);

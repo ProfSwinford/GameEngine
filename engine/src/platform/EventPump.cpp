@@ -1,16 +1,15 @@
-// WEEK 2 - EventPump. See EventPump.h.
+// ============================================================================
+//  EventPump.cpp - turns SDL events into the engine's own RawEvent list.
 //
-// Everything SDL lives in this file. Nothing SDL escapes into the header. The
-// moment you want to put an SDL type in EventPump.h, that is the abstraction
-// leaking, and the bill arrives in Week 8.
+//  Every mention of SDL in the input path is in this file. The header has
+//  none, so the rest of the engine reads input without knowing SDL exists.
+// ============================================================================
 
-#include <engine/core/Assert.h>
+#include <engine/core/Log.h>
 #include <engine/platform/EventPump.h>
 #include <engine/tools/EditorGui.h>
 
 #include <SDL3/SDL.h>
-
-#include <iterator>
 
 namespace eng {
 
@@ -30,12 +29,12 @@ const char* ToString(RawEventKind kind) {
 }
 
 void EventPump::Poll() {
-    m_events.clear();      // keeps capacity - see the storage note in the header
+    // clear() empties both lists but keeps the memory they already own, so
+    // this function stops asking the system for memory after the first frame.
+    m_events.clear();
     m_consumed.clear();
     m_quitRequested = false;
 
-    // Reserve once, on the first frame. After that clear() has left the
-    // capacity in place and this is a no-op.
     if (m_events.capacity() == 0) {
         m_events.reserve(64);
         m_consumed.reserve(64);
@@ -43,11 +42,13 @@ void EventPump::Poll() {
 
     SDL_Event sdlEvent;
 
-    // Drain until EMPTY. Not once. Not "a few". Until SDL_PollEvent returns
-    // false.
+    // Keep going until SDL_PollEvent reports there is nothing left. Reading
+    // only one event per frame would make input fall further and further
+    // behind whenever several things happened at once.
     while (SDL_PollEvent(&sdlEvent)) {
-        // The GUI gets first look, because a text field with focus must be
-        // able to swallow the keyboard.
+        // The editor's GUI sees every event first, so that a focused text box
+        // can claim the keyboard. In the standalone game this call does
+        // nothing and always returns false.
         const bool guiHandled = EditorGui::ProcessEvent(&sdlEvent);
 
         RawEvent event;
@@ -55,42 +56,40 @@ void EventPump::Poll() {
 
         switch (sdlEvent.type) {
             case SDL_EVENT_QUIT:
-                event.kind      = RawEventKind::Quit;
-                m_quitRequested = true;
-                break;
-
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 event.kind      = RawEventKind::Quit;
                 m_quitRequested = true;
                 break;
 
             case SDL_EVENT_KEY_DOWN:
-                // repeat events are dropped: "held" is InputMap's job, derived
-                // from state across frames, not from the OS key-repeat rate,
-                // which is a user preference and differs per machine.
+                // The operating system sends repeated KeyDown events while a
+                // key is held. Those are thrown away here: how long a key has
+                // been held is worked out by InputMap from one frame to the
+                // next, which behaves the same on every machine. The OS repeat
+                // rate is a personal setting and differs from user to user.
                 if (sdlEvent.key.repeat) {
                     recognised = false;
                     break;
                 }
                 event.kind = RawEventKind::KeyDown;
-                event.code = static_cast<i32>(sdlEvent.key.scancode);
+                event.code = static_cast<int>(sdlEvent.key.scancode);
                 break;
 
             case SDL_EVENT_KEY_UP:
                 event.kind = RawEventKind::KeyUp;
-                event.code = static_cast<i32>(sdlEvent.key.scancode);
+                event.code = static_cast<int>(sdlEvent.key.scancode);
                 break;
 
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 event.kind   = RawEventKind::MouseButtonDown;
-                event.code   = static_cast<i32>(sdlEvent.button.button);
+                event.code   = static_cast<int>(sdlEvent.button.button);
                 event.mouseX = sdlEvent.button.x;
                 event.mouseY = sdlEvent.button.y;
                 break;
 
             case SDL_EVENT_MOUSE_BUTTON_UP:
                 event.kind   = RawEventKind::MouseButtonUp;
-                event.code   = static_cast<i32>(sdlEvent.button.button);
+                event.code   = static_cast<int>(sdlEvent.button.button);
                 event.mouseX = sdlEvent.button.x;
                 event.mouseY = sdlEvent.button.y;
                 break;
@@ -99,8 +98,6 @@ void EventPump::Poll() {
                 event.kind   = RawEventKind::MouseMove;
                 event.mouseX = sdlEvent.motion.x;
                 event.mouseY = sdlEvent.motion.y;
-                m_mouseX     = sdlEvent.motion.x;
-                m_mouseY     = sdlEvent.motion.y;
                 break;
 
             case SDL_EVENT_MOUSE_WHEEL:
@@ -109,13 +106,14 @@ void EventPump::Poll() {
                 break;
 
             case SDL_EVENT_WINDOW_RESIZED:
-                event.kind = RawEventKind::WindowResized;
-                event.code = sdlEvent.window.data1;
-                event.mouseX = static_cast<f32>(sdlEvent.window.data1);
-                event.mouseY = static_cast<f32>(sdlEvent.window.data2);
+                event.kind   = RawEventKind::WindowResized;
+                event.mouseX = static_cast<float>(sdlEvent.window.data1);   // new width
+                event.mouseY = static_cast<float>(sdlEvent.window.data2);   // new height
                 break;
 
             default:
+                // Plenty of SDL event types are of no interest here. Ignoring
+                // them keeps the list short and meaningful.
                 recognised = false;
                 break;
         }
@@ -124,10 +122,10 @@ void EventPump::Poll() {
             continue;
         }
 
-        // Which events count as consumed: the GUI's capture flags are per
-        // DEVICE, so a keyboard event is consumed only when ImGui wants the
-        // keyboard, and likewise for the mouse. A quit is never consumed - the
-        // window close button must always work.
+        // Whether the GUI claimed this event is decided per DEVICE: a key
+        // press is claimed only when the GUI wants the keyboard, and a click
+        // only when it wants the mouse. A Quit is never claimed - the window's
+        // close button has to work no matter what has focus.
         bool consumed = false;
         switch (event.kind) {
             case RawEventKind::KeyDown:
@@ -146,32 +144,30 @@ void EventPump::Poll() {
         }
 
         m_events.push_back(event);
-        m_consumed.push_back(consumed ? u8{1} : u8{0});
-
-        const auto slot = static_cast<usize>(event.kind);
-        if (slot < std::size(m_totals)) {
-            ++m_totals[slot];
-        }
+        m_consumed.push_back(consumed ? char{1} : char{0});
     }
 
-    // Keep the cached cursor position current even when nothing moved this
-    // frame - the viewport panel's world-space readout wants it every frame.
-    float x = 0.0f, y = 0.0f;
+    // Ask SDL where the cursor is even if it did not move this frame, so that
+    // anything reading MouseX/MouseY always gets a current answer.
+    float x = 0.0f;
+    float y = 0.0f;
     SDL_GetMouseState(&x, &y);
     m_mouseX = x;
     m_mouseY = y;
 }
 
-usize EventPump::Count() const {
+std::size_t EventPump::Count() const {
     return m_events.size();
 }
 
-const RawEvent& EventPump::At(usize index) const {
-    // Week 2 said "undefined, and I said so". Week 3 promised to make it an
-    // assert; here it is, with a release-build fallback that returns an
-    // obviously-inert event rather than reading past the end.
-    ENGINE_ASSERT_MSG(index < m_events.size(), "EventPump::At index out of range");
+const RawEvent& EventPump::At(std::size_t index) const {
     if (index >= m_events.size()) {
+        ENGINE_LOG_WARN(Channels::kInput,
+                        "EventPump::At({}) is past the end of {} events",
+                        index, m_events.size());
+        // `static` makes this one object that outlives the call, so returning
+        // a reference to it is safe. Returning a reference to an ordinary
+        // local variable would dangle the instant the function ended.
         static const RawEvent kNone{};
         return kNone;
     }
@@ -182,38 +178,29 @@ bool EventPump::QuitRequested() const {
     return m_quitRequested;
 }
 
-bool EventPump::WasConsumed(usize index) const {
+bool EventPump::WasConsumed(std::size_t index) const {
     return index < m_consumed.size() && m_consumed[index] != 0;
 }
 
-u64 EventPump::TotalOfKind(RawEventKind kind) const {
-    const auto slot = static_cast<usize>(kind);
-    return (slot < std::size(m_totals)) ? m_totals[slot] : 0;
-}
-
-void EventPump::ResetTotals() {
-    for (u64& total : m_totals) {
-        total = 0;
-    }
-}
-
-const char* EventPump::KeyName(i32 code) {
+const char* EventPump::KeyName(int code) {
     const char* name = SDL_GetScancodeName(static_cast<SDL_Scancode>(code));
     return (name != nullptr && name[0] != '\0') ? name : "?";
 }
 
-i32 EventPump::KeyCodeFromName(const char* name) {
+int EventPump::KeyCodeFromName(const char* name) {
     if (name == nullptr) {
         return -1;
     }
     const SDL_Scancode code = SDL_GetScancodeFromName(name);
-    return (code == SDL_SCANCODE_UNKNOWN) ? -1 : static_cast<i32>(code);
+    return (code == SDL_SCANCODE_UNKNOWN) ? -1 : static_cast<int>(code);
 }
 
-i32 EventPump::MouseButtonFromName(const char* name) {
+int EventPump::MouseButtonFromName(const char* name) {
     if (name == nullptr) {
         return -1;
     }
+    // SDL_strcasecmp compares ignoring capitalisation, so "left" and "Left"
+    // both work in a config file.
     if (SDL_strcasecmp(name, "Left") == 0)   { return SDL_BUTTON_LEFT; }
     if (SDL_strcasecmp(name, "Right") == 0)  { return SDL_BUTTON_RIGHT; }
     if (SDL_strcasecmp(name, "Middle") == 0) { return SDL_BUTTON_MIDDLE; }

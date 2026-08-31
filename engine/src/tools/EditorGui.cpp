@@ -1,11 +1,8 @@
-// WEEK 2 - the ImGui lifecycle. See EditorGui.h.
+// ============================================================================
+//  EditorGui.cpp - starting, running and stopping Dear ImGui. See EditorGui.h.
 //
-// This is the ONLY engine file that includes both SDL and ImGui headers.
-// Keep it that way.
-//
-// Note that ImGui_ImplSDLRenderer3_RenderDrawData takes the renderer as a
-// parameter. Tutorials that show it without predate a 2024 breaking change;
-// when a tutorial and the header disagree, the header is right.
+//  This is the only file in the engine that includes both SDL and ImGui.
+// ============================================================================
 
 #include <engine/core/Log.h>
 #include <engine/platform/Window.h>
@@ -14,9 +11,9 @@
 #include <SDL3/SDL.h>
 
 #include <imgui.h>
-#include <imgui_internal.h>   // DockBuilder, for the default layout
-#include <imgui_impl_sdl3.h>
-#include <imgui_impl_sdlrenderer3.h>
+#include <imgui_internal.h>          // DockBuilder, used for the default layout
+#include <imgui_impl_sdl3.h>         // the input half of ImGui's SDL support
+#include <imgui_impl_sdlrenderer3.h> // the drawing half
 
 namespace eng {
 namespace {
@@ -33,21 +30,21 @@ bool EditorGui::Init(Window& window) {
         return true;
     }
     if (!window.IsValid()) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "EditorGui::Init called with an invalid window");
+        ENGINE_LOG_ERROR(Channels::kEditor,
+                         "the editor interface was given a window that failed to open");
         return false;
     }
 
     IMGUI_CHECKVERSION();
     if (ImGui::CreateContext() == nullptr) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "ImGui::CreateContext failed");
+        ENGINE_LOG_ERROR(Channels::kEditor, "could not create the ImGui context");
         return false;
     }
 
     ImGuiIO& io = ImGui::GetIO();
-    // *** DOCKING IS NOT ON BY DEFAULT. *** Without this line the panels
-    // float, cannot be tabbed, and no layout is saved - and the symptom looks
-    // exactly like having cloned ImGui's master branch instead of the
-    // v1.92.9b-docking tag.
+
+    // DOCKING IS NOT ON BY DEFAULT. Without this line the panels float freely,
+    // cannot be tabbed together, and no arrangement is remembered.
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
@@ -56,15 +53,16 @@ bool EditorGui::Init(Window& window) {
     auto* sdlWindow   = static_cast<SDL_Window*>(window.NativeWindowHandle());
     auto* sdlRenderer = static_cast<SDL_Renderer*>(window.NativeRendererHandle());
 
-    // Two backends. Forgetting the second is the classic failure: the app runs
-    // perfectly and draws nothing at all.
+    // TWO backends have to be started. The first connects ImGui to SDL's input
+    // and windowing; the second lets it draw through SDL's renderer. Starting
+    // only the first gives you a program that runs perfectly and shows nothing.
     if (!ImGui_ImplSDL3_InitForSDLRenderer(sdlWindow, sdlRenderer)) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "ImGui_ImplSDL3_InitForSDLRenderer failed");
+        ENGINE_LOG_ERROR(Channels::kEditor, "could not connect ImGui to SDL");
         ImGui::DestroyContext();
         return false;
     }
     if (!ImGui_ImplSDLRenderer3_Init(sdlRenderer)) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "ImGui_ImplSDLRenderer3_Init failed");
+        ENGINE_LOG_ERROR(Channels::kEditor, "could not connect ImGui to the renderer");
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
         return false;
@@ -72,8 +70,7 @@ bool EditorGui::Init(Window& window) {
 
     g_renderer    = sdlRenderer;
     g_initialised = true;
-    ENGINE_LOG_INFO(Channels::kEditor, "EditorGui up (ImGui {}, docking enabled)",
-                    IMGUI_VERSION);
+    ENGINE_LOG_INFO(Channels::kEditor, "editor interface ready (ImGui {})", IMGUI_VERSION);
     return true;
 }
 
@@ -81,19 +78,17 @@ void EditorGui::Shutdown() {
     if (!g_initialised) {
         return;
     }
-    // Exact reverse of Init: renderer backend, platform backend, context.
+    // The exact reverse of Init: drawing backend, input backend, context.
     ImGui_ImplSDLRenderer3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
 
     g_renderer    = nullptr;
     g_initialised = false;
-    ENGINE_LOG_INFO(Channels::kEditor, "EditorGui down");
+    ENGINE_LOG_INFO(Channels::kEditor, "editor interface shut down");
 }
 
-bool EditorGui::IsInitialised() {
-    return g_initialised;
-}
+bool EditorGui::IsInitialised() { return g_initialised; }
 
 bool EditorGui::ProcessEvent(const void* sdlEvent) {
     if (!g_initialised || sdlEvent == nullptr) {
@@ -123,12 +118,16 @@ bool EditorGui::WantsKeyboard() {
     if (!g_initialised) {
         return false;
     }
-    // While the Game view has focus the IDE gives up the keyboard entirely, so
-    // EventPump stops marking key events consumed and InputMap sees them.
+    // While the Game view has focus the editor gives up the keyboard entirely,
+    // so key presses stop being marked as claimed and reach the game.
     if (g_gameFocus) {
         return false;
     }
     return ImGui::GetIO().WantCaptureKeyboard;
+}
+
+bool EditorGui::WantsMouse() {
+    return g_initialised && ImGui::GetIO().WantCaptureMouse;
 }
 
 void EditorGui::SetGameInputFocus(bool focused) {
@@ -137,10 +136,10 @@ void EditorGui::SetGameInputFocus(bool focused) {
     }
     g_gameFocus = focused;
 
-    // The other half. With NavEnableKeyboard on, ImGui eats the arrow keys for
-    // widget navigation - so a Game view that had "focus" would still not
-    // move the player with the arrow keys, which looks exactly like broken
-    // input rather than like a captured keyboard.
+    // The second half of handing over the keyboard. With keyboard navigation
+    // on, ImGui uses the arrow keys to move between widgets - so a Game view
+    // that "had focus" still would not move the player with the arrow keys,
+    // which looks exactly like broken input.
     ImGuiIO& io = ImGui::GetIO();
     if (focused) {
         io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
@@ -149,48 +148,34 @@ void EditorGui::SetGameInputFocus(bool focused) {
     }
 }
 
-bool EditorGui::HasGameInputFocus() {
-    return g_gameFocus;
-}
-
-bool EditorGui::WantsMouse() {
-    return g_initialised && ImGui::GetIO().WantCaptureMouse;
-}
+bool EditorGui::HasGameInputFocus() { return g_gameFocus; }
 
 void EditorGui::BeginDockspace() {
     if (!g_initialised) {
         return;
     }
 
-    // A borderless, input-transparent host window covering the whole viewport,
-    // whose only job is to own the dockspace. ImGui's own demo does exactly
-    // this; the flags are what stop it behaving like a real window.
+    // A borderless window covering the whole screen whose only job is to hold
+    // the docking area. The long list of flags is what stops it behaving like
+    // an ordinary window - no title bar, cannot be moved, resized or closed.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
-                             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                             ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar |
-                             // *** NoBackground IS LOAD-BEARING AND IT IS EASY TO MISS. ***
-                             //
-                             // PassthruCentralNode below makes the DOCK NODE
-                             // transparent. It does nothing about this host
-                             // WINDOW, which still paints ImGuiCol_WindowBg -
-                             // and in StyleColorsDark that is
-                             // (0.06, 0.06, 0.06, 0.94), a 94%-opaque near-black
-                             // covering the entire viewport.
-                             //
-                             // The symptom is a semi-transparent dark sheet over
-                             // the whole game that does not belong to any panel
-                             // and cannot be closed, because it is not a panel -
-                             // it is the thing the panels are docked into.
-                             //
-                             // The two flags have to be set together. ImGui's own
-                             // demo couples them for exactly this reason.
-                             ImGuiWindowFlags_NoBackground;
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar |
+        // NoBackground matters more than it looks. The PassthruCentralNode
+        // flag further down makes the DOCKING AREA see-through, but it does
+        // nothing about this host WINDOW, which would otherwise paint a
+        // 94%-opaque near-black rectangle over the entire screen. The symptom
+        // is a dark sheet over the whole game that belongs to no panel and
+        // cannot be closed - because it is not a panel, it is the thing the
+        // panels are docked into. The two flags go together.
+        ImGuiWindowFlags_NoBackground;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -199,34 +184,44 @@ void EditorGui::BeginDockspace() {
     ImGui::PopStyleVar(3);
 
     const ImGuiID dockspaceId = ImGui::GetID("EngineDockspace");
-
-    // PassthruCentralNode leaves the middle of the dockspace unoccupied.
-    // Paired with NoBackground above - see the note there.
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f),
                      ImGuiDockNodeFlags_PassthruCentralNode);
 
-    // ---- THE DEFAULT LAYOUT ------------------------------------------------
+    // ---- the default arrangement -----------------------------------------
     //
-    // Built ONCE, and only when the dockspace is genuinely empty - which is
-    // true on a first run and false once imgui.ini exists, so a layout somebody
-    // has arranged is never stomped. That check is the whole reason this is
-    // safe to do unconditionally.
+    // Built ONCE, and only when the docking area is genuinely empty - which is
+    // true the very first time the editor is run and false afterwards, because
+    // ImGui saves any rearrangement into imgui.ini. That check is what makes
+    // it safe to attempt this every run: a layout somebody set up by hand is
+    // never overwritten.
     //
     // The arrangement is Unity's, because it is the one people already know:
-    // Hierarchy on the left, Inspector on the right, Scene and Game TABBED in
-    // the centre, everything diagnostic along the bottom.
+    // Hierarchy on the left, Inspector on the right, Scene and Game tabbed
+    // together in the middle, Assets and Console along the bottom.
     if (!g_layoutBuilt) {
         g_layoutBuilt = true;
 
-        ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockspaceId);
-        const bool empty = (node == nullptr) || (node->IsEmpty() && !node->IsSplitNode());
+        ImGuiDockNode* node  = ImGui::DockBuilderGetNode(dockspaceId);
+        const bool     empty = (node == nullptr) || (node->IsEmpty() && !node->IsSplitNode());
         if (empty) {
             ImGui::DockBuilderRemoveNode(dockspaceId);
-            ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace |
-                                                       ImGuiDockNodeFlags_PassthruCentralNode);
+
+            // The two flags come from two different enum types inside ImGui -
+            // one is part of its public interface and the other of its
+            // internal one - and C++20 will not combine those with | directly.
+            // Converting each to the plain integer type ImGui expects is the
+            // fix, and it is what ImGui's own code does.
+            const ImGuiDockNodeFlags nodeFlags =
+                static_cast<ImGuiDockNodeFlags>(ImGuiDockNodeFlags_DockSpace) |
+                static_cast<ImGuiDockNodeFlags>(ImGuiDockNodeFlags_PassthruCentralNode);
+
+            ImGui::DockBuilderAddNode(dockspaceId, nodeFlags);
             ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
 
-            ImGuiID centre = dockspaceId;
+            // Each split carves a slice off the middle and hands back the id
+            // of the new region; `centre` is repeatedly updated to whatever is
+            // left over.
+            ImGuiID       centre = dockspaceId;
             const ImGuiID left =
                 ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.18f, nullptr, &centre);
             const ImGuiID right =
@@ -240,30 +235,21 @@ void EditorGui::BeginDockspace() {
             ImGui::DockBuilderDockWindow("Hierarchy", left);
             ImGui::DockBuilderDockWindow("Inspector", right);
 
-            // Scene FIRST, then Game, so Scene is the tab showing on a first
-            // run - the editor opens in edit mode, so the editing view is the
-            // one that should be in front.
+            // Scene is docked FIRST so it is the tab showing on a first run -
+            // the editor opens in edit mode, so the editing view belongs in
+            // front.
             ImGui::DockBuilderDockWindow("Scene", centre);
             ImGui::DockBuilderDockWindow("Game", centre);
 
-            // Assets FIRST in the bottom group, so it is the tab that is
-            // showing when the editor opens - it is the panel you reach for
-            // to start authoring, and the Log is the one you go looking for.
+            // Assets first for the same reason: it is the panel you reach for
+            // to start building something, and the Console is the one you go
+            // looking for when something is wrong.
             ImGui::DockBuilderDockWindow("Assets", bottom);
-            ImGui::DockBuilderDockWindow("Log", bottom);
-            ImGui::DockBuilderDockWindow("Resources", bottom);
-            ImGui::DockBuilderDockWindow("Profiler", bottom);
-            ImGui::DockBuilderDockWindow("Memory", bottom);
-            ImGui::DockBuilderDockWindow("CVars", bottom);
-            ImGui::DockBuilderDockWindow("Jobs", bottom);
-            ImGui::DockBuilderDockWindow("Event Inspector", bottom);
-            ImGui::DockBuilderDockWindow("Viewport", right);
-            ImGui::DockBuilderDockWindow("Debug Draw", right);
+            ImGui::DockBuilderDockWindow("Console", bottom);
 
             ImGui::DockBuilderFinish(dockspaceId);
             ENGINE_LOG_INFO(Channels::kEditor,
-                            "no saved layout found; built the default Unity-style "
-                            "arrangement");
+                            "no saved window layout found, so the default one was built");
         }
     }
 }

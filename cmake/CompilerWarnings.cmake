@@ -1,16 +1,18 @@
 # =============================================================================
 #  One place that decides what the compiler complains about.
 #
-#  A warning is C++ telling you about the bug before it happens. A warning you
-#  have learned to scroll past is a bug you have decided to ship.
+#  A compiler warning is the compiler telling you about a bug before it
+#  happens. A warning you have learned to scroll past is a bug you have decided
+#  to ship, so this project turns a generous set of them on everywhere.
 #
-#  Week 2 note: two of the five seeded ByteBuffer bugs were reported here for
-#  free (-Wsizeof-pointer-memaccess and -Wreturn-local-addr / MSVC C4172).
-#  That is the entire argument for the `strict` preset, delivered as an
-#  experience rather than a claim.
+#  The `strict` build preset additionally turns warnings into ERRORS, which
+#  stops the build. Run it before handing work in.
 # =============================================================================
 function(engine_set_warnings target)
     if(MSVC)
+        # /W4 is Microsoft's "tell me a lot" level. /permissive- makes the
+        # compiler follow the C++ standard strictly rather than accepting
+        # older Microsoft-only syntax, which keeps the code portable.
         target_compile_options(${target} PRIVATE /W4 /permissive-)
         if(ENGINE_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
@@ -18,14 +20,14 @@ function(engine_set_warnings target)
     else()
         target_compile_options(${target} PRIVATE
             -Wall -Wextra -Wpedantic
-            -Wshadow              # a local hiding a member: a classic C# habit
-            -Wnon-virtual-dtor
-            -Wold-style-cast
+            -Wshadow              # a local variable hiding a member of the same name
+            -Wnon-virtual-dtor    # a base class that cannot be safely deleted
+            -Wold-style-cast      # C-style casts, which hide what they are doing
             -Wcast-align
             -Wunused
-            -Woverloaded-virtual
+            -Woverloaded-virtual  # a function that hides one it meant to override
             -Wnull-dereference
-            -Wdouble-promotion)
+            -Wdouble-promotion)   # a float quietly widened to a double
         if(ENGINE_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
         endif()

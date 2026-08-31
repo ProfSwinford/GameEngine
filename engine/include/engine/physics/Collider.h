@@ -1,142 +1,131 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 10 - collider components and the collision system.
+// ============================================================================
+//  Collider.h - the shapes entities collide with, and the system that checks
+//  them.
 //
-//  *** NO NEW INTERSECTION MATH WAS WRITTEN THIS WEEK. ***
+//  NO COLLISION MATHS IS WRITTEN IN THIS FILE. math/Overlap.h already answers
+//  "are these two shapes touching?" for boxes and circles. All this file does
+//  is wrap those answers in components, layers and events. Keeping the maths
+//  as plain functions over there is what makes that possible.
 //
-//  Week 6 already provides Overlaps(AABB, AABB), Overlaps(Circle, Circle) and
-//  Overlaps(AABB, Circle) as pure, fully unit-tested functions including the
-//  touching-edge and containment cases. This file wraps them in COMPONENTS,
-//  LAYERS and EVENTS and calls them. That separation is why Week 6 insisted
-//  the overlap functions be pure, and this is the payoff.
+//  ==========================================================================
+//  LAYERS: WHAT SOMETHING IS, AND WHAT IT CARES ABOUT
 //
-// =============================================================================
-//  LAYERS AND MASKS.
+//  Every collider has:
+//    * a LAYER        - one name saying what it is: "Player", "Pickup", "World"
+//    * a COLLIDES-WITH list - the layers it wants to hear about
 //
-//    A collider's LAYER is what it IS         - one bit.
-//    A collider's MASK is what it CARES about - many bits.
+//  A pair is only tested when BOTH sides are interested in each other. That is
+//  deliberate. "Either side is enough" would let the player receive a
+//  collision from a wall while the wall received nothing, and one-sided events
+//  are the kind of bug where the first hour is spent not believing it.
 //
-//  *** BOTH MASKS MUST MATCH. *** A pair is tested only if
-//      (a.mask & b.layer) && (b.mask & a.layer).
+//  The cost of requiring both is that a one-way trigger has to be spelled out
+//  on both sides. That is one line in a scene file, not a mystery.
 //
-//  "Either" was rejected: it means A can be interested in B while B ignores A,
-//  which produces ONE-SIDED events - the player gets a CollisionEnter and the
-//  wall does not - and every gameplay bug that follows from that starts with
-//  someone not believing it is happening. "Both" is symmetric, so the truth
-//  table has two rows instead of four and the events always come in pairs.
+//  ==========================================================================
+//  ENTER, STAY AND EXIT are worked out by comparing which pairs are touching
+//  this tick against which were touching last tick:
 //
-//  The cost of "both" is that a one-way trigger has to be spelled out on both
-//  sides. That is a line of config, not a mystery.
+//      touching now, not before  ->  CollisionEnter
+//      touching now and before   ->  CollisionStay
+//      was touching, not now     ->  CollisionExit
 //
-// =============================================================================
-//  ENTER / STAY / EXIT is a diff of this frame's overlapping pairs against
-//  last frame's:
-//      in this, not in last -> ENTER
-//      in both              -> STAY
-//      in last, not in this -> EXIT
+//  AN EXIT IS ALSO SENT WHEN ONE SIDE IS DESTROYED. Without it, the single
+//  most common trigger pattern - open a door on enter, close it on exit -
+//  breaks the moment the key is destroyed while it is still inside the volume:
+//  the door stays open forever.
 //
-//  *** EXIT ON DESTRUCTION: YES, AN EXIT IS FIRED. ***
+//  ==========================================================================
+//  TWO SIMPLIFICATIONS, STATED RATHER THAN HIDDEN
 //
-//  When an entity is destroyed there is no collider to test, so the pair
-//  simply disappears from this frame's set and the diff would produce an exit
-//  anyway - but only if the SURVIVING entity is still there to receive it, and
-//  only if the message is not dropped for naming a dead target. So the exit is
-//  sent explicitly to the survivor, with the dead entity as the partner, and
-//  the handler is expected to check validity before dereferencing.
+//  1. A BOX ATTACHED TO A ROTATED PARENT is tested using the upright box that
+//     SURROUNDS the rotated one. That is up to about 40% too big at a
+//     45-degree angle, so collisions fire slightly EARLY rather than slightly
+//     late - which is the safer direction for a game.
 //
-//  The alternative - no exit on destruction - breaks the single most common
-//  trigger pattern there is: open a door on enter, close it on exit. Destroy
-//  the key while it is inside the volume and the door stays open forever.
-//
-// =============================================================================
-//  ROTATED PARENTS: an axis-aligned CHILD box is not axis-aligned in world
-//  space once an ancestor rotates. THIS ENGINE USES THE AXIS-ALIGNED BOUNDS OF
-//  THE ROTATED BOX - stated, as the header asks, rather than left implicit.
-//  It over-approximates by up to 41% on a 45-degree rotation, which produces
-//  collisions that fire slightly early rather than slightly late. Early is the
-//  safe direction for gameplay. A rotated-box test via separating axes is the
-//  Week 6 stretch goal and is the upgrade path.
-//
-//  BROAD PHASE: none. Every pair against every other pair, O(n^2), and that is
-//  FINE for this week and for most Phase 2 games. The profiler HUD line item
-//  built this week is how the decision to build one gets made - by measurement,
-//  not because a grid sounds impressive.
-// =============================================================================
+//  2. EVERY COLLIDER IS TESTED AGAINST EVERY OTHER ONE. With a few dozen
+//     objects that is perfectly fine. A real game with thousands would first
+//     divide the world into a grid so that far-apart objects are never
+//     compared - but doing that before it is needed is work spent on a problem
+//     nobody has.
+// ============================================================================
 
 #include <engine/math/Overlap.h>
 #include <engine/scene/Component.h>
 #include <engine/scene/SystemOrder.h>
 
+#include <string>
 #include <vector>
 
 namespace eng {
 
-using CollisionLayer = u32;
+// The special layer name meaning "everything".
+inline constexpr const char* kCollisionLayerAll = "All";
 
-// Named layers, so a scene file can say "Player" instead of 2. Bit 0 is
-// Default, which every collider gets unless it says otherwise.
-namespace CollisionLayers {
-inline constexpr CollisionLayer kDefault   = 1u << 0;
-inline constexpr CollisionLayer kPlayer    = 1u << 1;
-inline constexpr CollisionLayer kEnemy     = 1u << 2;
-inline constexpr CollisionLayer kPickup    = 1u << 3;
-inline constexpr CollisionLayer kProjectile = 1u << 4;
-inline constexpr CollisionLayer kWorld     = 1u << 5;
-inline constexpr CollisionLayer kTrigger   = 1u << 6;
-inline constexpr CollisionLayer kAll       = 0xFFFFFFFFu;
+enum class ColliderShape { Box, Circle };
 
-CollisionLayer FromName(std::string_view name);
-const char*    Name(u32 bitIndex);
-inline constexpr u32 kNamedLayerCount = 7;
-} // namespace CollisionLayers
-
-enum class ColliderShape : u8 { Box, Circle };
-
+// What every collider has in common. AABBColliderComponent and
+// CircleColliderComponent both inherit from this and add their own shape.
 class ColliderComponent : public Component {
 public:
-    bool Deserialize(const ConfigNode& node, std::string& outError) override;
-    bool Serialize(ConfigWriter& out) const override;
+    // Shared scene file fields:
+    //   "layer":       "Player"
+    //   "collidesWith": ["Pickup", "World"]     or "All"
+    //   "trigger":     true
+    //   "offset":      [0, 0]
+    bool Deserialize(const Json& node, std::string& outError) override;
+    bool Serialize(Json& out) const override;
     void OnAttach() override;
     void OnDetach() override;
 
     virtual ColliderShape Shape() const = 0;
 
-    CollisionLayer Layer() const { return m_layer; }
-    CollisionLayer Mask() const  { return m_mask; }
-    void SetLayer(CollisionLayer layer) { m_layer = layer; }
-    void SetMask(CollisionLayer mask)   { m_mask = mask; }
+    const std::string&              Layer() const        { return m_layer; }
+    const std::vector<std::string>& CollidesWith() const { return m_collidesWith; }
 
-    // A trigger detects and reports overlap but does not resolve it. Almost
-    // every Phase 2 game wants one, and it is a bool.
+    void SetLayer(std::string_view layer) { m_layer = std::string(layer); }
+    void SetCollidesWith(std::vector<std::string> layers) {
+        m_collidesWith = std::move(layers);
+    }
+
+    // True when this collider wants to know about overlaps with `layer`.
+    bool CaresAbout(const std::string& layer) const;
+
+    // A trigger reports overlaps but nothing is pushed apart. Almost every
+    // game wants at least one - a doorway, a checkpoint, a pickup.
     bool IsTrigger() const { return m_trigger; }
     void SetTrigger(bool trigger) { m_trigger = trigger; }
 
+    // Shifts the shape away from the entity's own position, so a character's
+    // feet can be the part that collides.
     Vec2 Offset() const { return m_offset; }
     void SetOffset(Vec2 offset) { m_offset = offset; }
 
-    // World-space axis-aligned bounds, computed through the Week 6 transform
-    // hierarchy. See the rotated-parent note above.
+    // The upright box this collider occupies in the world, worked out through
+    // the transform hierarchy. See simplification 1 above.
     virtual AABB WorldBounds() const = 0;
 
 protected:
-    CollisionLayer m_layer   = CollisionLayers::kDefault;
-    CollisionLayer m_mask    = CollisionLayers::kAll;
-    Vec2           m_offset{0.0f, 0.0f};
-    bool           m_trigger = false;
+    std::string              m_layer = "Default";
+    std::vector<std::string> m_collidesWith{kCollisionLayerAll};
+    Vec2                     m_offset{0.0f, 0.0f};
+    bool                     m_trigger = false;
 };
 
+// A rectangle.
 class AABBColliderComponent final : public ColliderComponent {
 public:
     static constexpr const char* kTypeName = "AABBColliderComponent";
-    static StringId TypeIdStatic();
 
-    StringId      TypeId() const override { return TypeIdStatic(); }
     const char*   TypeName() const override { return kTypeName; }
-    ColliderShape Shape() const override { return ColliderShape::Box; }
+    ColliderShape Shape() const override    { return ColliderShape::Box; }
 
-    bool Deserialize(const ConfigNode& node, std::string& outError) override;
-    bool Serialize(ConfigWriter& out) const override;
+    // Extra scene file field:
+    //   "halfExtents": [w, h]    half the width and half the height
+    bool Deserialize(const Json& node, std::string& outError) override;
+    bool Serialize(Json& out) const override;
     AABB WorldBounds() const override;
 
     Vec2 HalfExtents() const { return m_halfExtents; }
@@ -146,47 +135,46 @@ private:
     Vec2 m_halfExtents{0.5f, 0.5f};
 };
 
+// A circle.
 class CircleColliderComponent final : public ColliderComponent {
 public:
     static constexpr const char* kTypeName = "CircleColliderComponent";
-    static StringId TypeIdStatic();
 
-    StringId      TypeId() const override { return TypeIdStatic(); }
     const char*   TypeName() const override { return kTypeName; }
-    ColliderShape Shape() const override { return ColliderShape::Circle; }
+    ColliderShape Shape() const override    { return ColliderShape::Circle; }
 
-    bool Deserialize(const ConfigNode& node, std::string& outError) override;
-    bool Serialize(ConfigWriter& out) const override;
-    AABB WorldBounds() const override;
+    // Extra scene file field:
+    //   "radius": 16
+    bool   Deserialize(const Json& node, std::string& outError) override;
+    bool   Serialize(Json& out) const override;
+    AABB   WorldBounds() const override;
     Circle WorldCircle() const;
 
-    f32  Radius() const { return m_radius; }
-    void SetRadius(f32 radius) { m_radius = radius; }
+    float Radius() const { return m_radius; }
+    void  SetRadius(float radius) { m_radius = radius; }
 
 private:
-    f32 m_radius = 0.5f;
+    float m_radius = 0.5f;
 };
 
-// The collision system. A System, so it slots into the declared order at
-// stage 400 and gets its own scoped timer - which is what puts collision on
-// the profiler HUD as its own line item, a Week 10 verification.
+// Checks every collider against every other one, once per simulation step, and
+// sends the enter/stay/exit messages.
+//
+// It runs at stage 400 (Collision) - AFTER movement at 300, so things are
+// tested where they moved to this tick rather than where they were last tick.
 class CollisionSystem final : public System {
 public:
-    void        Update(f32 deltaSeconds) override;
-    const char* Name() const override { return "CollisionSystem"; }
-    i32         Order() const override { return SystemStage::kCollision; }
+    void        Update(float deltaSeconds) override;
+    const char* Name() const override  { return "CollisionSystem"; }
+    int         Order() const override { return SystemStage::kCollision; }
 
     static void Register(ColliderComponent& collider);
     static void Unregister(ColliderComponent& collider);
     static void Clear();
 
-    static usize ColliderCount();
-    static usize ActivePairCount();     // overlapping right now
-    static u64   PairTestsLastFrame();  // the O(n^2) number, for the HUD
-    static u64   TotalEnterEvents();
+    static std::size_t ColliderCount();
+    static std::size_t ActivePairCount();   // how many pairs are touching now
 
-    // Registers AABBColliderComponent and CircleColliderComponent with the
-    // component factory. Called alongside ComponentFactory::RegisterBuiltins.
     static void RegisterComponentTypes();
 };
 

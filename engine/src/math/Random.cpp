@@ -1,84 +1,75 @@
-// WEEK 6 - SplitMix64, written out so the sequence is identical everywhere.
-// See Random.h for why no std:: distribution appears in this file.
+// ============================================================================
+//  Random.cpp - the random number helpers declared in Random.h.
+//
+//  Each function pairs the generator (m_engine, which produces raw random
+//  bits) with a DISTRIBUTION (which reshapes those bits into the range and
+//  spread you asked for). That two-part split is how <random> is designed:
+//  generators and distributions are separate so either can be swapped without
+//  touching the other.
+// ============================================================================
 
-#include <engine/core/Assert.h>
+#include <engine/core/Log.h>
 #include <engine/math/Random.h>
 #include <engine/math/Vec2.h>
 
 #include <cmath>
+#include <utility>
 
 namespace eng {
 
-u64 Random::NextU64() {
-    // SplitMix64. The state advance is one addition by the golden-ratio
-    // constant; the output is a fixed avalanche of that state. Every constant
-    // and shift below is part of the algorithm's definition - changing any of
-    // them changes the sequence, which is exactly what determinism forbids.
-    m_state += 0x9E3779B97F4A7C15ull;
-    u64 z = m_state;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    return z ^ (z >> 31);
-}
-
-u32 Random::NextU32() {
-    // The HIGH 32 bits. For SplitMix64 either half is fine, but taking the
-    // high half is the habit that keeps you out of trouble with generators
-    // whose low bits are weak.
-    return static_cast<u32>(NextU64() >> 32);
-}
-
-f32 Random::NextFloat01() {
-    // 24 bits is exactly f32's mantissa width, so every representable value in
-    // [0,1) with 24-bit precision is reachable and none is reachable twice.
-    // Dividing by 2^24 gives [0, 1) - never exactly 1.
-    const u32 bits = static_cast<u32>(NextU64() >> 40);   // top 24 bits
-    return static_cast<f32>(bits) * (1.0f / 16777216.0f);
-}
-
-f32 Random::NextRange(f32 lo, f32 hi) {
-    return lo + (hi - lo) * NextFloat01();
-}
-
-i32 Random::NextInt(i32 lo, i32 hiInclusive) {
-    ENGINE_ASSERT_MSG(lo <= hiInclusive, "Random::NextInt called with an inverted range");
-    if (lo >= hiInclusive) {
-        return lo;
+int Random::NextInt(int lo, int hiInclusive) {
+    if (lo > hiInclusive) {
+        // Rather than return something arbitrary, say so - a reversed range is
+        // almost always a typo in the calling code - and then carry on with
+        // the range the caller probably meant.
+        ENGINE_LOG_WARN(Channels::kCore,
+                        "Random::NextInt called with lo={} greater than hi={}; "
+                        "swapping them",
+                        lo, hiInclusive);
+        std::swap(lo, hiInclusive);
     }
 
-    // Width as an unsigned value so that NextInt(INT32_MIN, INT32_MAX) does
-    // not overflow while computing its own range - a real bug in a lot of
-    // hand-written versions of this function.
-    const u64 range = static_cast<u64>(hiInclusive) - static_cast<u64>(lo) + 1ull;
+    // std::uniform_int_distribution gives every value in the range an equal
+    // chance. Writing `m_engine() % range` by hand instead is very slightly
+    // biased towards the low numbers and is the classic beginner mistake here.
+    std::uniform_int_distribution<int> distribution(lo, hiInclusive);
+    return distribution(m_engine);
+}
 
-    // Lemire-style rejection: reject the tail that would bias the result. See
-    // the header for the arithmetic; the loop body essentially never repeats.
-    const u64 limit     = (range == 0) ? 0 : (~0ull / range) * range;
-    u64       candidate = NextU64();
-    if (limit != 0) {
-        while (candidate >= limit) {
-            candidate = NextU64();
-        }
+float Random::NextFloat01() {
+    // The range is written as [0, 1) - 0 is possible, 1 is not. That is the
+    // convention every random-float API uses, and it is what makes
+    // `array[(int)(NextFloat01() * size)]` safe.
+    std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
+    return distribution(m_engine);
+}
+
+float Random::NextRange(float lo, float hi) {
+    if (lo > hi) {
+        std::swap(lo, hi);
     }
-
-    return static_cast<i32>(static_cast<i64>(lo) + static_cast<i64>(candidate % range));
+    std::uniform_real_distribution<float> distribution(lo, hi);
+    return distribution(m_engine);
 }
 
 bool Random::NextBool() {
-    // The top bit, not the bottom one, for the reason given in NextU32.
-    return (NextU64() >> 63) != 0;
+    // std::bernoulli_distribution is the standard "true with probability p"
+    // distribution; 0.5 makes it a fair coin.
+    std::bernoulli_distribution distribution(0.5);
+    return distribution(m_engine);
 }
 
 Random::UnitVector Random::NextDirection() {
-    const f32 angle = NextRange(0.0f, kTwoPi);
+    // Pick an angle anywhere around the circle, then convert it to x and y.
+    // The result always has length 1, which is what "a direction" means.
+    const float angle = NextRange(0.0f, kTwoPi);
     return UnitVector{std::cos(angle), std::sin(angle)};
 }
 
 Random& GlobalRandom() {
-    // A function-local static, which is the standard answer to the static
-    // initialization order fiasco Week 7 opens with: it is constructed on
-    // first use, so it cannot be used before it exists no matter what order
-    // translation units initialise in.
+    // A "function-local static": created the first time this function runs,
+    // then reused forever after. See the note in Random.h for why this is
+    // preferred over a plain global variable.
     static Random instance;
     return instance;
 }

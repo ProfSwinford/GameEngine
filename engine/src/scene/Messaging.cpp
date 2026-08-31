@@ -1,7 +1,8 @@
-// WEEK 10 - the message bus. See Messaging.h for the three recorded decisions.
+// ============================================================================
+//  Messaging.cpp - the message bus. See Messaging.h for the three rules.
+// ============================================================================
 
 #include <engine/core/Log.h>
-#include <engine/scene/DeferredOps.h>
 #include <engine/scene/Messaging.h>
 #include <engine/scene/Scene.h>
 
@@ -14,35 +15,35 @@ namespace eng {
 namespace {
 
 struct Subscription {
-    SubscriptionId id      = 0;
-    StringId       type;
-    EntityHandle   target{};      // null means broadcast
+    SubscriptionId id = 0;
+    std::string    type;
+    EntityId       target{};    // null when this is a broadcast listener
     MessageHandler handler;
-    bool           alive   = true;
+    bool           alive     = true;
     bool           broadcast = false;
 };
 
-// unique_ptr, not Subscription by value, and the reason is specific: a
-// handler may subscribe while it is running, and a push_back that reallocated
-// a vector<Subscription> would destroy the std::function CURRENTLY EXECUTING
-// on this stack. Indirection gives every Subscription a stable address; only
-// the pointer array moves, and the loops re-index each step so that is safe.
+// A list of unique_ptrs rather than a list of Subscriptions by value, for one
+// specific reason: a handler is allowed to subscribe while it is running, and
+// adding to a vector can move all of its contents somewhere else in memory -
+// which would destroy the handler CURRENTLY EXECUTING. Holding pointers means
+// each Subscription stays where it is; only the small array of pointers moves.
 std::vector<std::unique_ptr<Subscription>> g_subscriptions;
-std::deque<Message>       g_queue;
-SubscriptionId            g_nextId    = 1;
-u64                       g_dispatched = 0;
-u32                       g_immediateDepth = 0;
-bool                      g_dispatching = false;
+
+// std::deque rather than std::vector because messages are added at the back
+// and taken from the FRONT, and a deque can do both cheaply.
+std::deque<Message> g_queue;
+
+SubscriptionId g_nextId      = 1;
+bool           g_dispatching = false;
 
 void Compact() {
-    // Only ever called OUTSIDE dispatch. Erasing a subscription while the
-    // dispatch loop holds an index into the vector is the same
-    // iterator-invalidation bug DeferredOps exists to prevent - this is that
-    // problem in a smaller box, solved the same way.
-    std::erase_if(g_subscriptions,
-                  [](const std::unique_ptr<Subscription>& subscription) {
-                      return subscription == nullptr || !subscription->alive;
-                  });
+    // Only ever called when delivery is NOT in progress. Erasing while the
+    // delivery loop is walking the list by index would make it skip entries -
+    // the same problem DeferredOps exists to solve, in a smaller box.
+    std::erase_if(g_subscriptions, [](const std::unique_ptr<Subscription>& s) {
+        return s == nullptr || !s->alive;
+    });
 }
 
 void DeliverTo(const Subscription& subscription, const Message& message) {
@@ -52,6 +53,8 @@ void DeliverTo(const Subscription& subscription, const Message& message) {
     if (subscription.type != message.type) {
         return;
     }
+    // A targeted subscription only wants messages aimed at its own entity;
+    // a broadcast subscription takes them all.
     if (!subscription.broadcast && subscription.target != message.target) {
         return;
     }
@@ -60,44 +63,23 @@ void DeliverTo(const Subscription& subscription, const Message& message) {
 
 bool TargetStillExists(const Message& message) {
     if (message.target.IsNull()) {
-        return true;   // a broadcast has no target
+        return true;   // a broadcast has no particular target
     }
     Scene* scene = Scene::Active();
     if (scene == nullptr) {
         return false;
     }
-    // DECISION 3: a message to a destroyed entity is silently dropped with a
-    // Debug line. Not an Error - two bullets hitting the same enemy in one
-    // tick is completely ordinary, and an Error per occurrence would drown the
-    // log during exactly the situation being observed.
-    if (!scene->IsValid(message.target)) {
-        ENGINE_LOG_DEBUG(Channels::kScene,
-                         "message '{}' dropped: target entity (index {} generation {}) no "
-                         "longer exists", message.type.ToString(), message.target.Index(),
-                         message.target.Generation());
-        return false;
-    }
-    return true;
+    // RULE 3: quietly dropped. This is a normal thing to happen, not an error.
+    return scene->IsValid(message.target);
 }
 
 } // namespace
 
-namespace MessageTypes {
-
-// Function-local statics so the ids are interned exactly once and the reverse
-// table has their text - a dropped-message log line that says "message
-// '<sid:0x...>'" is much less useful than one that says "CollisionEnter".
-StringId CollisionEnter() { static const StringId id = Intern("CollisionEnter"); return id; }
-StringId CollisionStay()  { static const StringId id = Intern("CollisionStay");  return id; }
-StringId CollisionExit()  { static const StringId id = Intern("CollisionExit");  return id; }
-
-} // namespace MessageTypes
-
-SubscriptionId MessageBus::Subscribe(EntityHandle target, StringId type,
+SubscriptionId MessageBus::Subscribe(EntityId target, std::string_view type,
                                      MessageHandler handler) {
     auto subscription       = std::make_unique<Subscription>();
     subscription->id        = g_nextId++;
-    subscription->type      = type;
+    subscription->type      = std::string(type);
     subscription->target    = target;
     subscription->handler   = std::move(handler);
     subscription->broadcast = false;
@@ -107,10 +89,11 @@ SubscriptionId MessageBus::Subscribe(EntityHandle target, StringId type,
     return id;
 }
 
-SubscriptionId MessageBus::SubscribeBroadcast(StringId type, MessageHandler handler) {
+SubscriptionId MessageBus::SubscribeBroadcast(std::string_view type,
+                                              MessageHandler handler) {
     auto subscription       = std::make_unique<Subscription>();
     subscription->id        = g_nextId++;
-    subscription->type      = type;
+    subscription->type      = std::string(type);
     subscription->handler   = std::move(handler);
     subscription->broadcast = true;
 
@@ -120,9 +103,9 @@ SubscriptionId MessageBus::SubscribeBroadcast(StringId type, MessageHandler hand
 }
 
 void MessageBus::Unsubscribe(SubscriptionId id) {
-    // MARK DEAD, never erase. This is what makes unsubscribing from inside a
-    // handler safe, and a handler that destroys its own entity does exactly
-    // that.
+    // MARKED DEAD, never removed here. That is what makes unsubscribing from
+    // inside a handler safe - and a handler that destroys its own entity does
+    // exactly that.
     for (auto& subscription : g_subscriptions) {
         if (subscription != nullptr && subscription->id == id) {
             subscription->alive = false;
@@ -134,7 +117,7 @@ void MessageBus::Unsubscribe(SubscriptionId id) {
     }
 }
 
-void MessageBus::UnsubscribeAll(EntityHandle target) {
+void MessageBus::UnsubscribeAll(EntityId target) {
     for (auto& subscription : g_subscriptions) {
         if (subscription != nullptr && !subscription->broadcast &&
             subscription->target == target) {
@@ -152,45 +135,20 @@ void MessageBus::Send(const Message& message) {
 
 void MessageBus::Broadcast(const Message& message) {
     Message copy = message;
-    copy.target  = EntityHandle{};   // no target: every broadcast listener sees it
+    copy.target  = EntityId{};   // no target, so every broadcast listener sees it
     g_queue.push_back(copy);
-}
-
-void MessageBus::SendImmediate(const Message& message) {
-    if (g_immediateDepth >= kMaxImmediateDepth) {
-        // An unbounded A-tells-B-tells-A is a stack overflow with no
-        // diagnostic. This is the diagnostic.
-        ENGINE_LOG_ERROR(Channels::kScene,
-                         "immediate message '{}' exceeded depth {} and was dropped - "
-                         "check for a handler that sends back to its sender",
-                         message.type.ToString(), kMaxImmediateDepth);
-        return;
-    }
-    if (!TargetStillExists(message)) {
-        return;
-    }
-
-    ++g_immediateDepth;
-    // By index and re-reading the size: a handler may subscribe, and
-    // push_back would invalidate an iterator.
-    for (usize i = 0; i < g_subscriptions.size(); ++i) {
-        if (g_subscriptions[i] != nullptr) {
-            DeliverTo(*g_subscriptions[i], message);
-        }
-    }
-    --g_immediateDepth;
-    ++g_dispatched;
 }
 
 void MessageBus::Dispatch() {
     g_dispatching = true;
 
-    // Drained ONCE. A handler that sends another message queues it for the
-    // NEXT dispatch rather than extending this one - draining in a loop until
-    // empty risks never terminating when two handlers answer each other, and
-    // "next tick" is a delay nobody can perceive.
-    const usize count = g_queue.size();
-    for (usize processed = 0; processed < count && !g_queue.empty(); ++processed) {
+    // Drained ONCE. The number of messages is read before the loop starts, so
+    // a handler that sends another message queues it for the NEXT tick rather
+    // than extending this pass. Draining until empty risks never finishing
+    // when two handlers keep answering each other.
+    const std::size_t count = g_queue.size();
+
+    for (std::size_t processed = 0; processed < count && !g_queue.empty(); ++processed) {
         const Message message = g_queue.front();
         g_queue.pop_front();
 
@@ -198,12 +156,13 @@ void MessageBus::Dispatch() {
             continue;
         }
 
-        for (usize i = 0; i < g_subscriptions.size(); ++i) {
+        // Walked by index and the size re-read each time, because a handler is
+        // allowed to add a subscription while it runs.
+        for (std::size_t i = 0; i < g_subscriptions.size(); ++i) {
             if (g_subscriptions[i] != nullptr) {
                 DeliverTo(*g_subscriptions[i], message);
             }
         }
-        ++g_dispatched;
     }
 
     g_dispatching = false;
@@ -216,8 +175,7 @@ void MessageBus::Clear() {
     g_dispatching = false;
 }
 
-usize MessageBus::QueuedCount()       { return g_queue.size(); }
-usize MessageBus::SubscriptionCount() { return g_subscriptions.size(); }
-u64   MessageBus::TotalDispatched()   { return g_dispatched; }
+std::size_t MessageBus::QueuedCount()       { return g_queue.size(); }
+std::size_t MessageBus::SubscriptionCount() { return g_subscriptions.size(); }
 
 } // namespace eng

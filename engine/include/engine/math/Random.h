@@ -1,101 +1,84 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 6 - a deterministic, seeded random number generator. Ch. 5.7.
+// ============================================================================
+//  Random.h - random numbers for gameplay.
 //
-//  DETERMINISTIC means more than "reproducible on my machine": the same seed
-//  must produce the same sequence on every machine, and that is the
-//  Milestone 1 verification.
+//  WHY NOT rand()
+//  The old C function rand() has one shared hidden state, a small range, and
+//  quality that varies between compilers. C++ replaced it with the <random>
+//  header, and that is what this class wraps.
 //
-//  ---------------------------------------------------------------------------
-//  WHAT WAS CHOSEN, AND WHY - because the tempting shortcuts are all wrong.
+//  WHY WRAP <random> AT ALL INSTEAD OF USING IT DIRECTLY
+//  <random> is powerful but wordy: to get "a number between 1 and 6" you have
+//  to create a generator, create a distribution, and then combine them. That
+//  is worth learning eventually, and it is noise in the middle of gameplay
+//  code. This class does it once, here, and gives you:
 //
-//  RULED OUT: std::uniform_int_distribution and friends. The standard specifies
-//  the GENERATOR ENGINES exactly (mt19937 produces a defined sequence), but it
-//  does NOT specify the distributions. Two conforming standard libraries can
-//  hand you different numbers from the same engine and the same seed, and both
-//  are correct. That is precisely the cross-machine check M1 performs, so a
-//  distribution would fail it in a way that looks like a bug in your code.
+//      eng::Random dice;
+//      int roll = dice.NextInt(1, 6);
 //
-//  CHOSEN: SplitMix64, written out here, about ten lines.
-//    - It is fully specified by its own arithmetic: no library, no ambiguity,
-//      identical output on any conforming C++ compiler.
-//    - 64-bit state, 64-bit output, passes the usual statistical suites, and
-//      the state advance is a single addition.
-//    - It has no bad seeds - unlike a plain LCG or an xorshift, seed 0 is
-//      fine, which matters when a config file's default is 0.
-//
-//  The range mapping is written out below rather than delegated, for the same
-//  portability reason.
-//
-//  Why an engine cares: reproducible bugs. "It crashes on level 3" is only
-//  actionable if level 3 is the same every time. Phase 2 will want to replay a
-//  run from a seed - which is why Seed() is readable and logged at startup.
-// =============================================================================
+//  WHY A SEED
+//  A generator started from the same seed produces the same sequence of
+//  numbers every time. That turns "it only crashes sometimes" into a bug you
+//  can reproduce on demand, which is the difference between a fixable problem
+//  and a haunted one. Each Random remembers its seed so it can be printed.
+// ============================================================================
 
-#include <engine/core/Types.h>
+#include <random>
 
 namespace eng {
 
 class Random {
 public:
-    // Default seed is a fixed, arbitrary constant rather than the clock. An
-    // engine that seeds itself from the clock by default produces bugs nobody
-    // can reproduce; seeding from the clock is a decision a caller makes on
-    // purpose, once, and then logs.
-    static constexpr u64 kDefaultSeed = 0x9E3779B97F4A7C15ull;
+    // An arbitrary fixed number, deliberately NOT the current time. A game
+    // that seeds itself from the clock by default behaves differently on every
+    // run, which makes bugs impossible to reproduce. Seeding from the clock is
+    // something a caller should do on purpose and then log.
+    static constexpr unsigned int kDefaultSeed = 12345u;
 
     Random() : Random(kDefaultSeed) {}
-    explicit Random(u64 seed) : m_state(seed), m_seed(seed) {}
+    explicit Random(unsigned int seed) : m_engine(seed), m_seed(seed) {}
 
-    u32 NextU32();
-    u64 NextU64();
+    // A whole number from lo to hiInclusive, both ends possible.
+    // NextInt(1, 6) is a six-sided die.
+    int NextInt(int lo, int hiInclusive);
 
-    // [0, 1). Uses the top 24 bits, which is exactly the mantissa width of an
-    // f32 - taking the low bits instead is the classic mistake, because the
-    // low bits of many generators are the weakest.
-    f32 NextFloat01();
+    // A decimal from 0 up to (but never exactly) 1.
+    float NextFloat01();
 
-    f32 NextRange(f32 lo, f32 hi);
+    // A decimal somewhere between lo and hi.
+    float NextRange(float lo, float hi);
 
-    // [lo, hiInclusive].
-    //
-    // THE MODULO TRAP, and what was done about it: `value % range` is very
-    // slightly biased toward the low end whenever `range` does not divide
-    // 2^64 evenly, because the last, partial block of the generator's output
-    // space maps onto only the first few results. For a range of 6 out of 2^64
-    // the bias is around 1 part in 3x10^18 and is genuinely unmeasurable.
-    //
-    // It is fixed anyway, with Lemire's rejection: draw again on the rare
-    // values that fall in the partial block. The rejection probability is
-    // range/2^64, so the loop essentially never runs twice, and the result is
-    // exactly uniform rather than nearly uniform. "Not knowing" was the one
-    // unacceptable answer; this costs nothing, so there was no reason to
-    // accept the bias.
-    i32 NextInt(i32 lo, i32 hiInclusive);
-
+    // A coin flip.
     bool NextBool();
 
-    // Uniform on the unit circle. Used by the debug-draw stress scene and by
-    // Phase 2 spawn code; it is here because writing it with two NextRange
-    // calls and rejecting is the naive answer and this is the cheap one.
-    struct UnitVector { f32 x, y; };
+    // A direction: a vector of length 1 pointing at a random angle. Handy for
+    // scattering particles or picking a starting heading.
+    struct UnitVector { float x, y; };
     UnitVector NextDirection();
 
-    void Reseed(u64 seed) { m_state = seed; m_seed = seed; }
+    // Restarts the sequence from a new seed.
+    void Reseed(unsigned int seed) { m_engine.seed(seed); m_seed = seed; }
 
-    // The seed this generator was last reseeded with. Log it at startup; a bad
-    // run is then reproducible from the log alone.
-    u64 Seed() const { return m_seed; }
+    unsigned int Seed() const { return m_seed; }
 
 private:
-    u64 m_state = kDefaultSeed;
-    u64 m_seed  = kDefaultSeed;
+    // std::mt19937 is the Mersenne Twister, the standard library's general
+    // purpose generator. It is the one to reach for unless you have a specific
+    // reason not to: good statistical quality, well tested, and its sequence
+    // is defined by the standard, so a given seed behaves the same everywhere.
+    std::mt19937 m_engine;
+    unsigned int m_seed = kDefaultSeed;
 };
 
-// The engine's shared generator. Deliberately a plain accessor rather than a
-// hidden global sprinkled through the code - anything that wants
-// reproducibility can construct its own Random with its own seed instead.
+// One shared generator for code that just wants a random number and does not
+// care about reproducing it. Anything that DOES care should make its own
+// Random with its own seed.
+//
+// It is a function rather than a plain global variable on purpose: a global is
+// created at an unpredictable moment during program start-up, whereas the
+// variable inside this function is created the first time somebody calls it,
+// which is by definition after everything it needs already exists.
 Random& GlobalRandom();
 
 } // namespace eng

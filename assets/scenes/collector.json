@@ -1,6 +1,6 @@
 {
-  "_comment": "WEEK 10 GATE - Spec A, 'Collector'. Ten collectibles placed BY THIS FILE, not by C++. Adding an eleventh needs no code change: sandbox/src/CollectorGame.cpp counts colliders on the Pickup layer rather than assuming a number. That is the test the Week 9 milestone asks for, applied to gameplay.",
-  "_layers": "Player, Pickup and World are named collision layers; see CollisionLayers in engine/include/engine/physics/Collider.h. A pair is tested only when BOTH masks include the other's layer.",
+  "_comment": "The sample game. All ten collectibles are placed BY THIS FILE, not by C++. Adding an eleventh needs no code change at all: sandbox/src/CollectorGame.cpp counts the colliders on the Pickup layer rather than assuming a number.",
+  "_layers": "Player, Pickup and World are collision layer names. Two colliders are only tested against each other when EACH one's collidesWith list includes the other's layer - see engine/include/engine/physics/Collider.h.",
   "name": "Collector",
   "camera": {
     "position": [
@@ -43,7 +43,7 @@
             16
           ],
           "layer": "Player",
-          "mask": [
+          "collidesWith": [
             "Pickup",
             "World"
           ]
@@ -77,7 +77,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -108,7 +108,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -139,7 +139,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -170,7 +170,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -201,7 +201,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -232,7 +232,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -263,7 +263,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -294,7 +294,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -325,7 +325,7 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
@@ -356,12 +356,12 @@
           ],
           "trigger": true,
           "layer": "Pickup",
-          "mask": "Player"
+          "collidesWith": "Player"
         }
       ]
     },
     {
-      "_note": "A three-deep hierarchy inside the gate scene, so the Week 6 transforms are exercised here too: Beacon -> BeaconArm -> BeaconTip. The tip's world position is the composition of all three.",
+      "_note": "A three-level hierarchy: Beacon -> BeaconArm -> BeaconTip. The tip's position in the world is the combination of all three transforms.",
       "name": "Beacon",
       "components": [
         {

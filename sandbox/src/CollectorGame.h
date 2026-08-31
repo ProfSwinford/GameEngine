@@ -1,40 +1,35 @@
 #pragma once
 
-// =============================================================================
-//  🚪 THE WEEK 10 GATE - Spec A, "Collector".
+// ============================================================================
+//  CollectorGame.h - the sample game.
 //
-//  "A player square moves with mapped input on a single screen. Ten
-//   collectible squares are placed by a scene file. Touching one destroys it
-//   and increments a counter shown on the debug HUD. Collecting all ten is a
-//   win. A timer of 60 seconds running out is a loss."
+//  A player square moves around with the arrow keys or WASD. Ten collectible
+//  squares are placed by a scene file. Touching one makes it disappear and adds
+//  to a counter shown on screen. Collect all ten to win; run out of time and
+//  you lose.
 //
-//  ---------------------------------------------------------------------------
-//  THE RULE, AND THE ASSESSMENT: implemented in the SANDBOX target only, using
-//  ONLY the engine's public API, without opening anything under engine/.
+//  ==========================================================================
+//  READ THIS FILE AND CollectorGame.cpp BEFORE WRITING YOUR OWN GAME.
 //
-//      git diff --stat HEAD -- engine/     ->     zero changes
+//  It is deliberately small, and every part of the engine it uses is used the
+//  way the engine intends:
 //
-//  That diff is the assessment, not the game.
+//    named actions instead of key codes    InputMap
+//    entities loaded from a data file      Scene
+//    collision events                      MessageBus + CollisionSystem
+//    destroying things safely              DeferredOps
+//    text on screen                        Gizmos::Text
+//    a timer that is the same on every     GameClock's fixed step
+//    machine
 //
-//  What this exercise uses, and where each came from:
-//    mapped input                Week 8  InputMap, actions by StringId
-//    entities from data          Week 9  Scene::Load, ComponentFactory
-//    transform hierarchy         Week 6  Transform2D
-//    collision events            Week 10 MessageBus + CollisionSystem
-//    deferred destroy            Week 10 DeferredOps
-//    messaging                   Week 10 MessageBus
-//    debug text HUD              Week 6  DebugDraw::Text, screen space
-//    fixed timestep for the timer Week 10 GameClock
+//  Crucially, NONE of it needed a change to the engine. Everything here is
+//  written against the engine's public interface, in the sandbox program. If
+//  a game can be built that way, the interface is complete.
 //
-//  NOT ONE of those needed a change under engine/. The two places where the
-//  public API was nearly not enough are written up in
-//  docs/week10-milestone4.md section 7 - finding them is the point of the
-//  exercise, and they are Week 11 work.
-//
-//  This is a System registered at SystemStage::kGameplay, so it updates inside
-//  the fixed step in the declared order, like anything else. Registering a
-//  gameplay system is public API; nothing here is special-cased by the engine.
-// =============================================================================
+//  This is a System registered at the Gameplay stage, so it updates inside the
+//  fixed simulation step in the declared order, like everything else. Nothing
+//  about it is special-cased by the engine.
+// ============================================================================
 
 #include <engine/Engine.h>
 
@@ -45,49 +40,49 @@ public:
     bool Init();
     void Shutdown();
 
-    // AUTOPILOT - the answer to "is it actually playable?" without a human at
+    // AUTOPILOT - the answer to "is it actually playable?" without a person at
     // the keyboard.
     //
-    // It does NOT bypass the input layer. It steers by calling
-    // InputMap::InjectAction on the same four named actions a player's keys are
-    // bound to, so the movement code, the collision, the messaging and the
+    // It does NOT skip the input layer. It steers by calling
+    // InputMap::InjectAction on the same four named actions the player's keys
+    // are bound to, so the movement, the collision, the messaging and the
     // scoring all run exactly as they do for a person. If the autopilot can
-    // finish a round, a player can.
-    //
-    // This is reason 4 from the list at the top of InputMap.h - "anything that
-    // can produce an action stream can drive the game" - being used for the
-    // first time, and it is why that list was worth writing down.
+    // finish a round, so can a player.
     void SetAutopilot(bool on) { m_autopilot = on; }
-    bool IsFinished() const { return m_phase != Phase::Playing; }
-    eng::u32 Collected() const { return m_collected; }
 
-    void        Update(eng::f32 deltaSeconds) override;
-    const char* Name() const override { return "CollectorGame"; }
-    eng::i32    Order() const override { return eng::SystemStage::kGameplay; }
+    bool IsFinished() const { return m_phase != Phase::Playing; }
+    int  Collected() const   { return m_collected; }
+
+    void        Update(float deltaSeconds) override;
+    const char* Name() const override  { return "CollectorGame"; }
+    int         Order() const override { return eng::SystemStage::kGameplay; }
 
 private:
     enum class Phase { Playing, Won, Lost };
 
-    void OnCollected(eng::EntityHandle pickup);
+    void OnCollected(eng::EntityId pickup);
     void DrawHud();
     void DriveAutopilot();
 
-    eng::EntityHandle m_player{};
-    eng::u32          m_collected     = 0;
-    eng::u32          m_totalPickups  = 0;
-    eng::f32          m_secondsLeft   = 60.0f;
-    Phase             m_phase         = Phase::Playing;
-    eng::SubscriptionId m_subscription = 0;
-    bool              m_autopilot     = false;
+    // Is this entity one of the collectibles? Answered from the entity's own
+    // DATA - it has a collider on the "Pickup" layer - rather than by looking
+    // at its name. Somebody adding an eleventh pickup to the scene file needs
+    // no code change at all, which is the whole point of the component model.
+    static bool IsPickup(eng::Entity& entity);
 
-    // Actions, hashed once at compile time via the _sid literal. Nothing here
-    // knows what a key is - which is the Week 8 grep check, from the other
-    // side.
-    eng::StringId m_moveLeft;
-    eng::StringId m_moveRight;
-    eng::StringId m_moveUp;
-    eng::StringId m_moveDown;
-    eng::StringId m_quit;
+    eng::EntityId m_player{};
+    int           m_collected    = 0;
+    int           m_totalPickups = 0;
+    float         m_secondsLeft  = 60.0f;
+    Phase         m_phase        = Phase::Playing;
+
+    eng::SubscriptionId m_subscription = 0;
+    bool                m_autopilot    = false;
+
+    // How fast the player moves, in world units per second, and how long the
+    // round lasts. Plain constants here; try changing them.
+    static constexpr float kPlayerSpeed = 220.0f;
+    static constexpr float kTimeLimit   = 60.0f;
 };
 
 } // namespace game

@@ -1,5 +1,7 @@
-// WEEK 6 - the spin component and its system. See SpinComponent.h for why a
-// single "rotate myself" field is enough to produce a three-deep orbit.
+// ============================================================================
+//  SpinComponent.cpp - the spinning component and the system that updates it.
+//  See SpinComponent.h.
+// ============================================================================
 
 #include <engine/core/Log.h>
 #include <engine/math/Transform2D.h>
@@ -10,58 +12,52 @@
 namespace eng {
 namespace {
 
-// Dense array of the components to update, same shape as SpriteRecord's for
-// the same reason - see the AoS/SoA note in Component.h.
+// Every spinning component currently attached to something. The system walks
+// this list rather than every entity in the scene asking "are you a spinner?".
 std::vector<SpinComponent*> g_spins;
 
 } // namespace
 
-StringId SpinComponent::TypeIdStatic() {
-    static const StringId id = Intern(kTypeName);
-    return id;
-}
-
 SpinComponent::~SpinComponent() {
-    // Safety net for a component destroyed without ever being attached, which
-    // happens when Deserialize fails during a scene load. OnDetach is the
-    // mechanism; this is the backstop.
+    // A safety net. OnDetach is where the removal normally happens; this
+    // catches the case of a component that was built but never attached, which
+    // happens when loading a scene fails partway through.
     SpinSystem::Unregister(*this);
 }
 
-bool SpinComponent::Deserialize(const ConfigNode& node, std::string& outError) {
-    const ConfigNode radians = node.Child("radiansPerSecond");
-    const ConfigNode degrees = node.Child("degreesPerSecond");
+bool SpinComponent::Deserialize(const Json& node, std::string& outError) {
+    const bool hasRadians = HasKey(node, "radiansPerSecond");
+    const bool hasDegrees = HasKey(node, "degreesPerSecond");
 
-    if (radians.IsValid() && degrees.IsValid()) {
-        // Reported, not silently resolved. A scene file that says two
-        // different things about one value is an authoring mistake, and the
-        // author is the only one who can decide which they meant.
-        outError = node.Path() +
-                   " sets both radiansPerSecond and degreesPerSecond; using "
-                   "radiansPerSecond and ignoring the other";
-        m_radiansPerSecond = static_cast<f32>(radians.AsFloat(0.0));
+    if (hasRadians && hasDegrees) {
+        // Reported rather than quietly picking one. A scene file saying two
+        // different things about the same value is an authoring mistake, and
+        // only the author can say which they meant.
+        outError = "SpinComponent gives both radiansPerSecond and degreesPerSecond; "
+                   "using radiansPerSecond and ignoring the other";
+        m_radiansPerSecond = ReadFloat(node, "radiansPerSecond", 0.0f, kTypeName);
         return false;
     }
 
-    if (radians.IsValid()) {
-        m_radiansPerSecond = static_cast<f32>(radians.AsFloat(0.0));
-    } else if (degrees.IsValid()) {
-        m_radiansPerSecond = static_cast<f32>(degrees.AsFloat(0.0)) * kDegToRad;
+    if (hasRadians) {
+        m_radiansPerSecond = ReadFloat(node, "radiansPerSecond", 0.0f, kTypeName);
+    } else if (hasDegrees) {
+        // kDegToRad comes from Vec2.h and is just pi/180.
+        m_radiansPerSecond = ReadFloat(node, "degreesPerSecond", 0.0f, kTypeName) * kDegToRad;
     } else {
-        outError = node.Path() +
-                   " needs either radiansPerSecond or degreesPerSecond (a spin of zero "
-                   "is legal but is almost certainly not what was meant)";
+        outError = "SpinComponent needs either radiansPerSecond or degreesPerSecond";
         return false;
     }
+
     return true;
 }
 
-bool SpinComponent::Serialize(ConfigWriter& out) const {
-    // Written as radians, which is the field Deserialize prefers when both are
-    // present. Round-tripping a file authored in degrees therefore converts it
-    // to radians - a real, if small, loss of authoring intent, and the reason
-    // the header documents radiansPerSecond as the canonical one.
-    out.SetFloat("radiansPerSecond", static_cast<f64>(m_radiansPerSecond));
+bool SpinComponent::Serialize(Json& out) const {
+    // Always written in radians, which is the field Deserialize prefers when
+    // both are present. A file authored in degrees therefore comes back in
+    // radians after a save - a small loss of the original wording, and the
+    // reason radiansPerSecond is documented as the main one.
+    out["radiansPerSecond"] = m_radiansPerSecond;
     return true;
 }
 
@@ -81,20 +77,13 @@ void SpinSystem::Unregister(SpinComponent& spin) {
     std::erase(g_spins, &spin);
 }
 
-void SpinSystem::Clear() {
-    g_spins.clear();
-}
+void        SpinSystem::Clear() { g_spins.clear(); }
+std::size_t SpinSystem::Count() { return g_spins.size(); }
 
-usize SpinSystem::Count() {
-    return g_spins.size();
-}
-
-void SpinSystem::Update(f32 deltaSeconds) {
-    // Iterating by index and re-reading the size, because a spin could in
-    // principle be attached from another system's update. Nothing does that
-    // today; the loop costs nothing and the alternative is a rule somebody has
-    // to remember.
-    for (usize i = 0; i < g_spins.size(); ++i) {
+void SpinSystem::Update(float deltaSeconds) {
+    // Walked by index with the size re-read, because in principle a spin could
+    // be attached from inside another system's update.
+    for (std::size_t i = 0; i < g_spins.size(); ++i) {
         SpinComponent* spin = g_spins[i];
         if (spin == nullptr) {
             continue;
@@ -103,17 +92,19 @@ void SpinSystem::Update(f32 deltaSeconds) {
         if (transform == nullptr) {
             continue;
         }
-        // deltaSeconds is the FIXED step, handed down by the scheduler. Reading
-        // a clock here instead is what makes a simulation frame-rate dependent,
-        // and it is the thing Week 10's whole design exists to prevent.
+
+        // deltaSeconds is the FIXED step, handed down by the scheduler. Asking
+        // a clock for the elapsed time here instead is what would make the
+        // simulation behave differently at different frame rates.
         transform->Rotate(spin->RadiansPerSecond() * deltaSeconds);
     }
 }
 
 void SpinSystem::RegisterComponentTypes() {
-    ComponentFactory::Register(SpinComponent::kTypeName, []() -> std::unique_ptr<Component> {
-        return std::make_unique<SpinComponent>();
-    });
+    ComponentFactory::Register(SpinComponent::kTypeName,
+                               []() -> std::unique_ptr<Component> {
+                                   return std::make_unique<SpinComponent>();
+                               });
 }
 
 } // namespace eng

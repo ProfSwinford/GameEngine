@@ -1,46 +1,38 @@
 # =============================================================================
-#  The editor executable - the IDE.
+#  The editor executable - the development environment.
 #
-#      engine/   static library   - knows nothing about any game or any tool
-#      editor/   executable       - the IDE. Panels live here.
-#      sandbox/  executable       - the standalone game runtime.
+#      engine/   a static library. Knows nothing about any game or any tool.
+#      editor/   this program. All the panels live here.
+#      sandbox/  the game running on its own, with no editor attached.
 #
-#  The editor links `engine` exactly the way the sandbox does and sees only
-#  the engine's PUBLIC headers. That constraint is the point: every panel
-#  forces the question "can I observe this subsystem from outside the engine?"
-#  and when the answer is no, it surfaces that week rather than at the gate.
-#
-#  Ch. 1.6.5 is candid about the trade-off - sharing structures between tools
-#  and runtime avoids two representations of everything and makes live editing
-#  far easier, but when the engine is crashing the tools are down too.
+#  The editor links the engine exactly the way the game does and sees only the
+#  engine's public headers. That constraint is worth keeping: every panel makes
+#  you ask "can this be observed from outside the engine?", and when the answer
+#  is no, the engine gains the missing accessor rather than the panel reaching
+#  inside.
 # =============================================================================
 
 set(EDITOR_SOURCES
     src/main.cpp
-    src/EditorApp.cpp
-    src/AssetDragDrop.cpp                # drag-and-drop payloads and what they do
-    src/ScriptTemplate.cpp               # the default script the browser writes
-    src/panels/AssetBrowserPanel.cpp     # files on disk
-    src/panels/ScenePanel.cpp            # the Scene view - edit the world
-    src/panels/GamePanel.cpp             # the Game view  - play the world
-    src/panels/EventInspectorPanel.cpp   # Week 2
-    src/panels/LogPanel.cpp              # Week 3
-    src/panels/ProfilerPanel.cpp         # Week 4
-    src/panels/JobPanel.cpp              # Week 5
-    src/panels/ViewportPanel.cpp         # Week 6 - viewport + debug draw
-    src/panels/MemoryPanel.cpp           # Week 7
-    src/panels/CVarPanel.cpp             # Week 8
-    src/panels/HierarchyPanel.cpp        # Week 9
-    src/panels/ResourcePanel.cpp         # Week 9
-    src/panels/InspectorPanel.cpp        # Week 10
-    src/panels/ToolbarPanel.cpp          # Week 10
+    src/EditorApp.cpp                    # the window, the menu bar, the panel list
+    src/AssetDragDrop.cpp                # what happens when you drag a file onto something
+    src/ScriptTemplate.cpp               # the starter script the Assets panel writes
+    src/panels/AssetBrowserPanel.cpp     # Assets   - the files on disk
+    src/panels/ConsolePanel.cpp          # Console  - the log window
+    src/panels/GamePanel.cpp             # Game     - what a player would see
+    src/panels/HierarchyPanel.cpp        # Hierarchy- every entity in the scene
+    src/panels/InspectorPanel.cpp        # Inspector- the selected entity's components
+    src/panels/ScenePanel.cpp            # Scene    - the view you edit in
+    src/panels/ToolbarPanel.cpp          # Toolbar  - Play, Pause, Step
 )
 
 add_executable(editor ${EDITOR_SOURCES})
 
 target_include_directories(editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# WHOLE_ARCHIVE - see the note in sandbox/CMakeLists.txt. Linking the scripts
-# into the EDITOR too is what lets Play run real behaviour in the Game view.
+
+# WHOLE_ARCHIVE - see the explanation in sandbox/CMakeLists.txt. Linking the
+# scripts into the EDITOR as well is what lets Play actually run behaviour in
+# the Game view.
 target_link_libraries(editor PRIVATE
     Engine2D::engine
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,Engine2D::gamescripts>")

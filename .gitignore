@@ -42,12 +42,12 @@ IntelGraphicsProfiles/
 *.lastbuildstate
 
 # ---- Runtime output --------------------------------------------------------
-# Week 3's file sink writes here. Logs are evidence, not source - paste the
-# interesting lines into a writeup instead of committing the raw file.
+# The log file is written here while the program runs. It is output, not
+# source, so it is not committed.
 logs/
 *.log
 
-# Week 2: ImGui writes its own imgui.ini storing the docked panel layout.
+# The editor writes imgui.ini to remember how you arranged the panels.
 # A window arrangement is a personal preference, not source.
 imgui.ini
 
@@ -57,9 +57,9 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# ---- Profiler and sanitizer output -----------------------------------------
-# Reports are evidence, not source. Paste findings into your writeups instead
-# of committing raw dumps.
+# ---- Tool output -----------------------------------------------------------
+# Reports produced by profiling and analysis tools. Output, not source.
+#
 *.trace
 *.heaptrack.*
 callgrind.out.*
@@ -67,7 +67,7 @@ massif.out.*
 perf.data*
 
 # ---- NOT ignored, deliberately ---------------------------------------------
-# assets/**/*.bmp and assets/**/*.json ARE committed. Week 9's milestone check
-# is a fresh clone on another machine loading the same scene, and the classic
-# failure is an asset that only ever existed on the author's disk.
+# assets/**/*.bmp and assets/**/*.json ARE committed on purpose. The classic
+# failure is a scene that works on the author's machine and nowhere else,
+# because an image was never added to version control.
 !assets/**

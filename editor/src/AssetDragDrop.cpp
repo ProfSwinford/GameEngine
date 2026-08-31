@@ -1,4 +1,6 @@
-// Drag-and-drop payloads and what a dropped asset does. See AssetDragDrop.h.
+// ============================================================================
+//  AssetDragDrop.cpp - what a dropped file does. See AssetDragDrop.h.
+// ============================================================================
 
 #include "AssetDragDrop.h"
 
@@ -6,20 +8,21 @@
 
 #include <imgui.h>
 
-#include <algorithm>
 #include <cctype>
 
 namespace editor {
 namespace {
 
+// "does this filename end with this extension?", ignoring capitals - so
+// PLAYER.BMP and player.bmp are both recognised as images.
 bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
     if (suffix.size() > text.size()) {
         return false;
     }
-    const eng::usize offset = text.size() - suffix.size();
-    for (eng::usize i = 0; i < suffix.size(); ++i) {
-        const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(text[offset + i])));
-        const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(suffix[i])));
+    const std::size_t offset = text.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i) {
+        const int a = std::tolower(static_cast<unsigned char>(text[offset + i]));
+        const int b = std::tolower(static_cast<unsigned char>(suffix[i]));
         if (a != b) {
             return false;
         }
@@ -30,15 +33,14 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
 } // namespace
 
 AssetKind ClassifyAsset(std::string_view virtualPath) {
-    // Scripts are recognised by extension AND by living under gamescripts/. A .cpp
-    // anywhere else is engine or game source that this panel has no business
-    // offering to attach to an entity.
+    // A script is recognised by its extension AND by living in gamescripts/.
+    // A .cpp anywhere else is engine or game source, which this panel has no
+    // business offering to attach to an entity.
     if (virtualPath.starts_with("gamescripts/") &&
         (EndsWithNoCase(virtualPath, ".cpp") || EndsWithNoCase(virtualPath, ".h"))) {
         return AssetKind::Script;
     }
-    if (EndsWithNoCase(virtualPath, ".bmp") || EndsWithNoCase(virtualPath, ".png") ||
-        EndsWithNoCase(virtualPath, ".jpg") || EndsWithNoCase(virtualPath, ".jpeg")) {
+    if (EndsWithNoCase(virtualPath, ".bmp")) {
         return AssetKind::Texture;
     }
     if (EndsWithNoCase(virtualPath, ".json") && virtualPath.starts_with("scenes/")) {
@@ -60,24 +62,27 @@ const char* PayloadIdFor(AssetKind kind) {
 std::string ScriptNameFromPath(std::string_view virtualPath) {
     std::string_view name = virtualPath;
 
-    if (const eng::usize slash = name.find_last_of('/'); slash != std::string_view::npos) {
+    // Drop everything up to and including the last '/'.
+    if (const std::size_t slash = name.find_last_of('/');
+        slash != std::string_view::npos) {
         name.remove_prefix(slash + 1);
     }
-    if (const eng::usize dot = name.find_last_of('.'); dot != std::string_view::npos) {
+    // Drop the extension.
+    if (const std::size_t dot = name.find_last_of('.'); dot != std::string_view::npos) {
         name = name.substr(0, dot);
     }
     return std::string(name);
 }
 
-bool ApplyAssetToEntity(eng::EntityHandle target, std::string_view virtualPath,
+bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
                         std::string& outMessage) {
     eng::Scene&  scene  = eng::Engine::Get().GetScene();
     eng::Entity* entity = scene.Get(target);
     if (entity == nullptr) {
-        // The handle resolved to nothing, which is the handle system doing its
-        // job rather than a bug: the entity can be destroyed between the frame
-        // the drag started and the frame it was dropped.
-        outMessage = "the entity no longer exists";
+        // The id points at nothing, which is the id system doing its job
+        // rather than a bug: an entity can be destroyed between the frame the
+        // drag started and the frame it was dropped.
+        outMessage = "that entity no longer exists";
         return false;
     }
 
@@ -85,10 +90,10 @@ bool ApplyAssetToEntity(eng::EntityHandle target, std::string_view virtualPath,
         case AssetKind::Texture: {
             auto* sprite = entity->Find<eng::SpriteComponent>();
             if (sprite == nullptr) {
-                // ADDS the component rather than refusing. Dropping a texture
-                // on an entity that has no sprite obviously means "give it
-                // one" - refusing and making the user press + SpriteComponent
-                // first would be pedantry.
+                // Adds the component rather than refusing. Dropping an image
+                // onto an entity that has no sprite obviously means "give it
+                // one"; making the user press "+ SpriteComponent" first would
+                // be pedantry.
                 sprite = static_cast<eng::SpriteComponent*>(
                     entity->AddComponent(eng::SpriteComponent::kTypeName));
             }
@@ -98,7 +103,7 @@ bool ApplyAssetToEntity(eng::EntityHandle target, std::string_view virtualPath,
             }
             sprite->SetTexture(virtualPath);
             EditorState::Get().dirty = true;
-            outMessage = entity->Name() + " -> " + std::string(virtualPath);
+            outMessage = entity->Name() + " now uses " + std::string(virtualPath);
             return true;
         }
 
@@ -117,61 +122,64 @@ bool ApplyAssetToEntity(eng::EntityHandle target, std::string_view virtualPath,
             script->SetScriptName(scriptName);
             EditorState::Get().dirty = true;
 
-            // ATTACHING SUCCEEDS EVEN IF THE SCRIPT IS NOT COMPILED YET, and
-            // says so. That is the whole design - see ScriptComponent.h - and
-            // the message is the only thing standing between "it works" and
-            // "it does nothing and I do not know why".
+            // ATTACHING WORKS EVEN IF THE SCRIPT HAS NOT BEEN COMPILED YET,
+            // and says so. That is the whole design - see ScriptComponent.h -
+            // and this message is the only thing standing between "it works"
+            // and "it does nothing and I have no idea why".
             outMessage = script->IsResolved()
-                             ? entity->Name() + " runs " + scriptName
+                             ? entity->Name() + " now runs " + scriptName
                              : entity->Name() + " -> " + scriptName +
-                                   " (attached, but not compiled into this build yet - "
-                                   "rebuild to run it)";
+                                   " (attached and saved, but not compiled into this "
+                                   "build yet - rebuild to run it)";
             return true;
         }
 
         case AssetKind::Scene:
             outMessage = "a scene cannot be attached to an entity - drop it on the "
-                         "Scene view to load it";
+                         "Scene view to open it";
             return false;
 
         case AssetKind::Unknown:
             break;
     }
 
-    outMessage = "nothing in this editor knows what to do with that file";
+    outMessage = "the editor does not know what to do with that kind of file";
     return false;
 }
 
-bool AcceptAssetDropOnEntity(eng::EntityHandle target) {
+bool AcceptAssetDropOnEntity(eng::EntityId target) {
+    // BeginDragDropTarget attaches to the item that was drawn most recently,
+    // and returns false on every frame nothing is being dragged over it.
     if (!ImGui::BeginDragDropTarget()) {
         return false;
     }
 
     bool accepted = false;
 
-    // Both payload types are offered, so the caller does not have to know which
-    // kinds are droppable on an entity - and a new kind is one edit here.
+    // Both kinds are offered here, so a caller does not have to know which
+    // ones can land on an entity - and adding a new kind is one edit.
     for (const char* payloadId : {kPayloadTexture, kPayloadScript}) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payloadId);
         if (payload == nullptr) {
             continue;
         }
 
-        // ImGui copied the payload when the drag started, so this string is
-        // valid even though the browser may have refreshed since.
+        // ImGui took a copy of the path when the drag started, so this text is
+        // still valid even if the Assets panel has refreshed since.
         const auto* path = static_cast<const char*>(payload->Data);
 
         std::string message;
         const bool  ok = ApplyAssetToEntity(target, path, message);
         accepted       = accepted || ok;
 
-        // LOGGED EITHER WAY. A refused drop that says nothing is the single
-        // most frustrating outcome in a drag-and-drop interface, because there
-        // is no way to tell it apart from a drag that never started.
+        // WRITTEN TO THE LOG EITHER WAY. A refused drop that says nothing is
+        // the most frustrating outcome a drag-and-drop interface can have,
+        // because there is no way to tell it apart from a drag that never
+        // started.
         if (ok) {
-            ENGINE_LOG_INFO(eng::Channels::kEditor, "drop: {}", message);
+            ENGINE_LOG_INFO(eng::Channels::kEditor, "{}", message);
         } else {
-            ENGINE_LOG_WARN(eng::Channels::kEditor, "drop refused: {}", message);
+            ENGINE_LOG_WARN(eng::Channels::kEditor, "{}", message);
         }
     }
 
@@ -179,29 +187,29 @@ bool AcceptAssetDropOnEntity(eng::EntityHandle target) {
     return accepted;
 }
 
-eng::EntityHandle CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 worldPosition,
-                                       std::string& outMessage) {
+eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 worldPosition,
+                                   std::string& outMessage) {
     if (ClassifyAsset(virtualPath) != AssetKind::Texture) {
-        outMessage = "only a texture can be dropped into the scene to make an entity";
+        outMessage = "only an image can be dropped into the scene to make a new entity";
         return {};
     }
 
     eng::Scene& scene = eng::Engine::Get().GetScene();
 
-    // NAMED AFTER THE FILE, uniquified. Dropping checker_red.bmp three times
-    // gives checker_red, checker_red 1, checker_red 2 rather than three
-    // entities with the same name - which the Hierarchy could show but nothing
-    // could tell apart, and which Scene::Save's parent-by-name would then get
-    // wrong.
-    std::string base = ScriptNameFromPath(virtualPath);   // same trim: strip dir + extension
+    // Named after the file, with a number added if that name is taken.
+    // Dropping checker_red.bmp three times gives checker_red, checker_red_1
+    // and checker_red_2 rather than three entities the Hierarchy cannot tell
+    // apart - and which saving would then get the parenting wrong for, because
+    // parents are recorded by name.
+    std::string base = ScriptNameFromPath(virtualPath);   // strips folder and extension
     if (base.empty()) {
         base = "Sprite";
     }
 
-    const eng::EntityHandle handle = scene.CreateEntity(scene.MakeUniqueName(base));
-    eng::Entity*            entity = scene.Get(handle);
+    const eng::EntityId id     = scene.CreateEntity(scene.MakeUniqueName(base));
+    eng::Entity*        entity = scene.Get(id);
     if (entity == nullptr) {
-        outMessage = "the scene refused to create an entity";
+        outMessage = "the scene could not create an entity";
         return {};
     }
 
@@ -211,13 +219,13 @@ eng::EntityHandle CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 w
         entity->AddComponent(eng::SpriteComponent::kTypeName));
     if (sprite == nullptr) {
         outMessage = "could not add a SpriteComponent";
-        return handle;
+        return id;
     }
     sprite->SetTexture(virtualPath);
 
     EditorState::Get().dirty = true;
     outMessage = "created " + entity->Name();
-    return handle;
+    return id;
 }
 
 } // namespace editor

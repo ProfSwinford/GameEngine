@@ -1,14 +1,14 @@
-// =============================================================================
-//  WEEK 6 - PARTIALLY PROVIDED, now filled in. The hierarchy cases ARE the
-//  Milestone 1 verification expressed as tests, so the check happens here
-//  rather than by squinting at the screen.
+// ============================================================================
+//  Tests for Transform2D, Mat3 and Camera.
 //
-//  If a case here fails, no amount of staring at the window will say which of
-//  the three levels is wrong.
-// =============================================================================
+//  The parent/child cases are the ones worth having. When a three-level
+//  hierarchy comes out wrong on screen, no amount of staring at the window
+//  says WHICH of the three levels is at fault - but a failing test here names
+//  it immediately.
+// ============================================================================
 
 #include <doctest/doctest.h>
-#include <engine/debug/Camera.h>
+#include <engine/render/Camera.h>
 #include <engine/math/Transform2D.h>
 
 using namespace eng;
@@ -174,17 +174,17 @@ TEST_CASE("Mat3::Inverse undoes a transform-rotate-scale matrix") {
 }
 
 TEST_CASE("screen-to-world round trips at several zoom levels") {
-    // Needed working before Week 8, when picking depends on it. The viewport
-    // panel shows this live; this pins it down.
+    // This is what makes clicking on things in the Scene view work: a pixel
+    // under the mouse has to turn back into a position in the world.
     Camera camera;
     camera.SetViewportSize(Vec2{1280.0f, 720.0f});
 
     const Vec2 cameraPositions[] = {
         Vec2{0.0f, 0.0f}, Vec2{123.0f, -456.0f}, Vec2{-1000.0f, 900.0f}};
-    const f32 zooms[] = {0.5f, 1.0f, 2.0f, 7.3f};
+    const float zooms[] = {0.5f, 1.0f, 2.0f, 7.3f};
 
     for (const Vec2& position : cameraPositions) {
-        for (f32 zoom : zooms) {
+        for (float zoom : zooms) {
             camera.SetPosition(position);
             camera.SetZoom(zoom);
 

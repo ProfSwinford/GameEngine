@@ -1,145 +1,153 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 3 - the logger. Ch. 10.1.
+// ============================================================================
+//  Log.h - the engine's message log.
 //
-//  Why not printf: by Week 9 there are a dozen subsystems producing output at
-//  once, and the question you want to ask is never "show me everything." It is
-//  "show me only the resource manager, only warnings and worse, and put it in
-//  a file I can read after the crash."
+//  WHAT THIS FILE GIVES YOU
+//  Three macros. Use them instead of std::cout anywhere in the engine, the
+//  editor, or your game code:
 //
-//  Four things make that possible and all four are here:
-//    - NAMED CHANNELS      - which subsystem said this
-//    - GRADED VERBOSITY    - how much does it matter
-//    - MULTIPLE SINKS      - console, file, and (Week 3 panel) memory
-//    - A LAUNCH THRESHOLD  - decided at startup, without a rebuild
+//      ENGINE_LOG_INFO (Channels::kGame, "player spawned at {}, {}", x, y);
+//      ENGINE_LOG_WARN (Channels::kGame, "no texture named '{}'", path);
+//      ENGINE_LOG_ERROR(Channels::kGame, "scene failed to load: {}", why);
 //
-//  ---------------------------------------------------------------------------
-//  CHANNEL REPRESENTATION - the deliberate decision, recorded as instructed.
+//  Every message goes to three places at once: the terminal, a text file
+//  (logs/engine.log), and an in-memory list that the editor's Console window
+//  reads and displays. See LogBuffer.h for that third one.
 //
-//  A channel is a `std::string_view` naming a string literal, and the literals
-//  live in Channels below. Not an enum, not a hashed id. Reasons:
+//  WHY A LOG INSTEAD OF std::cout
+//  std::cout gives you a wall of text with no way to ask "show me only the
+//  errors" or "show me only what the physics code said". A log message here
+//  carries two extra pieces of information that make those questions
+//  answerable:
 //
-//    - An enum cannot be extended by a subsystem that does not want to edit a
-//      shared header, and by Week 9 there are a dozen channels across eight
-//      directories.
-//    - A string_view over a literal does not allocate at the call site. The
-//      only copy is made inside the memory sink, once, and only for messages
-//      that survive the threshold.
-//    - The Week 3 log panel must discover the channel list AT RUNTIME - the
-//      instructions are explicit that hardcoding it is wrong - and a set of
-//      strings observed in the sink does that with no registration step.
+//    * a LEVEL   - how much it matters (Info, Warning, Error)
+//    * a CHANNEL - which part of the program said it ("Physics", "Scene", ...)
 //
-//  WEEK 8 REVISIT: StringId now exists and would make the filter comparison an
-//  integer compare. It was deliberately NOT converted, because the log panel
-//  and the log file both need the text, so the hash would need the reverse
-//  table on every line - paying for the hash and the lookup to save a compare
-//  that happens once per surviving message. The measurement that would change
-//  this decision is log volume in the hot path, and there is none: the hot
-//  path logs nothing.
+//  The editor's Console window turns those two fields into filter buttons.
+//  That is the entire reason they exist.
 //
-//  WEEK 5: this is thread-safe. The lock lives inside Write(), around the sink
-//  fan-out only - see the note in Log.cpp about where the Week 3 guess was.
-// =============================================================================
-
-#include <engine/core/Types.h>
+//  WHY std::format (from <format>) RATHER THAN printf
+//  std::format is the C++20 standard formatting library. It is used here for
+//  two reasons:
+//    1. It checks the format string against the arguments AT COMPILE TIME, so
+//       a mismatch is a build error rather than a crash while the game runs.
+//       printf cannot do that - it will happily print garbage.
+//    2. It works with std::string and with any type, so you never have to
+//       remember whether an argument needs %d, %s, %f or %zu. Every value is
+//       just "{}".
+//
+//  WHY THE MACROS EXIST INSTEAD OF PLAIN FUNCTIONS
+//  A macro can skip the work entirely. The threshold test happens BEFORE
+//  std::format runs, so a message that is going to be filtered out never pays
+//  the cost of building its own text. A plain function would have to build the
+//  string first just to hand it over and have it thrown away.
+// ============================================================================
 
 #include <format>
 #include <string_view>
 
 namespace eng {
 
-enum class LogLevel : u8 {
-    Trace,
-    Debug,
-    Info,
-    Warning,
-    Error,
-    Fatal,
+// How much a message matters. The editor's Console shows one filter button per
+// entry here, exactly like Unity's Console does.
+enum class LogLevel {
+    Info,      // ordinary progress: "scene loaded", "window created"
+    Warning,   // something looks wrong but the program continues
+    Error,     // something failed; a feature will not work
 };
 
-// Text for a level, for sinks and for the editor's level dropdown.
+// Turns a level into text for the log file and the Console's dropdown.
 const char* ToString(LogLevel level);
 
-// Parses "Info", "warning", ... Returns false and leaves `out` alone on a
-// name it does not recognise - config files are written by humans.
+// Reads a level out of the config file, accepting "info", "Warning", "ERROR".
+// Returns false and leaves `out` untouched for anything else, because config
+// files are typed by people and a typo should not silently change behaviour.
 bool ParseLogLevel(std::string_view text, LogLevel& out);
 
-// The channels the engine itself uses. Nothing enforces this list; a
-// subsystem may pass any literal. It exists so that a reader can find them
-// all in one place and so that typos in engine code are a compile error
-// rather than a silently new channel.
+// The channel names the engine uses. A channel is just a short label saying
+// which part of the program produced a message.
+//
+// WHY std::string_view AND NOT std::string
+// A std::string_view is the standard "I am looking at some text that somebody
+// else owns" type. Every name below is a string literal that lives for the
+// whole run of the program, so there is nothing to own and nothing to copy.
+// Passing a std::string here would make a fresh heap copy of "Physics" every
+// single time you logged a message.
+//
+// Nothing forces you to use a name from this list - any text works - but
+// keeping the engine's own names here means a typo in engine code is a
+// compiler error instead of a silently-new channel in the Console.
 namespace Channels {
-inline constexpr std::string_view kCore      = "Core";
-inline constexpr std::string_view kPlatform  = "Platform";
-inline constexpr std::string_view kInput     = "Input";
-inline constexpr std::string_view kRender    = "Render";
-inline constexpr std::string_view kMemory    = "Memory";
-inline constexpr std::string_view kJobs      = "Jobs";
-inline constexpr std::string_view kFileSys   = "FileSystem";
-inline constexpr std::string_view kResource  = "Resource";
-inline constexpr std::string_view kScene     = "Scene";
-inline constexpr std::string_view kPhysics   = "Physics";
-inline constexpr std::string_view kProfile   = "Profile";
-inline constexpr std::string_view kConfig    = "Config";
-inline constexpr std::string_view kEditor    = "Editor";
-inline constexpr std::string_view kGame      = "Game";
+inline constexpr std::string_view kCore     = "Core";
+inline constexpr std::string_view kPlatform = "Platform";
+inline constexpr std::string_view kInput    = "Input";
+inline constexpr std::string_view kRender   = "Render";
+inline constexpr std::string_view kFileSys  = "FileSystem";
+inline constexpr std::string_view kResource = "Resource";
+inline constexpr std::string_view kScene    = "Scene";
+inline constexpr std::string_view kPhysics  = "Physics";
+inline constexpr std::string_view kConfig   = "Config";
+inline constexpr std::string_view kEditor   = "Editor";
+inline constexpr std::string_view kGame     = "Game";
 } // namespace Channels
 
+// The log itself. Every function is static because there is exactly one log
+// for the whole program and passing a pointer to it through every subsystem
+// would be noise.
 class Log {
 public:
-    // Opens the sinks. Console is always on; the file sink is opened once,
-    // here, and kept open - opening a file per log line is slow enough to
-    // change the timing of the thing you were trying to observe.
-    //
-    // An empty path means "console and memory only", which is what the test
-    // binary wants.
+    // Opens the log file and starts the clock that timestamps each message.
+    // Pass an empty path for "terminal and Console window only", which is what
+    // the unit tests want.
     static bool Init(std::string_view logFilePath, LogLevel threshold);
 
-    // Flushes and closes. The logger must OUTLIVE everything that logs during
-    // its own shutdown, which is why it is registered first and therefore torn
-    // down last. Week 7 makes that ordering explicit and declared.
+    // Flushes and closes the file. The log is started first and shut down last
+    // of everything in the engine, so that a subsystem can still report a
+    // problem while it is being torn down.
     static void Shutdown();
 
     static bool IsInitialised();
 
-    // The actual write. Drops anything below the threshold.
-    static void Write(std::string_view channel, LogLevel level, std::string_view message);
+    // Writes one message. The macros below call this; you normally should not.
+    static void Write(std::string_view channel, LogLevel level,
+                      std::string_view message);
 
-    static void SetThreshold(LogLevel level);
+    // Messages below the threshold are dropped. Set from config/engine.json,
+    // so the amount of output can change without rebuilding.
+    static void     SetThreshold(LogLevel level);
     static LogLevel GetThreshold();
+    static bool     ShouldLog(LogLevel level);
 
-    // The threshold test, exposed so the macros below can skip FORMATTING a
-    // message that is going to be dropped. This is why the check is here and
-    // not inside Write(): std::format allocates and walks the format string,
-    // and a Trace call in an update loop should cost a load and a compare.
-    static bool ShouldLog(LogLevel level);
-
+    // Forces anything buffered out to the file. Called at shutdown, and worth
+    // calling by hand just before code you suspect of crashing.
     static void Flush();
 };
 
 } // namespace eng
 
-// -----------------------------------------------------------------------------
-//  Convenience macros.
+// ----------------------------------------------------------------------------
+//  The macros.
 //
-//  C++23's std::format is far closer to C# string interpolation than printf
-//  is, and it is type-checked at COMPILE time - a bad specifier is a build
-//  error rather than a 3am surprise.
+//  `do { ... } while (false)` is the standard way to write a multi-statement
+//  macro. It makes the whole macro behave like ONE statement, so this stays
+//  correct:
 //
-//  Note the shape: the threshold check happens BEFORE std::format runs. A
-//  suppressed message costs one comparison.
-// -----------------------------------------------------------------------------
+//      if (health <= 0) ENGINE_LOG_INFO(Channels::kGame, "dead");
+//      else             Respawn();
+//
+//  Without the do/while, the `else` would attach to the wrong `if`.
+//
+//  `__VA_ARGS__` is "everything the caller passed after the channel" - the
+//  format string plus any values - handed straight to std::format.
+// ----------------------------------------------------------------------------
 #define ENGINE_LOG(channel, level, ...)                                        \
     do {                                                                       \
         if (::eng::Log::ShouldLog(level)) {                                    \
-            ::eng::Log::Write((channel), (level), ::std::format(__VA_ARGS__)); \
+            ::eng::Log::Write((channel), (level), ::std::format(__VA_ARGS__));  \
         }                                                                      \
     } while (false)
 
-#define ENGINE_LOG_TRACE(channel, ...) ENGINE_LOG(channel, ::eng::LogLevel::Trace,   __VA_ARGS__)
-#define ENGINE_LOG_DEBUG(channel, ...) ENGINE_LOG(channel, ::eng::LogLevel::Debug,   __VA_ARGS__)
 #define ENGINE_LOG_INFO(channel, ...)  ENGINE_LOG(channel, ::eng::LogLevel::Info,    __VA_ARGS__)
 #define ENGINE_LOG_WARN(channel, ...)  ENGINE_LOG(channel, ::eng::LogLevel::Warning, __VA_ARGS__)
 #define ENGINE_LOG_ERROR(channel, ...) ENGINE_LOG(channel, ::eng::LogLevel::Error,   __VA_ARGS__)
-#define ENGINE_LOG_FATAL(channel, ...) ENGINE_LOG(channel, ::eng::LogLevel::Fatal,   __VA_ARGS__)

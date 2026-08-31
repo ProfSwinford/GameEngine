@@ -1,10 +1,14 @@
-// WEEK 3 - the deleters. This is the one translation unit where the SDL types
-// are complete and where the destroy functions are named. See SdlHandles.h.
+// ============================================================================
+//  SdlHandles.cpp - the four clean-up functions declared in SdlHandles.h.
 //
-// SDL's destroy functions all accept null and do nothing, which is why none of
-// these needs a guard - and is worth having gone and READ rather than guessed,
-// because "it probably handles null" is how half-constructed objects become
-// crashes at shutdown.
+//  This is the ONLY file in the engine's platform layer that includes the full
+//  SDL header, which is what keeps SDL out of every other file. Each function
+//  below simply calls the matching SDL_Destroy* function.
+//
+//  None of them checks for null first. That is not an oversight: SDL's destroy
+//  functions are documented to accept a null pointer and do nothing, so a
+//  window that failed to open still cleans up correctly.
+// ============================================================================
 
 #include <engine/platform/SdlHandles.h>
 

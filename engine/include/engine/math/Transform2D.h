@@ -1,49 +1,40 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 6 - a node in a transform hierarchy.
+// ============================================================================
+//  Transform2D.h - where an object is, how it is turned, and how big it is.
 //
-//  Position, rotation and scale relative to a parent, plus the machinery to
-//  ask for a world-space transform. Arbitrary depth; nothing here cares
-//  whether the tree is three deep or thirty.
+//  This is the same idea as Unity's Transform component. Every entity in the
+//  engine has exactly one, and it holds three things:
 //
-//  WEEK 9: this became the payload of TransformComponent - the thing every
-//  entity in a scene file has. It is designed as something a DATA FILE
-//  constructs, which is why everything is a plain setter with no invariants
-//  beyond the cycle check.
+//      position   where it sits
+//      rotation   which way it faces, in radians
+//      scale      how large it is
 //
-//  ---------------------------------------------------------------------------
-//  THE TWO QUESTIONS THE HEADER ASKED, ANSWERED:
+//  PARENTS AND CHILDREN
+//  A transform can have a parent. When it does, its position/rotation/scale
+//  are measured RELATIVE TO THAT PARENT rather than to the world. Move the
+//  parent and the children come along; turn the parent and the children orbit
+//  it. This is how a turret stays on a tank, or a wheel stays on a car,
+//  without any code having to keep them in sync.
 //
-//  1. WHAT HAPPENS TO CHILDREN WHEN A PARENT IS DESTROYED?
+//  Because of that there are two versions of every question:
+//      LocalPosition()  - where am I relative to my parent?
+//      WorldPosition()  - where am I actually, in the world?
 //
-//     They are ORPHANED TO THE ROOT, keeping their WORLD transform. Not
-//     destroyed, not silently left pointing at freed memory.
+//  TWO RULES THIS CLASS ENFORCES
 //
-//     Reasoning: destroying children makes Transform2D own lifetime, and
-//     lifetime here belongs to the Entity that holds the component - two
-//     owners of the same object is the bug Week 3 spent a week on. Asserting
-//     would make a perfectly ordinary gameplay action ("delete the ship, keep
-//     the debris") a programmer error. Preserving the world transform means a
-//     child does not teleport when its parent dies, which is what a player
-//     would expect to see.
+//  1. WHEN A PARENT IS DESTROYED, ITS CHILDREN ARE NOT.
+//     They are handed back to the world, keeping the position they were
+//     already visibly at. Destroying them instead would mean this class owned
+//     their lifetime, and their lifetime already belongs to the entity that
+//     holds them. Moving them would make debris jump across the screen the
+//     moment the ship it came from was deleted.
 //
-//  2. CAN A NODE BE ITS OWN ANCESTOR?
-//
-//     No. SetParent walks up from the proposed parent and ASSERTS if it meets
-//     `this`, then refuses the reparent. Silently accepting a cycle would make
-//     WorldMatrix() loop forever, and an infinite loop inside a render pass is
-//     a hang with no diagnostic at all.
-//
-//  ---------------------------------------------------------------------------
-//  WORLDMATRIX IS NAIVE ON PURPOSE. It walks to the root and multiplies, every
-//  call. That is correct and it is fast enough for all of Phase 1 - the Week 6
-//  stretch measured 100 entities at 3 deep at well under a tenth of a
-//  millisecond, and the number is in docs/week06-milestone1.md. Caching it is
-//  a Phase 2 job, to be done when a scoped timer says so and not before;
-//  premature caching here is a reliable way to spend a week debugging stale
-//  transforms instead of learning matrices.
-// =============================================================================
+//  2. NOTHING CAN BE ITS OWN ANCESTOR.
+//     Asking for a world position walks up the parent chain, so a loop in that
+//     chain would walk forever and freeze the game with no error message.
+//     SetParent checks for it and refuses.
+// ============================================================================
 
 #include <engine/math/Mat3.h>
 
@@ -56,50 +47,66 @@ public:
     Transform2D() = default;
     ~Transform2D();
 
-    // Non-copyable: a Transform2D is a NODE IN A TREE, and copying a node
-    // raises "does the copy have the same parent? the same children?" with no
-    // good answer. Moving is not supported either, because children hold raw
-    // back-pointers to their parent and a move would leave them dangling.
+    // Copying is switched off with `= delete`, which makes any attempt to copy
+    // a compiler error instead of a runtime surprise.
+    //
+    // The reason: a Transform2D is a node in a tree. If you copied one, would
+    // the copy have the same parent? The same children? Would the children now
+    // have two parents? There is no answer that is not surprising, so the type
+    // simply refuses to express the question.
     Transform2D(const Transform2D&)            = delete;
     Transform2D& operator=(const Transform2D&) = delete;
 
-    // --- local space ------------------------------------------------------
-    Vec2 LocalPosition() const { return m_position; }
-    f32  LocalRotation() const { return m_rotation; }   // radians, CCW
-    Vec2 LocalScale()    const { return m_scale; }
+    // ---- relative to the parent ------------------------------------------
+    Vec2  LocalPosition() const { return m_position; }
+    float LocalRotation() const { return m_rotation; }   // radians, anticlockwise
+    Vec2  LocalScale()    const { return m_scale; }
 
     void SetLocalPosition(Vec2 position) { m_position = position; }
-    void SetLocalRotation(f32 radians)   { m_rotation = radians; }
+    void SetLocalRotation(float radians) { m_rotation = radians; }
     void SetLocalScale(Vec2 scale)       { m_scale = scale; }
 
     void Translate(Vec2 delta)  { m_position += delta; }
-    void Rotate(f32 radians)    { m_rotation += radians; }
+    void Rotate(float radians)  { m_rotation += radians; }
 
-    // --- hierarchy --------------------------------------------------------
-    Transform2D*                            Parent() const { return m_parent; }
-    const std::vector<Transform2D*>&        Children() const { return m_children; }
+    // ---- the tree ---------------------------------------------------------
+    Transform2D*                     Parent()   const { return m_parent; }
+    const std::vector<Transform2D*>& Children() const { return m_children; }
 
-    // Reparents. `keepWorldTransform` recomputes the local values so the node
-    // does not visibly move - which is what a scene editor's drag-and-drop
-    // wants, and what the "reparenting to an identity parent does not move
-    // anything" test checks.
+    // Attaches this transform to a new parent.
+    //
+    // `keepWorldTransform` decides what happens on screen. With it false, the
+    // object keeps its local numbers and therefore jumps to wherever those
+    // numbers mean under the new parent. With it true, the local numbers are
+    // recomputed so the object does not appear to move at all - which is what
+    // dragging something onto a new parent in the Hierarchy should do.
     void SetParent(Transform2D* parent, bool keepWorldTransform = false);
-    void DetachChildren();   // orphan to root, preserving world transforms
 
-    // Depth from the root. Root nodes are depth 0.
-    i32 Depth() const;
+    // Hands every child back to the world, keeping them where they look.
+    void DetachChildren();
+
+    // How many parents there are above this one. A transform with no parent
+    // has depth 0.
+    int  Depth() const;
     bool IsDescendantOf(const Transform2D* candidate) const;
 
-    // --- matrices ---------------------------------------------------------
+    // ---- matrices ---------------------------------------------------------
+    // LocalMatrix turns this node's position/rotation/scale into a matrix.
+    // WorldMatrix does the same but also folds in every parent above it.
     Mat3 LocalMatrix() const;
     Mat3 WorldMatrix() const;
 
-    Vec2 WorldPosition() const;
-    f32  WorldRotation() const;
-    Vec2 WorldScale() const;
+    Vec2  WorldPosition() const;
+    float WorldRotation() const;
+    Vec2  WorldScale() const;
 
+    // Moves the object to a world position, working out for you what local
+    // position that corresponds to under the current parent.
     void SetWorldPosition(Vec2 world);
 
+    // Converting a point or a direction between this object's own frame of
+    // reference and the world's. A POINT is affected by the object's position;
+    // a DIRECTION is not. See Mat3.h for why those are separate.
     Vec2 LocalToWorldPoint(Vec2 local) const;
     Vec2 WorldToLocalPoint(Vec2 world) const;
     Vec2 LocalToWorldVector(Vec2 local) const;
@@ -109,9 +116,9 @@ private:
     void AddChild(Transform2D* child);
     void RemoveChild(Transform2D* child);
 
-    Vec2 m_position{0.0f, 0.0f};
-    f32  m_rotation = 0.0f;
-    Vec2 m_scale{1.0f, 1.0f};
+    Vec2  m_position{0.0f, 0.0f};
+    float m_rotation = 0.0f;
+    Vec2  m_scale{1.0f, 1.0f};
 
     Transform2D*              m_parent = nullptr;
     std::vector<Transform2D*> m_children;

@@ -1,23 +1,23 @@
 # =============================================================================
-#  WEEK 2 - the unit test target.
+#  The unit test program.
 #
-#  Tests link against `engine`, exactly like the sandbox does, and can see
-#  only the engine's PUBLIC headers. That is a feature: if something is hard
-#  to test, it is usually because it is hard to use.
+#  Tests link against `engine` exactly the way the game does, and can see only
+#  the engine's public headers. That is deliberate: if something turns out to
+#  be hard to test, it is usually because it is hard to use.
+#
+#  doctest is the test framework. It is header-only, so there is nothing to
+#  install, and it was chosen for how fast it compiles - a test suite that is
+#  slow to build is a test suite that stops being run.
+#
+#  Run them with:  ctest --preset debug
 # =============================================================================
 
 set(TEST_SOURCES
-    src/test_main.cpp
-    src/test_bytebuffer.cpp        # Week 2, provided
-    src/test_memutil.cpp           # Week 2
-    src/test_queue.cpp             # Week 5, provided
-    src/test_vec2.cpp              # Week 6
-    src/test_overlap.cpp           # Week 6, partially provided
-    src/test_transform.cpp         # Week 6, partially provided
-    src/test_random.cpp            # Week 6
-    src/test_allocators.cpp        # Week 7, provided - do not edit
-    src/test_stringid.cpp          # Week 8, partially provided
-    src/test_handle.cpp            # Week 9, provided
+    src/test_main.cpp        # tells doctest to generate a main() for us
+    src/test_vec2.cpp
+    src/test_overlap.cpp
+    src/test_transform.cpp
+    src/test_random.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})
@@ -26,6 +26,6 @@ target_link_libraries(tests PRIVATE Engine2D::engine doctest::doctest)
 
 engine_set_warnings(tests)
 
-# Registers the whole binary as one CTest test. Good enough all semester;
-# doctest reports which individual cases failed in its own output.
+# Registers the whole program as one test as far as CMake is concerned;
+# doctest's own output says which individual cases failed.
 add_test(NAME unit_tests COMMAND tests)

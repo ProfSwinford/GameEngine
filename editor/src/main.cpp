@@ -1,20 +1,22 @@
-// =============================================================================
-//  WEEK 2 - the IDE's entry point. Deliberately boring: construct, Init, Run,
-//  Shutdown. Everything interesting is in EditorApp or in a panel.
+// ============================================================================
+//  main.cpp - where the editor starts.
 //
-//  Two executables exist from Week 2 onward:
-//    editor   - this. The IDE.
-//    sandbox  - the standalone game runtime. No IDE, no ImGui.
+//  Deliberately dull: build the application object, start it, run it, stop it.
+//  Everything interesting is in EditorApp or in one of the panels.
 //
-//  The sandbox is kept working every week. It is what the Week 10 gate is
-//  built in, and it is what proves the engine can ship without its tools.
-// =============================================================================
+//  There are two programs in this project:
+//    editor   - this one, the development environment
+//    sandbox  - the game running on its own, with no editor at all
+// ============================================================================
 
 #include "EditorApp.h"
 
 #include <cstdio>
 
 int main(int argc, char** argv) {
+    // The editor takes no command-line arguments. Naming them and then casting
+    // them to void is the standard way to say "yes, I know these exist, and I
+    // am deliberately not using them" without the compiler warning about it.
     (void)argc;
     (void)argv;
 
@@ -22,10 +24,10 @@ int main(int argc, char** argv) {
 
     if (!app.Init()) {
         std::fprintf(stderr,
-                     "editor: initialisation failed. The boot log above names the "
-                     "subsystem that refused to start.\n");
+                     "the editor could not start. The messages above name the part "
+                     "that failed.\n");
         app.Shutdown();
-        return 1;
+        return 1;   // a non-zero exit code means "something went wrong"
     }
 
     app.Run();

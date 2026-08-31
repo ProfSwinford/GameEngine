@@ -1,91 +1,94 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 6 - Vec2. Ch. 5.1-5.2.
+// ============================================================================
+//  Vec2.h - a 2D point or direction: two floats, x and y.
 //
-//  This replaced the placeholder in Week 2's MemUtil.h. Everything in the
-//  engine that has a position uses this type.
+//  This is the type used for every position, size, velocity and offset in the
+//  engine. If something in a 2D game has a location, it is stored in a Vec2.
 //
-//  Header-only, and deliberately: every function here is two or three
-//  arithmetic operations, and an out-of-line call would cost more than the
-//  work. This is the one place in the engine where "put it in the header" is
-//  the performance answer rather than the lazy one.
+//  WHY EVERYTHING IS DEFINED IN THE HEADER
+//  Normally a class is declared in a .h and implemented in a .cpp. Not here.
+//  Every function below is one or two arithmetic operations, and the cost of
+//  *calling* a function is larger than the cost of the work it does. Putting
+//  the bodies in the header lets the compiler paste them straight into the
+//  caller (this is called inlining) and the call disappears entirely.
 //
-//  OPERATOR OVERLOADING - which are members and which are free:
+//  WHY `constexpr` IS ON ALMOST EVERYTHING
+//  `constexpr` tells the compiler "this can be worked out while compiling, if
+//  the inputs are known then". So `Vec2{3, 4} + Vec2{1, 1}` in your source
+//  becomes the literal value (4, 5) in the finished program - no addition
+//  happens while the game runs.
 //
-//    Members:  +=, -=, *=, /=          - they mutate the left operand, and the
-//                                        left operand is always a Vec2.
-//    Free:     +, -, unary -, *, /     - because `2.0f * v` needs a left
-//                                        operand of type f32, and a member
-//                                        function's left operand is always its
-//                                        own class. That single case decides
-//                                        the whole family: for symmetry, the
-//                                        binary arithmetic operators are all
-//                                        free functions.
-//    Free:     ==, !=                  - defaulted via C++20's ==, though see
-//                                        ApproxEqual below for the version you
-//                                        should almost always be using.
-// =============================================================================
-
-#include <engine/core/Types.h>
+//  WHY <cmath> IS INCLUDED
+//  It is the C++ standard maths header, and it is where std::sqrt, std::cos,
+//  std::sin, std::atan2 and std::fabs come from. There is no reason to write
+//  those by hand: the standard library versions are correct, fast, and
+//  available on every platform.
+// ============================================================================
 
 #include <cmath>
 
 namespace eng {
 
 struct Vec2 {
-    f32 x = 0.0f;
-    f32 y = 0.0f;
+    float x = 0.0f;
+    float y = 0.0f;
 
     constexpr Vec2() = default;
-    constexpr Vec2(f32 inX, f32 inY) : x(inX), y(inY) {}
+    constexpr Vec2(float inX, float inY) : x(inX), y(inY) {}
 
-    // --- compound assignment: members -------------------------------------
+    // ---- operators that CHANGE this vector -------------------------------
+    // These are member functions because the thing on the left of `+=` is
+    // always a Vec2, which is exactly what a member function requires.
     constexpr Vec2& operator+=(const Vec2& rhs) { x += rhs.x; y += rhs.y; return *this; }
     constexpr Vec2& operator-=(const Vec2& rhs) { x -= rhs.x; y -= rhs.y; return *this; }
-    constexpr Vec2& operator*=(f32 scalar)      { x *= scalar; y *= scalar; return *this; }
-    constexpr Vec2& operator/=(f32 scalar)      { x /= scalar; y /= scalar; return *this; }
+    constexpr Vec2& operator*=(float scalar)    { x *= scalar; y *= scalar; return *this; }
+    constexpr Vec2& operator/=(float scalar)    { x /= scalar; y /= scalar; return *this; }
 
-    // Exact equality. Present because the compiler can generate it and because
-    // a few places genuinely want bitwise-identical (has this been written to
-    // at all). Use ApproxEqual for anything that came out of arithmetic.
+    // `= default` asks the compiler to write == and != for us by comparing
+    // every member. This is EXACT equality, which is rarely what you want for
+    // floats - see ApproxEqual near the bottom of this file.
     friend constexpr bool operator==(const Vec2&, const Vec2&) = default;
 
-    // LengthSquared exists so that distance COMPARISONS never pay for a square
-    // root. `a.LengthSquared() < b.LengthSquared()` orders identically to
-    // comparing the lengths, because sqrt is monotonic on non-negative inputs.
-    // If only Length existed, every comparison in the engine would carry a
-    // sqrt it did not need.
-    constexpr f32 LengthSquared() const { return x * x + y * y; }
-    f32           Length() const        { return std::sqrt(LengthSquared()); }
-
-    // ZERO-LENGTH NORMALIZE, decided and tested:
-    //   Normalized() on a vector shorter than kNormalizeEpsilon returns the
-    //   ZERO VECTOR, not NaN and not infinity.
+    // The length of the vector, squared. This exists so that COMPARING two
+    // distances never has to compute a square root:
     //
-    // Dividing by zero in floating point does not crash. It produces inf or
-    // NaN, which then propagates silently through every subsequent
-    // calculation and surfaces as an entity that has vanished from the screen
-    // with no error anywhere. Zero is wrong too - but it is wrong LOUDLY and
-    // locally, and it does not poison anything downstream.
-    static constexpr f32 kNormalizeEpsilon = 1e-8f;
+    //     if (a.LengthSquared() < b.LengthSquared())   // same answer,
+    //     if (a.Length()        < b.Length())          // more work
+    //
+    // Both lines order the vectors identically, because squaring never changes
+    // the order of non-negative numbers. Prefer the first.
+    constexpr float LengthSquared() const { return x * x + y * y; }
+    float           Length() const        { return std::sqrt(LengthSquared()); }
+
+    // A vector pointing the same way but exactly 1 unit long.
+    //
+    // A vector of length zero has no direction, so there is nothing correct to
+    // return. Dividing by zero here would NOT crash - floating point produces
+    // "inf" or "NaN" instead, and those values then spread silently through
+    // every later calculation until an object simply vanishes from the screen
+    // with no error message anywhere. Returning (0, 0) is also wrong, but it
+    // is wrong in one visible place instead of everywhere downstream.
+    static constexpr float kNormalizeEpsilon = 1e-8f;
 
     Vec2 Normalized() const {
-        const f32 lengthSq = LengthSquared();
+        const float lengthSq = LengthSquared();
         if (lengthSq < kNormalizeEpsilon) {
             return Vec2{0.0f, 0.0f};
         }
-        const f32 inverse = 1.0f / std::sqrt(lengthSq);
+        // One division and two multiplies instead of two divisions.
+        const float inverse = 1.0f / std::sqrt(lengthSq);
         return Vec2{x * inverse, y * inverse};
     }
 
-    // In place. Naming convention used across the whole engine:
-    // a PAST PARTICIPLE returns a new value (Normalized, Transposed); a bare
-    // VERB mutates in place (Normalize, Transpose).
+    // Naming rule used throughout the engine: a name ending in -ed returns a
+    // NEW value and leaves the original alone (Normalized); the bare verb
+    // changes the object in place (Normalize).
     void Normalize() { *this = Normalized(); }
 
-    // Perpendicular, rotated 90 degrees counter-clockwise. Two lines, and it
-    // turns up constantly in 2D geometry.
+    // Turned 90 degrees anticlockwise. Two lines, and it comes up constantly
+    // in 2D geometry - it is how you get the "sideways" direction from a
+    // "forwards" one.
     constexpr Vec2 Perpendicular() const { return Vec2{-y, x}; }
 
     static constexpr Vec2 Zero()  { return Vec2{0.0f, 0.0f}; }
@@ -94,61 +97,71 @@ struct Vec2 {
     static constexpr Vec2 UnitY() { return Vec2{0.0f, 1.0f}; }
 };
 
-// --- free binary operators --------------------------------------------------
+// ---- operators that PRODUCE a new vector -----------------------------------
+// These are free functions rather than members. The reason is the third line:
+// `2.0f * v` has a float on the left, and a member function's left-hand side
+// is always its own class. Once one of them has to be free, they all are, so
+// that the whole family looks the same.
 constexpr Vec2 operator+(const Vec2& a, const Vec2& b) { return Vec2{a.x + b.x, a.y + b.y}; }
 constexpr Vec2 operator-(const Vec2& a, const Vec2& b) { return Vec2{a.x - b.x, a.y - b.y}; }
 constexpr Vec2 operator-(const Vec2& v)                { return Vec2{-v.x, -v.y}; }
-constexpr Vec2 operator*(const Vec2& v, f32 s)         { return Vec2{v.x * s, v.y * s}; }
-constexpr Vec2 operator*(f32 s, const Vec2& v)         { return Vec2{v.x * s, v.y * s}; }
-constexpr Vec2 operator/(const Vec2& v, f32 s)         { return Vec2{v.x / s, v.y / s}; }
+constexpr Vec2 operator*(const Vec2& v, float s)       { return Vec2{v.x * s, v.y * s}; }
+constexpr Vec2 operator*(float s, const Vec2& v)       { return Vec2{v.x * s, v.y * s}; }
+constexpr Vec2 operator/(const Vec2& v, float s)       { return Vec2{v.x / s, v.y / s}; }
 
-// Component-wise product. Not a dot product; used for non-uniform scale.
+// Multiplies x by x and y by y. Used for non-uniform scaling ("twice as wide,
+// the same height"). This is NOT the dot product.
 constexpr Vec2 Scale(const Vec2& a, const Vec2& b) { return Vec2{a.x * b.x, a.y * b.y}; }
 
-constexpr f32 Dot(const Vec2& a, const Vec2& b) { return a.x * b.x + a.y * b.y; }
+// The dot product. Positive when the two vectors point roughly the same way,
+// zero when they are at right angles, negative when they oppose.
+constexpr float Dot(const Vec2& a, const Vec2& b) { return a.x * b.x + a.y * b.y; }
 
-// In 2D the cross product is a SCALAR: the z component of the 3D cross product
-// of the two vectors treated as lying in the xy plane. Its SIGN tells you
-// which side of `a` the vector `b` is on, which makes it the workhorse of 2D
-// geometry - winding order, point-in-triangle, separating axes.
-constexpr f32 Cross(const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; }
+// In 2D the cross product is a single number, not a vector. Its SIGN says
+// which side of `a` the vector `b` lies on, which makes it the standard tool
+// for "is this point left or right of that line?"
+constexpr float Cross(const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; }
 
-constexpr f32 DistanceSquared(const Vec2& a, const Vec2& b) { return (b - a).LengthSquared(); }
-inline    f32 Distance(const Vec2& a, const Vec2& b)        { return (b - a).Length(); }
+constexpr float DistanceSquared(const Vec2& a, const Vec2& b) { return (b - a).LengthSquared(); }
+inline    float Distance(const Vec2& a, const Vec2& b)        { return (b - a).Length(); }
 
-constexpr Vec2 Lerp(const Vec2& a, const Vec2& b, f32 t) { return a + (b - a) * t; }
+// Linear interpolation: t = 0 gives a, t = 1 gives b, t = 0.5 gives the midpoint.
+constexpr Vec2 Lerp(const Vec2& a, const Vec2& b, float t) { return a + (b - a) * t; }
 
-// FLOATING POINT EQUALITY IS NOT EQUALITY. `==` asks whether two values have
-// identical bit patterns, and arithmetic that mathematically produces the same
-// number frequently does not: rotating (1,0) by 90 degrees gives an x of about
-// -4.4e-8, not 0. Every test that checks a computed vector uses this.
+// ---- comparing floats ------------------------------------------------------
 //
-// The default epsilon is absolute and suits a world measured in pixels, where
-// coordinates are tens to thousands. For values spanning many orders of
-// magnitude a relative comparison would be the right tool; this engine does
-// not have that problem and a relative epsilon would misbehave near zero.
-constexpr f32 kDefaultEpsilon = 1e-4f;
+// `==` on floats asks whether two numbers have identical bit patterns, and
+// arithmetic that should mathematically give the same answer very often does
+// not. Rotating (1, 0) by 90 degrees produces an x of about -0.000000044,
+// not 0. Use these instead of == for anything that came out of a calculation.
+inline constexpr float kDefaultEpsilon = 1e-4f;
 
-inline bool ApproxEqual(f32 a, f32 b, f32 epsilon = kDefaultEpsilon) {
+inline bool ApproxEqual(float a, float b, float epsilon = kDefaultEpsilon) {
     return std::fabs(a - b) <= epsilon;
 }
 
-inline bool ApproxEqual(const Vec2& a, const Vec2& b, f32 epsilon = kDefaultEpsilon) {
+inline bool ApproxEqual(const Vec2& a, const Vec2& b, float epsilon = kDefaultEpsilon) {
     return ApproxEqual(a.x, b.x, epsilon) && ApproxEqual(a.y, b.y, epsilon);
 }
 
-// Angle helpers. Radians everywhere in the engine; degrees only at the two
-// edges where a human reads or writes them (the Inspector, and SDL's rotated
-// blit, which wants degrees).
-inline constexpr f32 kPi      = 3.14159265358979323846f;
-inline constexpr f32 kTwoPi   = kPi * 2.0f;
-inline constexpr f32 kDegToRad = kPi / 180.0f;
-inline constexpr f32 kRadToDeg = 180.0f / kPi;
+// ---- angles ----------------------------------------------------------------
+//
+// The engine works in RADIANS everywhere. Degrees appear in exactly two
+// places: the Inspector, because people think in degrees, and the call into
+// SDL that draws a rotated sprite, because SDL's API asks for degrees.
+inline constexpr float kPi       = 3.14159265358979323846f;
+inline constexpr float kTwoPi    = kPi * 2.0f;
+inline constexpr float kDegToRad = kPi / 180.0f;
+inline constexpr float kRadToDeg = 180.0f / kPi;
 
-inline Vec2 FromAngle(f32 radians, f32 length = 1.0f) {
+// Builds a vector pointing at `radians`, `length` units long.
+inline Vec2 FromAngle(float radians, float length = 1.0f) {
     return Vec2{std::cos(radians) * length, std::sin(radians) * length};
 }
 
-inline f32 AngleOf(const Vec2& v) { return std::atan2(v.y, v.x); }
+// The angle a vector points in. std::atan2 is used rather than std::atan
+// because it takes x and y separately and therefore knows which quadrant the
+// vector is in; plain atan(y/x) cannot tell (1,1) from (-1,-1).
+inline float AngleOf(const Vec2& v) { return std::atan2(v.y, v.x); }
 
 } // namespace eng

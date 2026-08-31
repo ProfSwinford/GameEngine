@@ -1,74 +1,75 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 3 - the in-memory log sink. THE ENGINE CHANGE THE LOG PANEL FORCED.
+// ============================================================================
+//  LogBuffer.h - the copy of the log that the editor's Console window shows.
 //
-//  The Week 3 logger writes to a console and a file. Both are WRITE-ONLY. The
-//  editor's log console has to read entries back, so the logger grew a third
-//  sink: a fixed-capacity ring of the most recent entries with a public way to
-//  iterate it.
+//  WHY THIS EXISTS
+//  The terminal and the log file are both write-only: once a message has been
+//  printed there is no way to ask for it back. The Console window has to be
+//  able to re-read every message every frame, because the user can change the
+//  filters at any time and the whole list has to be redrawn with the new ones
+//  applied. So the log keeps a third copy, in memory, right here.
 //
-//  This is a good example of a tool requirement improving an engine design. A
-//  write-only logger was always slightly poor; the panel is what made it
-//  obvious.
+//  WHAT IT STORES
+//  One LogRecord per message, with the level and the channel kept as separate
+//  fields rather than glued into one pre-formatted line of text. That is what
+//  lets the Console filter without having to take strings apart again.
 //
-//  Three design notes, all load-bearing:
-//
-//   - FIXED CAPACITY, oldest evicted. Unbounded growth over a long session is
-//     a leak with a friendly name.
-//
-//   - LEVEL AND CHANNEL ARE STORED AS DATA, not baked into a pre-formatted
-//     line. Otherwise the panel cannot filter without re-parsing strings it
-//     just built.
-//
-//   - WEEK 5 (predicted in Week 3, and the guess was right): the ring is
-//     shared state - the panel reads it on the main thread while worker
-//     threads write. The lock is INSIDE this class, around every public
-//     entry point, and Snapshot() copies under it so the panel never holds
-//     the lock while drawing.
-// =============================================================================
+//  WHY IT IS A FIXED-SIZE LIST
+//  A program left running all afternoon would otherwise fill memory with log
+//  text. Once the list is full the oldest message is dropped to make room, the
+//  same way a chat window forgets the top of the scrollback.
+// ============================================================================
 
 #include <engine/core/Log.h>
-#include <engine/core/Types.h>
 
 #include <string>
 #include <vector>
 
 namespace eng {
 
+// One message, kept as data instead of as a finished line of text.
 struct LogRecord {
-    u64         sequence = 0;      // monotonically increasing, survives eviction
-    f64         timeSeconds = 0.0; // since Log::Init
-    u64         threadId = 0;      // Week 3 stretch 1; essential from Week 5 on
-    LogLevel    level = LogLevel::Info;
+    // Counts up forever, even after old messages are dropped. The Console uses
+    // it to notice that new messages arrived so it can auto-scroll.
+    unsigned long long sequence = 0;
+
+    double      timeSeconds = 0.0;   // seconds since Log::Init
+    LogLevel    level       = LogLevel::Info;
     std::string channel;
     std::string message;
 };
 
 class LogBuffer {
 public:
-    // The default is deliberately modest. 4096 entries is several minutes of
-    // ordinary output and about half a megabyte.
-    static constexpr usize kDefaultCapacity = 4096;
+    // 4096 messages is several minutes of ordinary output and roughly half a
+    // megabyte of text. Changeable from config/engine.json.
+    static constexpr std::size_t kDefaultCapacity = 4096;
 
-    static void SetCapacity(usize capacity);
-    static usize Capacity();
+    static void        SetCapacity(std::size_t capacity);
+    static std::size_t Capacity();
 
-    // Called by Log::Write. Not intended for direct use.
+    // Called by Log::Write. You should not need to call this yourself.
     static void Append(const LogRecord& record);
 
-    // Copies the current contents, oldest first. The panel calls this once per
-    // frame; copying is what lets it draw without holding the lock.
+    // Copies the whole list, oldest first, into `out`. The Console calls this
+    // once per frame and draws from its own copy.
+    //
+    // WHY A COPY RATHER THAN HANDING BACK A REFERENCE
+    // The list can gain a message at any moment (any code anywhere can log).
+    // Drawing directly from the live list while it is being modified is the
+    // classic way to walk off the end of a container. Copying is cheap here
+    // and removes the whole category of bug.
     static void Snapshot(std::vector<LogRecord>& out);
 
-    // Every channel name seen since the last Clear(), sorted. This is what
-    // makes the panel's per-channel checkboxes discoverable at runtime rather
-    // than hardcoded - and the list grows on its own as weeks add channels.
+    // Every channel name seen so far, sorted. The Console builds its
+    // per-channel checkboxes from this, so channels the game code invents
+    // appear in the filter list on their own with no registration step.
     static void Channels(std::vector<std::string>& out);
 
-    static usize Count();
-    static u64   TotalWritten();   // includes entries already evicted
-    static void  Clear();
+    static std::size_t        Count();
+    static unsigned long long TotalWritten();   // includes dropped messages
+    static void               Clear();
 };
 
 } // namespace eng

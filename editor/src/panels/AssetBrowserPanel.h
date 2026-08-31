@@ -1,44 +1,38 @@
 #pragma once
-// =============================================================================
-//  THE ASSET BROWSER - files on disk, not resources in memory.
+
+// ============================================================================
+//  AssetBrowserPanel.h - the Assets panel: the files on disk.
 //
-//  The Resource panel from Week 9 lists what is LOADED: handles, refcounts,
-//  the M3 evidence. That is a debug view of the resource manager, and it can
-//  only ever show you the things a scene already asked for. It cannot answer
-//  "what textures do I have" - the question you ask before authoring anything.
+//  This is what Unity calls the Project window. It shows the folders and files
+//  that make up the game, with a thumbnail for every image, and it is where
+//  you drag things from:
 //
-//  This panel walks the DIRECTORY. It is the difference between an engine you
-//  can inspect and an engine you can author in.
+//    * drag an image into the Scene view to place it
+//    * drag an image onto an entity to give it that sprite
+//    * drag a .cpp onto an entity to attach that script
+//    * double-click a scene to open it
+//    * "+ Script" writes a new script from the template
 //
-//  ---------------------------------------------------------------------------
+//  ==========================================================================
 //  TWO ROOTS, and the split is not cosmetic:
 //
-//    assets/    shipped data - textures, scenes. Loaded at runtime by virtual
-//               path, packaged with the game.
-//    scripts/   C++ SOURCE that the build compiles. Never shipped, never
-//               loaded - it becomes part of the executable.
+//    assets/       data the game ships with - images and scenes. Loaded while
+//                  the game runs, and packaged with it.
+//    gamescripts/  C++ SOURCE that the build compiles. Never shipped and never
+//                  loaded - it becomes part of the program itself.
 //
-//  Presenting them as two roots rather than one tree is what keeps that
-//  distinction visible. A browser that showed scripts/ nested inside assets/
-//  would be quietly teaching that source is data, and the day someone writes a
-//  packaging step that mistake ships the game's source with the game.
+//  Showing them as two separate roots rather than one tree is what keeps that
+//  distinction visible. A browser that showed scripts nested inside assets/
+//  would be quietly teaching that source code is data, and the day somebody
+//  writes a packaging step, that mistake ships the game's own source with it.
 //
-//  ---------------------------------------------------------------------------
-//  THE LISTING IS CACHED AND REFRESHED ON DEMAND, not read every frame. A
-//  directory scan per frame for a panel that changes when the user creates a
-//  file is exactly the cost a debug tool must not impose on the thing it is
-//  observing - the same argument the Open Scene menu makes for scanning on
-//  open rather than continuously. Refresh happens on navigation, on create,
-//  and on the Refresh button.
-//
-//  ---------------------------------------------------------------------------
-//  THUMBNAILS ARE REAL LOADS, and that has a consequence worth stating: the
-//  browser ACQUIRES a texture handle for every image it shows, so those
-//  textures appear in the Resource panel with a refcount the scene did not
-//  ask for. That is honest - they really are resident - and the panel releases
-//  them when it navigates away. Anyone reading M3's refcount table with this
-//  panel open should know why the numbers are higher.
-// =============================================================================
+//  ==========================================================================
+//  THE LISTING IS CACHED AND REFRESHED ON DEMAND, not read every frame.
+//  Scanning a folder sixty times a second, for a panel whose contents only
+//  change when somebody creates a file, is exactly the sort of cost a tool
+//  must not impose on the thing it is meant to be helping with. It refreshes
+//  when you navigate, when you create something, and when you press Refresh.
+// ============================================================================
 
 #include "Panel.h"
 
@@ -52,7 +46,6 @@ namespace editor {
 class AssetBrowserPanel final : public Panel {
 public:
     AssetBrowserPanel();
-    ~AssetBrowserPanel() override;
 
     const char* Title() const override { return "Assets"; }
     void        Draw() override;
@@ -60,16 +53,15 @@ public:
 private:
     void Navigate(const std::string& virtualDirectory);
     void Refresh();
-    void ReleaseThumbnails();
 
     void DrawBreadcrumb();
     void DrawEntry(const eng::FileSystem::DirEntry& entry, int index);
     void DrawNewScriptPopup();
     void DrawNewFolderPopup();
 
-    // Creates scripts/<name>.cpp from the template. Returns false with a
-    // reason - it refuses to overwrite, because silently replacing someone's
-    // script with a fresh template would be unforgivable.
+    // Writes gamescripts/<name>.cpp from the template. Returns false with a
+    // reason - it refuses to overwrite, because silently replacing somebody's
+    // script with a blank template would be unforgivable.
     bool CreateScript(const std::string& name, std::string& outError);
 
     // The assets root is the EMPTY virtual path - see the note in the .cpp.
@@ -77,17 +69,20 @@ private:
     std::vector<eng::FileSystem::DirEntry> m_entries;
     bool                                   m_valid = false;
 
-    // Handles acquired for thumbnails, released on navigation. Parallel to
-    // m_entries by index; a null handle means "not an image".
-    std::vector<eng::Handle<eng::Texture>> m_thumbnails;
+    // The thumbnail image for each entry, in the same order as m_entries. An
+    // empty one means "this file is not an image".
+    //
+    // These are shared_ptrs, so holding them here keeps those images loaded -
+    // and letting go of them when you navigate away unloads any that nothing
+    // else is using. There is nothing to release by hand.
+    std::vector<eng::TextureRef> m_thumbnails;
 
-    char m_newScriptName[64] = {};
-    char m_newFolderName[64] = {};
-    bool m_openNewScript     = false;
-    bool m_openNewFolder     = false;
-
-    char m_status[256] = {};
-    float m_iconSize   = 72.0f;
+    char  m_newScriptName[64] = {};
+    char  m_newFolderName[64] = {};
+    bool  m_openNewScript     = false;
+    bool  m_openNewFolder     = false;
+    char  m_status[256]       = {};
+    float m_iconSize          = 72.0f;
 };
 
 } // namespace editor

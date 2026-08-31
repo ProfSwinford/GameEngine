@@ -1,6 +1,6 @@
 {
-  "_comment": "WEEK 9 EXAMPLE SCENE. Your schema does not have to match this. 22 entities, 3 distinct textures. Asteroid00-17 all share one texture, so a correct resource manager loads checker_red.bmp ONCE with a refcount of 18. That is the easiest way to check your refcounting is real.",
-  "_hierarchy_note": "SolarRoot -> Planet -> Moon is three deep on purpose. If it renders correctly here, your Week 6 transforms survived the trip through the data path.",
+  "_comment": "An example scene. 22 entities and 3 different images. The eighteen asteroids all use the same picture, so it is loaded once and shared - open the Inspector on one of them and look at how many things are sharing it.",
+  "_hierarchy_note": "SolarRoot -> Planet -> Moon is three levels deep on purpose. Only the root, the planet and the moon have a SpinComponent; the orbiting is produced entirely by the parent/child transform tree.",
   "name": "OrbitTest",
   "camera": {
     "position": [
@@ -634,5 +634,5 @@
       ]
     }
   ],
-  "_motion_note": "SolarRoot spins, so Planet (its child, 160 units out) ORBITS the origin. Planet spins, so Moon orbits the Planet AND the Planet visibly rotates. Moon spins backwards on its own axis. There is no orbit code anywhere - a child world matrix is local*parentWorld, so spinning a parent sweeps its children. That is the Milestone 1 check, driven entirely from this file."
+  "_motion_note": "SolarRoot spins, so Planet - its child, 160 units out - ORBITS the origin. Planet spins, so Moon orbits the Planet and the Planet visibly turns. Moon spins backwards on its own axis. There is no orbit code anywhere: a child's position in the world is worked out through its parent, so spinning a parent sweeps its children round with it. All of it comes from this file."
 }

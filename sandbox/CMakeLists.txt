@@ -1,38 +1,35 @@
 # =============================================================================
-#  The sandbox executable.
+#  The sandbox executable - the game, running on its own without the editor.
 #
-#  This is the only target that is allowed to look like a game. Everything in
-#  here uses the engine's public headers and nothing else - it cannot reach
-#  SDL, because Week 3 made that link PRIVATE.
+#  This is the only target allowed to look like a game. Everything in here uses
+#  the engine's public headers and nothing else; it cannot reach SDL, because
+#  the engine links SDL privately.
 #
-#  This is what the Week 10 gate is built in, and what proves the engine can
-#  ship without its tools attached.
+#  That constraint is the point. If a game can be written entirely against the
+#  engine's public interface, the interface is complete.
 # =============================================================================
 
 add_executable(sandbox
     src/main.cpp
-    src/LayoutBench.cpp        # Week 4 - AoS vs SoA experiment
-    src/PlatformBench.cpp      # Week 5 - the three OS measurements
-    src/CollectorGame.cpp)     # Week 10 gate - Spec A
+    src/CollectorGame.cpp)     # the small sample game
 
 target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# WHOLE_ARCHIVE on gamescripts. Script registrars are file-scope objects that
-# nothing references by name, so a normal static-library link discards them and
-# every script silently fails to register. See gamescripts/ScriptsAnchor.cpp.
+
+# WHOLE_ARCHIVE on gamescripts, and it is not optional.
+#
+# A script registers itself using an object at file scope that nothing else
+# refers to by name (see ENGINE_REGISTER_SCRIPT in ScriptComponent.h). A normal
+# static-library link throws away anything that appears unused, which would
+# silently discard every script - and the only symptom would be that nothing
+# happens when you press Play. WHOLE_ARCHIVE tells the linker to keep the lot.
 target_link_libraries(sandbox PRIVATE
     Engine2D::engine
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,Engine2D::gamescripts>")
 
 engine_set_warnings(sandbox)
 
-# SDL supplies its own entry point on some platforms (notably Windows, where
-# the real entry point is WinMain). On Windows we also want a console during
-# development so the log is visible.
+# On Windows, keep a console window open alongside the game so the log is
+# visible while developing.
 if(WIN32)
     set_target_properties(sandbox PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()
-
-# Week 8 added a post-build copy of config/ next to the executable.
-# WEEK 9 DELETED IT. The FileSystem layer resolves paths at runtime now:
-# copying works for one directory, does not scale to an asset tree, and
-# silently hands you a stale copy the moment you edit the source one.

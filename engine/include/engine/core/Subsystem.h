@@ -1,58 +1,60 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 7 - explicit subsystem startup and shutdown. Ch. 6.1.
+// ============================================================================
+//  Subsystem.h - starting the engine's pieces up in a written-down order, and
+//  shutting them down in exactly the reverse.
 //
-//  THE STATIC INITIALIZATION ORDER FIASCO, briefly, because it is why this
-//  file exists: C++ guarantees the order of static initialisation WITHIN one
-//  translation unit and guarantees NOTHING across translation units. A global
-//  logger in Log.cpp and a global renderer in Renderer.cpp have no defined
-//  construction order. It works. It keeps working. Then someone reorders two
-//  files in a CMake list and it stops working, in release only, on one machine.
+//  WHY THIS EXISTS
+//  The engine is made of parts that depend on one another. The renderer needs
+//  a window. The texture loader needs a renderer. Everything needs the log.
+//  Start them in the wrong order and the failure is not obvious - it usually
+//  works, and then one day it does not, on somebody else's machine.
 //
-//  The fix is not clever: stop using static construction for subsystems and
-//  START THEM EXPLICITLY, IN AN ORDER THAT IS WRITTEN DOWN.
+//  C++ makes it worse: global objects in different .cpp files are created in
+//  an order the standard does not define. A global log in one file and a
+//  global renderer in another have no fixed relationship. It works, it keeps
+//  working, and then somebody reorders two filenames in the build script and
+//  it stops.
 //
-//  The subsystems were not invented this week. Weeks 1-6 built them - logging,
-//  the platform and window layer, event routing, the worker threads, debug
-//  draw, the timer registry. This week made explicit an ordering that had been
-//  implicit and fragile since Week 3.
+//  The fix is not clever: do not use global objects for these things. START
+//  THEM EXPLICITLY, IN AN ORDER THAT IS WRITTEN DOWN. That is this file, and
+//  the order itself is in Engine.cpp.
 //
-//  Registration order IS dependency order: each subsystem may assume
-//  everything registered before it is up. Simple and explicit beats clever; a
-//  dependency graph with a topological sort is a fine Phase 2 project and a
-//  bad use of Week 7.
-// =============================================================================
-
-#include <engine/core/Types.h>
+//  REGISTRATION ORDER IS DEPENDENCY ORDER. Each subsystem may assume
+//  everything registered before it is already running.
+// ============================================================================
 
 #include <functional>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace eng {
 
+// One startable, stoppable piece of the engine.
 class Subsystem {
 public:
     virtual ~Subsystem() = default;
 
-    // Returns false on failure. Does NOT throw and does NOT assert - a
-    // subsystem failing to start is an ENVIRONMENT problem (no audio device,
-    // no display, a missing file), not a programmer error, and the engine must
-    // be able to respond to it rather than die.
+    // Returns false when it cannot start.
+    //
+    // It does NOT throw and it does not crash the program. A subsystem failing
+    // to start is usually a problem with the machine - no display, a missing
+    // file, no sound device - and the engine has to be able to respond to that
+    // and exit tidily rather than simply dying.
     virtual bool Init() = 0;
 
     virtual void Shutdown() = 0;
-
     virtual const char* Name() const = 0;
 };
 
-// A subsystem built from two callables, for the many cases where a subsystem
-// is "call this static Init and that static Shutdown". Saves nine nearly
-// identical classes without hiding the ordering, which is the thing that
-// matters.
+// A Subsystem built from two functions, for the many cases where starting up
+// means "call this" and shutting down means "call that". It saves writing a
+// dozen nearly identical classes without hiding the ordering, which is the
+// part that actually matters.
+//
+// std::function is the standard "any callable thing" type, so the two
+// arguments can be plain functions or lambdas.
 class LambdaSubsystem final : public Subsystem {
 public:
     LambdaSubsystem(std::string name, std::function<bool()> init,
@@ -70,41 +72,32 @@ private:
     std::function<void()> m_shutdown;
 };
 
-// The subsystem stack. Owned by Engine; separated from it so the ordering
-// machinery can be read and tested without the frame loop attached.
+// The list of subsystems, in the order they start.
 class SubsystemStack {
 public:
     void Register(std::unique_ptr<Subsystem> subsystem);
 
-    // Initialises in registration order, logging each.
+    // Starts everything in registration order, writing each one to the log.
     //
-    // *** THE PART THAT IS ACTUALLY GRADED: *** if subsystem N fails,
-    // subsystems N-1..0 are shut down in REVERSE order, N is NOT shut down
-    // (it never came up), subsystems after N are never initialised, nothing
-    // leaks, and this returns false so the caller can exit non-zero with a
-    // readable message.
-    //
-    // An ordered boot that has never been made to fail is an ordered boot that
-    // has not been tested - see Engine::SetForcedFailure and the sandbox's
-    // --fail-subsystem flag.
+    // If one of them fails, the ones that already started are shut down in
+    // REVERSE order, the failing one is NOT shut down (it never started, and
+    // shutting down something that never started is how a tidy-up crashes),
+    // the ones after it are never touched, and this returns false so the
+    // program can print a message and exit.
     bool InitAll();
 
-    // Shuts down in EXACT REVERSE order. Safe to call after a failed InitAll
-    // (it is a no-op: InitAll already unwound what it had started).
+    // Shuts everything down in the exact reverse of the order it started.
+    // Safe to call after a failed InitAll - that already unwound itself.
     void ShutdownAll();
 
-    usize Count() const { return m_subsystems.size(); }
-    void  ForEach(const std::function<void(const Subsystem&, bool up)>& fn) const;
+    std::size_t Count() const { return m_subsystems.size(); }
 
-    // If a subsystem with this name is registered, its Init() is forced to
-    // return false. This is how the forced-failure verification is performed
-    // without editing engine code to break it - see docs/week07-milestone2.md.
-    void SetForcedFailure(std::string_view subsystemName);
+    // Lists what is registered and whether it is currently running.
+    void ForEach(const std::function<void(const Subsystem&, bool running)>& fn) const;
 
 private:
     std::vector<std::unique_ptr<Subsystem>> m_subsystems;
-    usize                                   m_initialisedCount = 0;
-    std::string                             m_forcedFailure;
+    std::size_t                             m_initialisedCount = 0;
 };
 
 } // namespace eng

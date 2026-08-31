@@ -1,29 +1,37 @@
-// WEEK 10 - the system scheduler. See SystemOrder.h for the declared order.
+// ============================================================================
+//  SystemOrder.cpp - the system scheduler. See SystemOrder.h for the order it
+//  keeps and why that order matters.
+// ============================================================================
 
 #include <engine/core/Log.h>
-#include <engine/debug/ScopedTimer.h>
 #include <engine/scene/SystemOrder.h>
 
 #include <algorithm>
+#include <vector>
 
 namespace eng {
 namespace {
 
 std::vector<System*> g_systems;
-bool                 g_dirty = false;
+
+// The list is only re-sorted when something has actually changed, rather than
+// once per frame.
+bool g_needsSort = false;
 
 void SortIfNeeded() {
-    if (!g_dirty) {
+    if (!g_needsSort) {
         return;
     }
-    // STABLE sort: two systems registered at the same priority keep their
-    // registration order rather than swapping around between runs. A
-    // non-deterministic update order for equal priorities would be a bug that
-    // reproduces on one machine and not another, which is the exact class of
-    // problem this file exists to eliminate.
+    // std::stable_sort rather than std::sort: two systems registered at the
+    // same stage number keep the order they were added in. Plain sort is free
+    // to put them either way round, which would mean the game behaved slightly
+    // differently on different machines - exactly the kind of bug this file
+    // exists to prevent.
     std::stable_sort(g_systems.begin(), g_systems.end(),
-                     [](const System* a, const System* b) { return a->Order() < b->Order(); });
-    g_dirty = false;
+                     [](const System* a, const System* b) {
+                         return a->Order() < b->Order();
+                     });
+    g_needsSort = false;
 }
 
 } // namespace
@@ -33,93 +41,53 @@ void SystemScheduler::Register(System* system) {
         return;
     }
     g_systems.push_back(system);
-    g_dirty = true;
+    g_needsSort = true;
 }
 
 void SystemScheduler::Unregister(System* system) {
+    // std::erase removes every matching element from a container in one call.
     std::erase(g_systems, system);
 }
 
 void SystemScheduler::Clear() {
     g_systems.clear();
-    g_dirty = false;
+    g_needsSort = false;
 }
 
-void SystemScheduler::UpdateRange(i32 minOrder, i32 maxOrder, f32 deltaSeconds) {
+void SystemScheduler::UpdateRange(int minOrder, int maxOrder, float deltaSeconds) {
     SortIfNeeded();
 
-    // Snapshot, because a system's Update may register or unregister another
-    // one - the gate game's own system does exactly that when it spawns - and
-    // push_back on the live vector would invalidate the iteration. Same
-    // problem DeferredOps solves for entities, at the system level.
-    static std::vector<System*> running;
-    running.assign(g_systems.begin(), g_systems.end());
+    // The list is COPIED before it is walked, because a system's Update is
+    // allowed to register or unregister another one - and adding to a vector
+    // while looping over it can move the whole thing elsewhere in memory.
+    // Working from a copy sidesteps that entirely.
+    std::vector<System*> running = g_systems;
 
     for (System* system : running) {
-        const i32 order = system->Order();
+        const int order = system->Order();
         if (order < minOrder || order >= maxOrder) {
             continue;
         }
-        // Every system gets its own timer site, which is what puts collision
-        // on the profiler HUD as its own line item - a Week 10 verification.
-        ScopedTimer timer(system->Name());
         system->Update(deltaSeconds);
     }
 }
 
-void SystemScheduler::Simulate(f32 fixedStepSeconds) {
+void SystemScheduler::Simulate(float fixedStepSeconds) {
     UpdateRange(0, SystemStage::kFirstRenderStage, fixedStepSeconds);
 }
 
-void SystemScheduler::RenderPass(f32 realDeltaSeconds) {
+void SystemScheduler::RenderPass(float realDeltaSeconds) {
     UpdateRange(SystemStage::kFirstRenderStage, 1'000'000, realDeltaSeconds);
 }
 
 void SystemScheduler::LogOrder() {
     SortIfNeeded();
 
-    // The DECLARED order, logged once at startup - which the Week 10 evidence
-    // document asks for as a paste, and which Phase 2 will want when something
-    // happens a frame late.
-    //
-    // The built-in stages are listed alongside the registered systems on
-    // purpose. Several of them are called directly by Engine rather than
-    // through a System object (input sampling, message dispatch, the deferred
-    // drain, the sprite pass, debug draw), and a log that showed only the
-    // registered ones would say "1 system" for an engine that plainly does
-    // more than one thing per tick. This is what the frame ACTUALLY does.
-    struct Builtin { i32 order; const char* name; };
-    static constexpr Builtin kBuiltins[] = {
-        {SystemStage::kInput,             "Input sampling      (Engine::BeginFrame)"},
-        {SystemStage::kCollisionResponse, "Message dispatch    (MessageBus::Dispatch)"},
-        {SystemStage::kDeferred,          "Deferred spawn/destroy (DeferredOps::Apply)"},
-        {SystemStage::kRender,            "Sprite render       (SpriteRenderSystem)"},
-        {SystemStage::kDebugDraw,         "Debug draw          (DebugDraw::Render)"},
-    };
-
-    ENGINE_LOG_INFO(Channels::kScene,
-                    "declared system update order ({} registered system(s) plus the "
-                    "engine's built-in stages):", g_systems.size());
-
-    usize next = 0;
-    for (const Builtin& builtin : kBuiltins) {
-        while (next < g_systems.size() && g_systems[next]->Order() <= builtin.order) {
-            const System* system = g_systems[next];
-            ENGINE_LOG_INFO(Channels::kScene, "  {:>4}  {}{}", system->Order(),
-                            system->Name(),
-                            system->Order() >= SystemStage::kFirstRenderStage
-                                ? "   (per frame)"
-                                : "   (per fixed step)");
-            ++next;
-        }
-        ENGINE_LOG_INFO(Channels::kScene, "  {:>4}  {}{}", builtin.order, builtin.name,
-                        builtin.order >= SystemStage::kFirstRenderStage
-                            ? "   (per frame)"
-                            : "   (per fixed step)");
-    }
-    for (; next < g_systems.size(); ++next) {
-        ENGINE_LOG_INFO(Channels::kScene, "  {:>4}  {}   (per frame)",
-                        g_systems[next]->Order(), g_systems[next]->Name());
+    ENGINE_LOG_INFO(Channels::kScene, "systems update in this order:");
+    for (const System* system : g_systems) {
+        const bool perFrame = system->Order() >= SystemStage::kFirstRenderStage;
+        ENGINE_LOG_INFO(Channels::kScene, "  {:>4}  {}  ({})", system->Order(),
+                        system->Name(), perFrame ? "per frame" : "per fixed step");
     }
 }
 
@@ -130,7 +98,7 @@ void SystemScheduler::ForEach(const std::function<void(System&)>& fn) {
     }
 }
 
-usize SystemScheduler::Count() {
+std::size_t SystemScheduler::Count() {
     return g_systems.size();
 }
 

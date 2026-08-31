@@ -1,4 +1,7 @@
-// WEEK 9 - entities. See Entity.h for the destruction-order contract.
+// ============================================================================
+//  Entity.cpp - entities and their components. See Entity.h for the
+//  destruction order this file implements.
+// ============================================================================
 
 #include <engine/core/Log.h>
 #include <engine/scene/Component.h>
@@ -15,45 +18,46 @@ Entity::~Entity() {
 
 void Entity::DestroyInternal() {
     if (!m_alive && m_components.empty()) {
-        return;
+        return;   // already done
     }
 
-    // STEP 1: OnDetach on every component, in REVERSE attach order, while the
-    // owner pointer is still valid and everything they might depend on is
-    // still attached. See the contract block in Entity.h - this ordering is
-    // the load-bearing part.
+    // Step 1: let every component unhook itself, newest first.
+    //
+    // rbegin/rend walk the vector backwards, which is what "reverse of the
+    // order they were attached" means. Each component is still fully formed
+    // and still owned by this entity at this point, which is exactly the state
+    // OnDetach needs.
     for (auto it = m_components.rbegin(); it != m_components.rend(); ++it) {
         if (*it != nullptr) {
             (*it)->OnDetach();
         }
     }
 
-    // STEP 2: destroy them, also in reverse attach order.
+    // Step 2: destroy them, also newest first. pop_back destroys the
+    // unique_ptr at the end, which destroys the component it owns.
     while (!m_components.empty()) {
         m_components.pop_back();
     }
 
-    // STEP 3: the transform detaches its children, orphaning them to the root
-    // with their world transforms preserved. That happens inside
-    // ~Transform2D, which runs when the TransformComponent is destroyed above.
+    // Step 3 happens on its own: destroying the TransformComponent above runs
+    // ~Transform2D, which hands any children back to the world.
 
     m_alive = false;
 }
 
 void Entity::SetName(std::string_view name) {
     m_name.assign(name);
-    m_nameId = Intern(m_name);
 }
 
 Component* Entity::AddComponent(std::string_view typeName) {
     std::unique_ptr<Component> component = ComponentFactory::Create(typeName);
     if (component == nullptr) {
-        // An unknown component type in a data file is an AUTHORING error, not
-        // a programmer error, so it is reported and skipped rather than
-        // asserted. The message names the type so the author can fix the file.
+        // A component type that does not exist is a mistake in the scene FILE,
+        // not in the program, so it is reported by name and skipped. The rest
+        // of the entity still loads.
         ENGINE_LOG_ERROR(Channels::kScene,
-                         "entity '{}': unknown component type '{}' - is it registered "
-                         "with ComponentFactory?", m_name, typeName);
+                         "entity '{}': there is no component type called '{}'",
+                         m_name, typeName);
         return nullptr;
     }
     return AddComponent(std::move(component));
@@ -64,53 +68,67 @@ Component* Entity::AddComponent(std::unique_ptr<Component> component) {
         return nullptr;
     }
 
+    // Keep a plain pointer to it before handing ownership to the vector, so
+    // there is still something to call OnAttach on and to return.
     Component* raw = component.get();
     raw->m_owner   = this;
+
+    // std::move hands the unique_ptr's ownership into the vector. After this
+    // line `component` is empty - which is the point: there is only ever one
+    // owner.
     m_components.push_back(std::move(component));
 
-    // OnAttach AFTER the component is in the list and its owner is set. A
-    // system that immediately calls back into the entity - and the sprite
-    // system does, for the transform - must find a fully formed object.
+    // OnAttach runs AFTER the component is in the list and its owner is set.
+    // Components register themselves with systems in here, and some of those
+    // systems immediately ask the component about its entity - so it has to be
+    // fully in place first.
     raw->OnAttach();
     return raw;
 }
 
-Component* Entity::FindComponent(StringId typeId) {
+Component* Entity::FindComponent(std::string_view typeName) {
     for (const std::unique_ptr<Component>& component : m_components) {
-        if (component != nullptr && component->TypeId() == typeId) {
+        if (component != nullptr && component->TypeName() == typeName) {
             return component.get();
         }
     }
-    return nullptr;   // a normal question with a normal answer
+    return nullptr;
 }
 
-const Component* Entity::FindComponent(StringId typeId) const {
-    return const_cast<Entity*>(this)->FindComponent(typeId);
+const Component* Entity::FindComponent(std::string_view typeName) const {
+    // Calls the non-const version rather than duplicating the loop. The
+    // const_cast is safe here because the returned pointer is immediately
+    // handed back as a pointer-to-const, so nothing can modify anything.
+    return const_cast<Entity*>(this)->FindComponent(typeName);
 }
 
-bool Entity::RemoveComponent(StringId typeId) {
+bool Entity::RemoveComponent(std::string_view typeName) {
+    // std::find_if searches with a condition. The [typeName] in the brackets
+    // captures the parameter so the lambda can use it.
     const auto it = std::find_if(m_components.begin(), m_components.end(),
-                                 [typeId](const std::unique_ptr<Component>& component) {
+                                 [typeName](const std::unique_ptr<Component>& component) {
                                      return component != nullptr &&
-                                            component->TypeId() == typeId;
+                                            component->TypeName() == typeName;
                                  });
     if (it == m_components.end()) {
         return false;
     }
-    (*it)->OnDetach();
+    (*it)->OnDetach();     // unhook before destroying, as always
     m_components.erase(it);
     return true;
 }
 
-Component* Entity::ComponentAt(usize index) {
+Component* Entity::ComponentAt(std::size_t index) {
     return (index < m_components.size()) ? m_components[index].get() : nullptr;
 }
 
 void Entity::ForEachComponent(const std::function<void(Component&)>& fn) {
-    // Iterating by index rather than by iterator: a callback may attach a
-    // component (the Inspector's "Add Component" does), and push_back on a
-    // vector invalidates iterators. The size is re-read each step on purpose.
-    for (usize i = 0; i < m_components.size(); ++i) {
+    // Looped by index rather than with a range-for on purpose. The callback is
+    // allowed to ADD a component - the Inspector's "Add Component" button does
+    // exactly that - and adding to a vector can move its contents somewhere
+    // else in memory, which would leave a range-for reading the old location.
+    // Re-reading m_components.size() each time round is what makes that safe.
+    for (std::size_t i = 0; i < m_components.size(); ++i) {
         if (m_components[i] != nullptr) {
             fn(*m_components[i]);
         }
@@ -118,9 +136,10 @@ void Entity::ForEachComponent(const std::function<void(Component&)>& fn) {
 }
 
 Transform2D& Entity::Transform() {
-    // Every entity has one. Created on demand rather than in the constructor
-    // so that the component list order still reflects the data file, and
-    // guaranteed non-null so no system needs a null check.
+    // Created the first time it is asked for rather than in the constructor,
+    // so that the component list keeps the order the scene file used. The
+    // return is guaranteed to be a real transform, which is why no system in
+    // the engine has to check for a null one.
     TransformComponent* component = Find<TransformComponent>();
     if (component == nullptr) {
         component = static_cast<TransformComponent*>(

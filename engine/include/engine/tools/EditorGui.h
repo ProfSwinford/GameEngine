@@ -1,38 +1,44 @@
 #pragma once
 
-// =============================================================================
-//  WEEK 2 - the ImGui lifecycle.
+// ============================================================================
+//  EditorGui.h - starting and stopping the editor's user interface.
 //
-//  THE SPLIT: LIFECYCLE IN THE ENGINE, PANELS IN THE EDITOR.
+//  WHAT DEAR IMGUI IS AND WHY THE EDITOR USES IT
+//  Dear ImGui is a library for building tool interfaces - windows, buttons,
+//  sliders, tables, dockable panels. It is what the whole editor is drawn
+//  with. It is used here because it needs no separate designer, no layout
+//  files and no build step: a panel is a function that draws itself, and the
+//  entire editor is a few hundred lines of ordinary C++.
 //
-//  ImGui needs three things the engine owns and nobody else should touch:
-//    - the window and the renderer  (behind RAII since Week 3)
-//    - the platform event stream    (EventPump owns it)
-//    - a defined point in the frame to render at
+//  It works in "immediate mode", which is genuinely different from the
+//  interface toolkits you may have met. There is no button OBJECT and no click
+//  handler. You call a function every frame, and it returns true on the frame
+//  the button was clicked:
 //
-//  So the engine does init, per-frame begin/end, event forwarding, and
-//  shutdown. The editor does nothing but call ImGui:: functions to draw
-//  panels, using public engine APIs to get the data.
+//      if (ImGui::Button("Reload")) { DoReload(); }
 //
-//  Result: the engine never grows a panel, and the editor never grows a
-//  pointer to an SDL type.
+//  THE SPLIT: LIFECYCLE HERE, PANELS IN THE EDITOR
+//  ImGui needs three things the engine owns and nobody else should touch: the
+//  window and the renderer, the stream of input events, and a defined moment
+//  in the frame to draw at. So the engine handles starting up, per-frame
+//  begin/end, passing events along, and shutting down. The editor does nothing
+//  but call ImGui functions to draw panels.
 //
-//  ---------------------------------------------------------------------------
-//  THE INPUT-CAPTURE PROBLEM, handled in Week 2 rather than in Week 8.
+//  The result is that the engine never grows a panel and the editor never
+//  needs to know SDL exists.
 //
-//  When a text field in a panel has focus, ImGui wants to SWALLOW the
-//  keyboard - otherwise typing an entity's name also makes the player jump.
-//  WantsKeyboard()/WantsMouse() expose that without making every caller
-//  include an ImGui header, and EventPump::Poll consults them. Week 8's
-//  InputMap sits on top of EventPump, so getting it right here means it is
-//  right forever.
+//  WHY THE KEYBOARD-CAPTURE FUNCTIONS ARE HERE
+//  When a text box in a panel has focus, the interface has to SWALLOW the
+//  keyboard - otherwise typing an entity's name into the Inspector also makes
+//  the player jump. WantsKeyboard() and WantsMouse() expose that without
+//  making every caller include an ImGui header.
 //
-//  ---------------------------------------------------------------------------
-//  WHEN ENGINE_WITH_IMGUI IS OFF, every function below is an inline no-op and
-//  no ImGui code is compiled or linked. That is what lets `sandbox` be built
-//  with the IDE feature switched off entirely and still call EventPump::Poll,
-//  which asks these functions whether input was captured.
-// =============================================================================
+//  WHEN THE EDITOR IS NOT BEING BUILT (ENGINE_WITH_IMGUI is not defined),
+//  every function below becomes an empty inline no-op and no ImGui code is
+//  compiled or linked at all. That is what lets the standalone game call
+//  EventPump::Poll - which asks these functions about capture - in a build
+//  with no interface library in it.
+// ============================================================================
 
 namespace eng {
 
@@ -41,66 +47,61 @@ class Window;
 class EditorGui {
 public:
 #ifdef ENGINE_WITH_IMGUI
-    // Creates the context, enables the DOCKING config flag, and initialises
-    // BOTH backends - the SDL3 platform backend and the SDL_Renderer3 renderer
-    // backend. Two calls; forgetting the second produces a window that runs
-    // fine and draws nothing.
-    //
-    // Docking is not on by default. The config flag must be set explicitly or
-    // no panel docks, and the symptom looks exactly like having cloned the
-    // wrong ImGui branch.
+    // Creates the ImGui context, turns docking on, and starts BOTH of ImGui's
+    // backends - one that speaks to SDL for input, one that speaks to SDL's
+    // renderer for drawing. Forgetting the second gives you a program that
+    // runs perfectly and draws nothing.
     static bool Init(Window& window);
 
-    // Shuts down renderer backend, platform backend, context - the exact
-    // reverse of Init. Week 3's ordered-teardown discipline, a week early.
+    // The exact reverse of Init.
     static void Shutdown();
 
-    // Hands one platform event to ImGui. Called from EventPump::Poll.
-    // Returns true if ImGui processed it; combine with WantsKeyboard/
-    // WantsMouse to decide whether gameplay should ignore it.
+    // Hands one input event to the interface. Called from EventPump::Poll.
+    // Returns true when ImGui did something with it.
     static bool ProcessEvent(const void* sdlEvent);
 
-    // Begins a frame. Call before any panel code runs.
+    // Starts a frame. Call before any panel draws.
     static void BeginFrame();
 
-    // Renders every queued panel. Call AFTER the game has drawn and BEFORE the
-    // frame is presented, so the IDE lands on top of the game.
+    // Draws everything the panels queued up. Call AFTER the game has been
+    // drawn and BEFORE the frame is shown, so the interface lands on top.
     static void EndFrame();
 
     static bool WantsKeyboard();
     static bool WantsMouse();
 
-    // A full-window dockspace so panels can be arranged, tabbed, and the
-    // layout persisted. ImGui writes imgui.ini for that; it is in .gitignore
-    // because a window arrangement is a personal preference, not source.
+    // Sets up the full-window docking area that panels are arranged in, and
+    // builds the default layout the first time the editor is ever run. ImGui
+    // remembers any rearrangement in a file called imgui.ini.
     static void BeginDockspace();
     static void EndDockspace();
 
-    // Hands the keyboard to the GAME rather than to the IDE.
+    // Hands the keyboard to the GAME rather than to the editor.
     //
-    // Two things have to happen together, and missing either one produces a
-    // Game view that looks focused and does not respond. ImGui's keyboard
-    // NAVIGATION has to be switched off, or the arrow keys move focus between
-    // widgets instead of moving the player; and WantsKeyboard has to stop
-    // reporting capture, or EventPump marks every key consumed and InputMap
-    // skips them.
+    // Two things have to happen together here, and missing either one gives
+    // you a Game view that looks focused and does not respond: ImGui's
+    // keyboard NAVIGATION has to be switched off (or the arrow keys move
+    // between widgets instead of moving the player), and WantsKeyboard has to
+    // stop reporting capture (or every key is marked as claimed and the input
+    // system skips it).
     static void SetGameInputFocus(bool focused);
     static bool HasGameInputFocus();
 
     static bool IsInitialised();
 #else
-    static bool Init(Window&)         { return true; }
-    static void Shutdown()            {}
+    // The do-nothing versions, used when the editor is not part of the build.
+    static bool Init(Window&)             { return true; }
+    static void Shutdown()                {}
     static bool ProcessEvent(const void*) { return false; }
-    static void BeginFrame()          {}
-    static void EndFrame()            {}
-    static bool WantsKeyboard()       { return false; }
-    static bool WantsMouse()          { return false; }
-    static void BeginDockspace()      {}
-    static void EndDockspace()        {}
-    static void SetGameInputFocus(bool) {}
-    static bool HasGameInputFocus()   { return false; }
-    static bool IsInitialised()       { return false; }
+    static void BeginFrame()              {}
+    static void EndFrame()                {}
+    static bool WantsKeyboard()           { return false; }
+    static bool WantsMouse()              { return false; }
+    static void BeginDockspace()          {}
+    static void EndDockspace()            {}
+    static void SetGameInputFocus(bool)   {}
+    static bool HasGameInputFocus()       { return false; }
+    static bool IsInitialised()           { return false; }
 #endif
 };
 
