@@ -103,16 +103,17 @@ very next step. Press Pause first.
 
 The files on disk, in two roots:
 
-| Root           | What it holds                                                    |
-| -------------- | ---------------------------------------------------------------- |
-| `assets/`      | images and scenes - data the game loads while it runs             |
-| `gamescripts/` | C++ source the build compiles - it becomes part of the program    |
+| Root        | What it holds                                                       |
+| ----------- | ------------------------------------------------------------------- |
+| `assets/`   | images and scenes - data the game loads while it runs                |
+| `scripts/`  | C++ source. The editor compiles it into a library the game loads.    |
 
 They are kept separate on purpose. Source code is not data, and a browser that
 mixed them would be teaching otherwise.
 
-**+ Script** writes `gamescripts/<Name>.cpp` from a template with every
-lifecycle hook written out and explained.
+**+ Script** writes `scripts/<Name>.cpp` from a template with every lifecycle
+hook written out and explained. **Build Scripts** compiles them - though that
+also happens on its own whenever the editor regains focus.
 
 ---
 
@@ -181,14 +182,44 @@ files but does not rename, move or delete them.
 
 ## Writing a script
 
-**Assets → + Script** writes a new file. Scripts are **compiled C++**, so
-creating one writes the file and nothing else - it runs after you rebuild.
+**Assets → + Script** writes a new file from a template.
 
-Everything else works in the meantime, because the connection is **by name**: a
-script that has not been compiled yet still attaches to an entity, still saves
-into the scene, and shows as **NOT FOUND** in red in the Inspector. Rebuild,
-start the editor again, and the same scene file produces a working behaviour
-with nothing reattached.
+**The editor compiles it for you.** Write the script in whatever text editor
+you like, save it, and switch back to the editor window - it notices, rebuilds
+`scripts/`, and reloads. You never rebuild the editor itself, and you do not
+need this project's source code to do any of it.
+
+There is a **Build Scripts** button in the Assets panel too, for building
+without alt-tabbing - which is what you want after fixing a compile error.
+
+What happens on a rebuild:
+
+1. every running script object is destroyed
+2. the old library is unloaded
+3. every `.cpp` in `scripts/` is compiled into `scripts/.build/userContent.dll`
+4. that is loaded, and every script in the scene is reattached **by name**
+
+So a scene you are editing keeps working across a rebuild with nothing
+reattached by hand. Play mode is stopped first, the way Unity does, because a
+running play session cannot survive its own code being replaced.
+
+If the build fails, the compiler's messages appear in the **Console**, and
+**SCRIPTS DID NOT BUILD** appears in the menu bar - your scripts have stopped
+running until it is fixed. Fix the error and press **Build Scripts**.
+
+**This needs a C++ compiler on your machine.** That is unavoidable: these are
+real compiled C++ scripts. On Windows install Visual Studio or the standalone
+Build Tools; on macOS the Xcode command line tools; on Linux `g++` or
+`clang++`. The editor says which compiler it found in the Console at start-up,
+and says so plainly if it found none.
+
+The connection between an entity and its script is **by name**, so a script
+that has not compiled yet still attaches to an entity, still saves into the
+scene, and shows as **NOT FOUND** in red in the Inspector until it builds.
+
+If you want to know exactly what the compiler was told, open
+`scripts/.build/build.bat` - the editor writes it out, and you can run it
+yourself in a terminal.
 
 ```cpp
 class MyScript final : public eng::ScriptBehaviour {
@@ -200,8 +231,9 @@ class MyScript final : public eng::ScriptBehaviour {
 ENGINE_REGISTER_SCRIPT(MyScript)   // without this it can never be found
 ```
 
-`gamescripts/Orbiter.cpp` is a worked example. Read it before writing your own.
+`scripts/Orbiter.cpp` is a worked example. Read it before writing your own.
 
-The Console prints how many scripts were compiled in when the editor starts. A
-zero there while `gamescripts/` has files in it means the build is not keeping
-them - see `gamescripts/ScriptsAnchor.cpp`.
+The Console lists every script it loaded, by name, each time they are built. If
+a script you wrote is not in that list, either it did not compile - look
+further up the Console - or the file is missing its `ENGINE_REGISTER_SCRIPT`
+line, which is the one thing a script cannot work without.

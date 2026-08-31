@@ -65,11 +65,19 @@ ctest --preset debug
 
 | Target        | What it is                                                          |
 | ------------- | ------------------------------------------------------------------- |
-| `engine`      | The engine library. Knows nothing about any particular game.         |
+| `engine`      | The engine, as a SHARED library. Knows nothing about any game.       |
 | `editor`      | The development environment - Scene view, Game view, seven panels.   |
 | `sandbox`     | The game running on its own, with no editor.                         |
-| `gamescripts` | Behaviour scripts. Used by **both** programs above.                  |
 | `tests`       | The unit tests.                                                      |
+
+**The project's scripts are not on that list, and that is the point.**
+Everything in `scripts/` is compiled by the **editor**, while it is running,
+into a library that both programs load. Adding a script never rebuilds
+anything here. To build them without opening the editor:
+
+```bash
+build/debug/bin/editor --build-scripts
+```
 
 ---
 
@@ -108,12 +116,13 @@ it exercises the real input path rather than going round it.
 
 | Folder         | What lives there                                                  |
 | -------------- | ----------------------------------------------------------------- |
-| `engine/`      | The engine library.                                               |
+| `engine/`      | The engine, built as a shared library.                            |
 | `editor/`      | The development environment. Panels live here.                    |
 | `sandbox/`     | The game. The only place game-shaped code belongs.                |
-| `gamescripts/` | Behaviour scripts, used by both programs.                         |
+| `scripts/`     | Your behaviour scripts. Compiled by the editor, not by CMake.     |
 | `tests/`       | Unit tests.                                                       |
 | `cmake/`       | Build system pieces.                                              |
+| `tools/`       | The fresh-clone check script.                                     |
 | `config/`      | `engine.json` is read at start-up; `engine.example.json` documents every setting. |
 | `assets/`      | Scenes and images, loaded while the game runs. **Committed.**     |
 | `docs/`        | The editor guide and the engine tour.                             |
@@ -163,11 +172,12 @@ class MyScript final : public eng::ScriptBehaviour {
 ENGINE_REGISTER_SCRIPT(MyScript)   // without this it can never be found
 ```
 
-Scripts are **compiled C++**, so a new one runs after you rebuild. Everything
-else works immediately, because the connection between an entity and its script
-is made by NAME - see [docs/editor-guide.md](docs/editor-guide.md).
+Scripts are **compiled C++**, but the EDITOR compiles them: save a script, switch
+back to the editor window, and it rebuilds and reloads them by itself. You never
+rebuild the editor. That does need a C++ compiler installed - see
+[docs/editor-guide.md](docs/editor-guide.md).
 
-`gamescripts/Orbiter.cpp` is a worked example.
+`scripts/Orbiter.cpp` is a worked example.
 
 ---
 

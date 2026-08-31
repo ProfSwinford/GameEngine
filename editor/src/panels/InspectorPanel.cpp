@@ -291,7 +291,7 @@ void DrawScript(eng::ScriptComponent& script) {
     }
 
     // A list of what IS available, so a typo is one click from fixed rather
-    // than a hunt through the gamescripts folder.
+    // than a hunt through the scripts folder.
     if (ImGui::BeginCombo("Bind to", script.ScriptName().c_str())) {
         if (eng::ScriptRegistry::Count() == 0) {
             ImGui::TextDisabled("no scripts are compiled into this build");

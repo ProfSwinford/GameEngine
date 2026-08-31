@@ -52,7 +52,7 @@ another one.
 | `resource/`   | loading images, and sharing them between entities                    |
 | `scene/`      | entities, components, levels, scripts, messaging                    |
 | `physics/`    | collision shapes and collision events                               |
-| `tools/`      | starting and stopping the editor's interface                        |
+| `tools/`      | the three function pointers that let a tool see input first          |
 
 ---
 
@@ -66,6 +66,7 @@ another one.
 | how to write your own component                  | `scene/Component.h`, then `SpinComponent.h`|
 | how a level file becomes a world                 | `scene/Scene.h`                            |
 | how to write your own behaviour                  | `scene/ScriptComponent.h`                  |
+| how scripts are compiled and loaded              | `scene/ScriptLibrary.h`                    |
 | why deleting things is queued                    | `scene/DeferredOps.h`                      |
 | how entities tell each other things              | `scene/Messaging.h`                        |
 | how collision layers work                        | `physics/Collider.h`                       |
@@ -106,13 +107,31 @@ are printed to the log at start-up, so it is never a guess.
 
 ---
 
-## The two programs
+## The two programs, and the third library
 
 `sandbox` is the game with no editor attached. `editor` is the development
-environment. Both are built on the same `engine` library, and both link
-`gamescripts` - which is why a script written for the game also runs when you
-press Play in the editor.
+environment. Both are built on the same `engine`, which is a **shared** library
+- one copy of it in the process, shared by everything.
 
-The engine links SDL **privately**, which means neither program can reach SDL
+That matters because of the third piece. Everything in `scripts/` is compiled
+into `userContent.dll` by the editor while it is running, and **loaded** by
+both programs rather than linked into them. A script calls `InputMap::IsDown`
+and reaches the same engine the editor is running, because there is only one.
+
+The consequences are worth spelling out:
+
+- adding a script never rebuilds the editor, so a released editor is a finished
+  program rather than something you have to compile
+- a script written for the game runs when you press Play in the editor, because
+  it is the same library in both cases
+- the engine had to become a shared library for any of it to work - a static
+  one would give the scripts their own private copy of every piece of engine
+  state
+
+See `engine/include/engine/scene/ScriptLibrary.h` for how loading works and
+`editor/src/ScriptBuild.h` for how the compiling works.
+
+The engine links SDL **privately**, which means the game cannot reach SDL
 directly even if it wanted to. That is not a rule anybody has to remember; the
-build enforces it.
+build enforces it. The editor is the one exception, because ImGui's backend is
+written against SDL - and the editor is a tool, not a game.

@@ -135,13 +135,13 @@ std::string FileSystem::Resolve(std::string_view virtualPath) {
     //
     //   config/       settings edited by hand; not something the game ships
     //   logs/         output the program writes
-    //   gamescripts/  C++ SOURCE that the build compiles
+    //   scripts/      C++ SOURCE, plus the library the editor compiles it into
     //
-    // gamescripts/ is the important one. Source code is not an asset and must
+    // scripts/ is the important one. Source code is not an asset and must
     // never be packaged as one - the day somebody writes a packaging step,
     // putting scripts under assets/ would ship the game's own source with it.
     if (virtualPath.starts_with("config/") || virtualPath.starts_with("logs/") ||
-        virtualPath.starts_with("gamescripts/") || virtualPath == "gamescripts") {
+        virtualPath.starts_with("scripts/") || virtualPath == "scripts") {
         path = fs::path(g_root) / fs::path(std::string(virtualPath));
     }
 
@@ -201,7 +201,7 @@ bool FileSystem::ListDirectory(std::string_view virtualDirectory,
     std::error_code ec;
     if (!fs::is_directory(real, ec)) {
         // Deliberately NOT a warning. A file browser asks about folders that
-        // may legitimately not exist yet - gamescripts/ before the first
+        // may legitimately not exist yet - scripts/ before the first
         // script is written - and logging each of those would fill the Console
         // with non-problems.
         return false;

@@ -51,10 +51,12 @@
 #include <engine/scene/Messaging.h>
 #include <engine/scene/Scene.h>
 #include <engine/scene/ScriptComponent.h>
+#include <engine/scene/ScriptLibrary.h>
 #include <engine/scene/SpinComponent.h>
 #include <engine/scene/SystemOrder.h>
-#include <engine/tools/EditorGui.h>
+#include <engine/tools/GuiHooks.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -65,14 +67,26 @@ public:
     struct Options {
         std::string configPath = "config/engine.json";
 
-        // The editor sets this; the standalone game does not. That difference
-        // is what proves the engine works without its tools attached.
-        bool withEditorGui = false;
-
         // Overrides the scene named in the config file. Empty means "use the
         // config", and the config's own default is a filename too - there is
         // no scene name compiled into the engine anywhere.
         std::string sceneOverride;
+
+        // ------------------------------------------------------------------
+        //  Starting and stopping the editor's interface.
+        //
+        //  The editor fills these two in; the standalone game leaves them
+        //  empty, and that difference is what proves the engine ships without
+        //  its tools attached.
+        //
+        //  They are handed to the engine rather than called by the editor
+        //  itself so that the interface takes its proper place in the ordered
+        //  start-up: it comes up after the window and the renderer exist, and
+        //  goes down before they are destroyed. Getting that wrong is a crash
+        //  at shutdown, so it is not left to a caller to remember.
+        // ------------------------------------------------------------------
+        std::function<bool()> guiInit;
+        std::function<void()> guiShutdown;
     };
 
     // There is exactly one engine. Get() returns it.
@@ -163,7 +177,6 @@ private:
     int    m_stepsThisFrame = 0;
     bool   m_initialised    = false;
     bool   m_quitRequested  = false;
-    bool   m_withEditorGui  = false;
     bool   m_inPlayMode     = false;
 
     // The scene as it was when Play was pressed, so Stop can put it back.

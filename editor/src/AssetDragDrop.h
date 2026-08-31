@@ -54,7 +54,7 @@ AssetKind ClassifyAsset(std::string_view virtualPath);
 // One switch statement, so adding a new kind is one edit rather than three.
 const char* PayloadIdFor(AssetKind kind);
 
-// "gamescripts/PlayerController.cpp" -> "PlayerController".
+// "scripts/PlayerController.cpp" -> "PlayerController".
 //
 // That is the same text ENGINE_REGISTER_SCRIPT produced when the script
 // registered itself, which is what makes dropping a FILE attach a behaviour

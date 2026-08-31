@@ -89,6 +89,12 @@ private:
     // background tab, so its own Draw is not running. See GamePanel.h.
     void FocusGameViewIfRequested();
 
+    // Called when the editor window regains focus - the user alt-tabbed away,
+    // edited a script in their text editor, and came back. If anything in
+    // scripts/ has changed, it is rebuilt and reloaded before the next frame.
+    // See ScriptBuild.h.
+    void RebuildScriptsIfChanged();
+
     std::vector<std::unique_ptr<Panel>> m_panels;
     std::vector<std::string>            m_sceneList;
 
@@ -104,6 +110,11 @@ private:
     char m_saveAsPath[256] = {};
     bool m_openSaveAsPopup = false;
     char m_status[256]     = {};
+
+    // True when the last script build failed. Shown in the menu bar, because a
+    // failed build means the scripts that were running have just stopped and
+    // that should not be something you have to go looking for.
+    bool m_scriptBuildFailed = false;
 };
 
 } // namespace editor

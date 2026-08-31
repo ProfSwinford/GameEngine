@@ -18,7 +18,7 @@
 //
 //    assets/       data the game ships with - images and scenes. Loaded while
 //                  the game runs, and packaged with it.
-//    gamescripts/  C++ SOURCE that the build compiles. Never shipped and never
+//    scripts/  C++ SOURCE that the build compiles. Never shipped and never
 //                  loaded - it becomes part of the program itself.
 //
 //  Showing them as two separate roots rather than one tree is what keeps that
@@ -59,7 +59,7 @@ private:
     void DrawNewScriptPopup();
     void DrawNewFolderPopup();
 
-    // Writes gamescripts/<name>.cpp from the template. Returns false with a
+    // Writes scripts/<name>.cpp from the template. Returns false with a
     // reason - it refuses to overwrite, because silently replacing somebody's
     // script with a blank template would be unforgivable.
     bool CreateScript(const std::string& name, std::string& outError);

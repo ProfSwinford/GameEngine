@@ -101,6 +101,8 @@ void ScriptRegistry::ForEachScript(const std::function<void(const char*)>& fn) {
 
 std::size_t ScriptRegistry::Count() { return Table().size(); }
 
+void ScriptRegistry::Clear() { Table().clear(); }
+
 // ---------------------------------------------------------------------------
 //  ScriptComponent
 // ---------------------------------------------------------------------------
@@ -156,6 +158,26 @@ void ScriptComponent::SetScriptName(std::string_view name) {
     Unbind();
     m_scriptName = std::string(name);
     m_started    = false;
+    Bind();
+}
+
+void ScriptComponent::UnbindForReload() {
+    // The behaviour object is about to stop existing along with the library
+    // that defined it, so it gets its OnDestroy exactly as it would if the
+    // entity were being deleted.
+    if (m_behaviour != nullptr && m_started) {
+        m_behaviour->OnDestroy();
+    }
+    Unbind();
+
+    // m_scriptName is deliberately KEPT. It is the only thing that survives a
+    // reload, and it is what RebindAfterReload uses to find the new code.
+    m_started = false;
+}
+
+void ScriptComponent::RebindAfterReload() {
+    // Bind() reports an unknown name itself, which is what shows a script as
+    // NOT FOUND in the Inspector after a build that failed to include it.
     Bind();
 }
 
@@ -238,6 +260,21 @@ std::size_t ScriptSystem::UnresolvedCount() {
         }
     }
     return count;
+}
+
+void ScriptSystem::UnbindAll() {
+    // A copy of the list is walked, because unbinding does not remove anything
+    // from g_scripts - but being careful here costs nothing and the rule
+    // "never modify a list you are walking" is worth applying consistently.
+    for (ScriptComponent* script : std::vector<ScriptComponent*>(g_scripts)) {
+        script->UnbindForReload();
+    }
+}
+
+void ScriptSystem::RebindAll() {
+    for (ScriptComponent* script : std::vector<ScriptComponent*>(g_scripts)) {
+        script->RebindAfterReload();
+    }
 }
 
 void ScriptSystem::Update(float deltaSeconds) {

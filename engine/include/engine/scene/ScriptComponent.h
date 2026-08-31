@@ -112,6 +112,15 @@ public:
     static std::unique_ptr<ScriptBehaviour> Create(std::string_view scriptName);
     static void        ForEachScript(const std::function<void(const char*)>& fn);
     static std::size_t Count();
+
+    // Forgets every registered script.
+    //
+    // Called by ScriptLibrary just before it unloads the compiled scripts,
+    // because every entry in this table is a pointer to a function INSIDE that
+    // library. Leaving them behind and then unloading would leave the table
+    // full of addresses that no longer exist - and the crash would happen
+    // later, somewhere else, the next time somebody attached a script.
+    static void Clear();
 };
 
 // ----------------------------------------------------------------------------
@@ -173,6 +182,15 @@ public:
     void Tick(float deltaSeconds);
     void DispatchCollision(const std::string& messageType, EntityId other);
 
+    // Used when the compiled scripts are being reloaded.
+    //
+    // UnbindForReload destroys the running behaviour but KEEPS the name, so
+    // RebindAfterReload can find the newly compiled version of the same
+    // script. That is what lets you edit a script, come back to the editor,
+    // and carry on with the same scene - nothing has to be reattached.
+    void UnbindForReload();
+    void RebindAfterReload();
+
 private:
     void Bind();
     void Unbind();
@@ -205,6 +223,12 @@ public:
     // scripts are not compiled in" are the same fact, and only one of them
     // tells you what to do about it.
     static std::size_t UnresolvedCount();
+
+    // The two halves of a script reload, applied to every attached script.
+    // ScriptLibrary calls these around loading the compiled library; nothing
+    // else should. See ScriptLibrary.h for the order and why it matters.
+    static void UnbindAll();
+    static void RebindAll();
 
     static void RegisterComponentTypes();
 

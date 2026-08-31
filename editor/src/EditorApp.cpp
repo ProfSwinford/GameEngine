@@ -8,6 +8,9 @@
 
 #include "EditorApp.h"
 
+#include "EditorGui.h"
+#include "ScriptBuild.h"
+
 #include "panels/AssetBrowserPanel.h"
 #include "panels/ConsolePanel.h"
 #include "panels/GamePanel.h"
@@ -32,7 +35,12 @@ bool EditorApp::Init() {
     // subsystem inside the engine's ordered start-up rather than something the
     // editor starts on its own.
     eng::Engine::Options options;
-    options.withEditorGui = true;
+
+    // The engine does not know what ImGui is. It is handed two functions and
+    // calls them at the right moment in its ordered start-up - after the
+    // window and renderer exist, and before they are destroyed.
+    options.guiInit     = [] { return EditorGui::Init(eng::Engine::Get().GetWindow()); };
+    options.guiShutdown = [] { EditorGui::Shutdown(); };
 
     if (!eng::Engine::Get().Init(options)) {
         return false;
@@ -43,6 +51,17 @@ bool EditorApp::Init() {
     // running the moment the window appeared and every edit would be fighting
     // whatever system owns that value.
     eng::Engine::Get().Clock().SetPaused(true);
+
+    // Find a C++ compiler, and bring the project's scripts up to date if they
+    // have been edited since they were last built - which is the usual case
+    // after somebody has been working on them outside the editor.
+    //
+    // This happens AFTER the engine has started so that the log, the file
+    // system and the script loader all exist. The engine's start-up will
+    // already have loaded whatever library was there; this replaces it when it
+    // is out of date, using exactly the same reload path a later edit uses.
+    ScriptBuild::Init();
+    RebuildScriptsIfChanged();
 
     // Adding a panel is one line. The two VIEWS are also kept by pointer,
     // because EditorApp has to call RenderView on them after every panel has
@@ -240,6 +259,14 @@ void EditorApp::DrawMenuBar() {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f), "| UNSAVED");
     }
+    if (m_scriptBuildFailed) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.95f, 0.38f, 0.32f, 1.0f), "| SCRIPTS DID NOT BUILD");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("The compiler's messages are in the Console. Your scripts "
+                              "are not running until this is fixed.");
+        }
+    }
     if (m_status[0] != '\0') {
         ImGui::SameLine();
         ImGui::TextDisabled("| %s", m_status);
@@ -298,10 +325,51 @@ void EditorApp::FocusGameViewIfRequested() {
     ImGui::SetWindowFocus(m_gamePanel->Title());
 }
 
+void EditorApp::RebuildScriptsIfChanged() {
+    if (!ScriptBuild::NeedsRebuild()) {
+        return;   // the usual case, and it costs only a few timestamp checks
+    }
+
+    eng::Engine& engine = eng::Engine::Get();
+
+    // Play mode is stopped first, the way Unity does when it recompiles.
+    //
+    // It is not optional here. Reloading destroys every running script object,
+    // so a play session cannot survive it - and stopping restores the scene to
+    // how it was authored, which is a far better place to come back to than a
+    // half-played one with its behaviours missing.
+    if (engine.IsInPlayMode()) {
+        ENGINE_LOG_INFO(eng::Channels::kEditor,
+                        "scripts changed, so play mode was stopped before rebuilding");
+        engine.ExitPlayMode();
+    }
+
+    const ScriptBuild::Result result = ScriptBuild::BuildAndReload();
+    std::snprintf(m_status, sizeof(m_status), "%s", result.summary.c_str());
+
+    // A failed build is worth putting in front of somebody rather than leaving
+    // in the Console - the scripts that were running have just stopped.
+    m_scriptBuildFailed = !result.ok;
+
+    // Push the log to disk now rather than letting it sit in the buffer.
+    //
+    // A build is exactly the kind of thing you want a record of afterwards,
+    // and the most interesting case - a script that compiled and then brought
+    // the editor down - is the one where an unflushed buffer would be lost.
+    eng::Log::Flush();
+}
+
 void EditorApp::Run() {
     eng::Engine& engine = eng::Engine::Get();
 
     while (engine.BeginFrame()) {
+        // The user alt-tabbed back to the editor. That is the moment to check
+        // whether any script was edited while it was in the background - see
+        // ScriptBuild.h for why this is the natural trigger.
+        if (engine.Events().FocusGainedThisFrame()) {
+            RebuildScriptsIfChanged();
+        }
+
         // ==================================================================
         //  THE ORDER OF ONE EDITOR FRAME, and every step is here for a reason.
         //
@@ -323,13 +391,13 @@ void EditorApp::Run() {
         //     so the pictures filled in at step 4 are current rather than one
         //     frame behind.
         // ==================================================================
-        eng::EditorGui::BeginFrame();
+        EditorGui::BeginFrame();
 
         engine.Simulate();
 
-        eng::EditorGui::BeginDockspace();
+        EditorGui::BeginDockspace();
         DrawMenuBar();
-        eng::EditorGui::EndDockspace();
+        EditorGui::EndDockspace();
         DrawPanels();
         DrawSaveAsPopup();
         FocusGameViewIfRequested();
@@ -373,12 +441,12 @@ void EditorApp::Run() {
         eng::Renderer::Clear(eng::Color{12, 12, 15, 255});
 
         // The keyboard follows focus, and focus followed Play a moment ago.
-        eng::EditorGui::SetGameInputFocus(m_gamePanel != nullptr &&
+        EditorGui::SetGameInputFocus(m_gamePanel != nullptr &&
                                           m_gamePanel->HasFocus() &&
                                           engine.IsInPlayMode());
 
         // Step 5: the interface draws, on top of the world.
-        eng::EditorGui::EndFrame();
+        EditorGui::EndFrame();
         engine.PresentFrame();
     }
 }

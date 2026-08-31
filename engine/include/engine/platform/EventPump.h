@@ -38,6 +38,8 @@ enum class RawEventKind {
     MouseMove,
     MouseWheel,
     WindowResized,
+    WindowFocusGained,   // the user switched back to this window
+    WindowFocusLost,     // the user switched away from it
 };
 
 const char* ToString(RawEventKind kind);
@@ -79,6 +81,15 @@ public:
     // True when the user asked to close the window this frame.
     bool QuitRequested() const;
 
+    // True on the frame the window became the one being typed into - the user
+    // alt-tabbed back, or clicked on it.
+    //
+    // The editor uses this to notice that scripts may have been edited while
+    // it was in the background. A game could use it to pause itself when the
+    // player switches away.
+    bool FocusGainedThisFrame() const { return m_focusGained; }
+    bool FocusLostThisFrame() const   { return m_focusLost; }
+
     // True when the editor GUI claimed event `index`. Gameplay input ignores
     // those.
     bool WasConsumed(std::size_t index) const;
@@ -116,6 +127,8 @@ private:
     float m_mouseX = 0.0f;
     float m_mouseY = 0.0f;
     bool  m_quitRequested = false;
+    bool  m_focusGained   = false;
+    bool  m_focusLost     = false;
 };
 
 } // namespace eng

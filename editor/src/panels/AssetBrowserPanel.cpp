@@ -7,6 +7,7 @@
 
 #include "AssetDragDrop.h"
 #include "EditorApp.h"
+#include "ScriptBuild.h"
 #include "ScriptTemplate.h"
 
 #include <imgui.h>
@@ -27,13 +28,13 @@ namespace {
 // <project>/assets/scenes/level1.json - so the virtual path OF assets/ itself
 // is "". Writing "assets" here would ask for <project>/assets/assets.
 //
-// gamescripts/ is the exception that FileSystem::Resolve already knows about,
+// scripts/ is the exception that FileSystem::Resolve already knows about,
 // so it keeps its name.
 constexpr const char* kRootAssets  = "";
-constexpr const char* kRootScripts = "gamescripts";
+constexpr const char* kRootScripts = "scripts";
 
 bool IsScriptsRoot(const std::string& directory) {
-    return directory == kRootScripts || directory.starts_with("gamescripts/");
+    return directory == kRootScripts || directory.starts_with("scripts/");
 }
 
 // What to show at the top of the panel. "" is a real virtual path and a
@@ -115,7 +116,7 @@ void AssetBrowserPanel::DrawBreadcrumb() {
     ImGui::SameLine();
 
     ImGui::BeginDisabled(inScripts);
-    if (ImGui::SmallButton("gamescripts")) {
+    if (ImGui::SmallButton("scripts")) {
         Navigate(kRootScripts);
     }
     ImGui::EndDisabled();
@@ -151,6 +152,24 @@ void AssetBrowserPanel::DrawBreadcrumb() {
     if (ImGui::SmallButton("+ Folder")) {
         m_openNewFolder    = true;
         m_newFolderName[0] = '\0';
+    }
+
+    // Building scripts by hand. It normally happens on its own when the editor
+    // regains focus, but having a button matters: it makes the step visible
+    // rather than magic, and it gives you a way to retry after fixing a
+    // compile error without alt-tabbing out and back.
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ScriptBuild::HasCompiler());
+    if (ImGui::SmallButton("Build Scripts")) {
+        const ScriptBuild::Result result = ScriptBuild::BuildAndReload();
+        std::snprintf(m_status, sizeof(m_status), "%s", result.summary.c_str());
+        Refresh();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", ScriptBuild::HasCompiler()
+                                    ? ScriptBuild::CompilerDescription().c_str()
+                                    : "no C++ compiler was found on this machine");
     }
 
     ImGui::SameLine();
@@ -281,7 +300,7 @@ void AssetBrowserPanel::Draw() {
     ImGui::Separator();
 
     if (!m_valid) {
-        // gamescripts/ legitimately does not exist until the first script is
+        // scripts/ legitimately does not exist until the first script is
         // created, so this is an instruction rather than an error.
         ImGui::TextDisabled("'%s' does not exist yet.", DisplayPath(m_directory).c_str());
         if (m_directory == kRootScripts) {
@@ -327,8 +346,8 @@ bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outEr
         return false;
     }
 
-    // Always into gamescripts/, never into whichever folder is being browsed.
-    // The build only compiles gamescripts/*.cpp and does not look in
+    // Always into scripts/, never into whichever folder is being browsed.
+    // The build only compiles scripts/*.cpp and does not look in
     // sub-folders, so a script written into one would be created, listed, and
     // never compiled - a worse outcome than refusing to put it there.
     const std::string path = std::string(kRootScripts) + "/" + name + ".cpp";

@@ -50,6 +50,9 @@ set(ENGINE_SOURCES
     src/scene/ScriptComponent.cpp     # your own behaviour classes
     src/scene/SpinComponent.cpp       # a small worked example component
     src/scene/SystemOrder.cpp         # what updates, in what order
+    src/scene/ScriptLibrary.cpp       # loading the project's compiled scripts
+
+    src/tools/GuiHooks.cpp            # lets the editor see input first
 )
 
 set(ENGINE_HEADERS
@@ -85,14 +88,32 @@ set(ENGINE_HEADERS
     include/engine/scene/ScriptComponent.h
     include/engine/scene/SpinComponent.h
     include/engine/scene/SystemOrder.h
-    include/engine/tools/EditorGui.h
+    include/engine/scene/ScriptLibrary.h
+    include/engine/tools/GuiHooks.h
 )
 
-add_library(engine STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
+add_library(engine SHARED ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 add_library(Engine2D::engine ALIAS engine)
 
+# ---------------------------------------------------------------------------
+#  WINDOWS_EXPORT_ALL_SYMBOLS
+#
+#  On Windows, a function inside a DLL is invisible from outside unless it is
+#  explicitly exported. Normally that means writing __declspec(dllexport) on
+#  everything, which is hundreds of annotations to add and to keep correct.
+#
+#  This property tells CMake to scan the compiled object files and generate
+#  that export list automatically. It works here because the engine only needs
+#  its FUNCTIONS exported: the property does not handle exported DATA, and the
+#  engine deliberately has none - every piece of state lives in an anonymous
+#  namespace inside a .cpp and is reached through a static member function.
+#
+#  Ignored on macOS and Linux, where everything is visible by default.
+# ---------------------------------------------------------------------------
+set_target_properties(engine PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
 # PUBLIC means "anything that links the engine also gets this include folder",
-# which is what lets the game and the editor write
+# which is what lets the game, the editor and a project's scripts all write
 #     #include <engine/Engine.h>
 target_include_directories(engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -112,16 +133,14 @@ target_link_libraries(engine PRIVATE SDL3::SDL3)
 # reading and writing scene files is something students do directly, and
 # hiding the JSON library behind a wrapper of our own would mean learning two
 # APIs instead of one.
+#
+# It is header-only, so nothing is actually linked; this passes the include
+# folder along to everything that uses the engine.
 target_link_libraries(engine PUBLIC nlohmann_json::nlohmann_json)
 
-# Dear ImGui is PUBLIC when the editor is being built, because the editor's
-# panels call ImGui functions directly. Turn the option off and both the link
-# and the ENGINE_WITH_IMGUI definition disappear, which is what a shipped game
-# wants.
-if(ENGINE_WITH_IMGUI)
-    target_sources(engine PRIVATE src/tools/EditorGui.cpp)
-    target_link_libraries(engine PUBLIC imgui::imgui)
-    target_compile_definitions(engine PUBLIC ENGINE_WITH_IMGUI)
-endif()
+# Note what is NOT here any more: Dear ImGui. It used to be part of the engine,
+# and it now lives in the editor - see editor/src/EditorGui.h for why. The
+# engine's only remaining connection to a tool layer is three function pointers
+# in tools/GuiHooks.h.
 
 engine_set_warnings(engine)

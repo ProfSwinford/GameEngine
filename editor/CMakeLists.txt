@@ -1,20 +1,26 @@
 # =============================================================================
 #  The editor executable - the development environment.
 #
-#      engine/   a static library. Knows nothing about any game or any tool.
-#      editor/   this program. All the panels live here.
-#      sandbox/  the game running on its own, with no editor attached.
+#      engine/       a shared library. Knows nothing about any game or any tool.
+#      editor/       this program. All the panels live here.
+#      sandbox/      the game running on its own, with no editor attached.
+#      scripts/      the project's scripts, compiled into a library that both
+#                    programs LOAD at run time.
 #
-#  The editor links the engine exactly the way the game does and sees only the
-#  engine's public headers. That constraint is worth keeping: every panel makes
-#  you ask "can this be observed from outside the engine?", and when the answer
-#  is no, the engine gains the missing accessor rather than the panel reaching
-#  inside.
+#  ---------------------------------------------------------------------------
+#  NOTE WHAT THE EDITOR NO LONGER LINKS: the project's scripts.
+#
+#  It loads them instead, from a library it compiles itself while running - see
+#  src/ScriptBuild.h. That is what makes this a finished program: somebody
+#  using the released editor can write a script and see it run without ever
+#  rebuilding the editor, and without needing this source tree at all.
 # =============================================================================
 
 set(EDITOR_SOURCES
     src/main.cpp
     src/EditorApp.cpp                    # the window, the menu bar, the panel list
+    src/EditorGui.cpp                    # starting and stopping Dear ImGui
+    src/ScriptBuild.cpp                  # finds a compiler and builds the project
     src/AssetDragDrop.cpp                # what happens when you drag a file onto something
     src/ScriptTemplate.cpp               # the starter script the Assets panel writes
     src/panels/AssetBrowserPanel.cpp     # Assets   - the files on disk
@@ -30,12 +36,42 @@ add_executable(editor ${EDITOR_SOURCES})
 
 target_include_directories(editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# WHOLE_ARCHIVE - see the explanation in sandbox/CMakeLists.txt. Linking the
-# scripts into the EDITOR as well is what lets Play actually run behaviour in
-# the Game view.
+# ---------------------------------------------------------------------------
+#  Dear ImGui lives HERE now, not in the engine.
+#
+#  It keeps some of its state in a global variable, and a global variable does
+#  not survive being reached across a shared-library boundary the way a
+#  function does. Keeping ImGui inside the one program that draws with it
+#  sidesteps that completely. See src/EditorGui.h.
+#
+#  SDL comes with it, because ImGui's backends are written against SDL. The
+#  editor is a TOOL, so that is fine - the boundary that matters is that a
+#  GAME cannot reach SDL, and the sandbox still cannot.
+# ---------------------------------------------------------------------------
 target_link_libraries(editor PRIVATE
     Engine2D::engine
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Engine2D::gamescripts>")
+    imgui::imgui
+    SDL3::SDL3)
+
+# ---------------------------------------------------------------------------
+#  What the editor needs to know in order to compile somebody's scripts.
+#
+#  These are baked in at build time because they have to MATCH the way the
+#  engine itself was built. A script compiled with a different C runtime, or
+#  against different headers, would load and then misbehave in ways that are
+#  very hard to trace - so the values are taken from this build rather than
+#  guessed at run time.
+#
+#  ENGINE_INCLUDE_DIR and ENGINE_JSON_INCLUDE_DIR are absolute paths into this
+#  source tree. A released editor would ship its own copy of those headers
+#  beside the executable and look there instead; the lookup order is in
+#  ScriptBuild.cpp.
+# ---------------------------------------------------------------------------
+target_compile_definitions(editor PRIVATE
+    ENGINE_SCRIPT_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/engine/include"
+    ENGINE_SCRIPT_JSON_INCLUDE_DIR="$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>"
+    ENGINE_SCRIPT_IMPORT_LIB="$<TARGET_LINKER_FILE:engine>"
+    ENGINE_SCRIPT_IS_DEBUG=$<IF:$<CONFIG:Debug>,1,0>)
 
 engine_set_warnings(editor)
 

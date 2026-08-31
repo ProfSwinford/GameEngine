@@ -29,11 +29,17 @@ endif()
 #  those things directly means writing different code for Windows, macOS and
 #  Linux; SDL does that part so the rest of this project is one set of files.
 #
-#  Linked STATICALLY, which means SDL is built into the programs rather than
-#  sitting beside them as a separate .dll or .so file to be found at run time.
-#  That removes a whole category of "it works on my machine" failure.
-set(SDL_SHARED       OFF CACHE BOOL "" FORCE)
-set(SDL_STATIC       ON  CACHE BOOL "" FORCE)
+#  Linked as a SHARED library, so there is exactly ONE copy of SDL in the
+#  running program. That matters now that the engine is itself a shared
+#  library: if the engine and the editor each linked their own private copy of
+#  SDL, there would be two sets of SDL's internal state - two event queues, two
+#  ideas of which window exists - and nothing would work.
+#
+#  The cost is that SDL3.dll has to sit next to the programs. CMake puts it
+#  there automatically, because shared libraries and executables share one
+#  output folder (see the top-level CMakeLists.txt).
+set(SDL_SHARED       ON  CACHE BOOL "" FORCE)
+set(SDL_STATIC       OFF CACHE BOOL "" FORCE)
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL      OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES     OFF CACHE BOOL "" FORCE)

@@ -7,7 +7,7 @@
 
 #include <engine/core/Log.h>
 #include <engine/platform/EventPump.h>
-#include <engine/tools/EditorGui.h>
+#include <engine/tools/GuiHooks.h>
 
 #include <SDL3/SDL.h>
 
@@ -24,6 +24,8 @@ const char* ToString(RawEventKind kind) {
         case RawEventKind::MouseMove:       return "MouseMove";
         case RawEventKind::MouseWheel:      return "MouseWheel";
         case RawEventKind::WindowResized:   return "WindowResized";
+        case RawEventKind::WindowFocusGained: return "WindowFocusGained";
+        case RawEventKind::WindowFocusLost:   return "WindowFocusLost";
     }
     return "?";
 }
@@ -34,11 +36,18 @@ void EventPump::Poll() {
     m_events.clear();
     m_consumed.clear();
     m_quitRequested = false;
+    m_focusGained   = false;
+    m_focusLost     = false;
 
     if (m_events.capacity() == 0) {
         m_events.reserve(64);
         m_consumed.reserve(64);
     }
+
+    // The tool layer, if one is attached. In the editor these three point at
+    // ImGui; in the standalone game they are all null and every event reaches
+    // the game untouched. See tools/GuiHooks.h.
+    const GuiHooks& gui = GetGuiHooks();
 
     SDL_Event sdlEvent;
 
@@ -46,10 +55,10 @@ void EventPump::Poll() {
     // only one event per frame would make input fall further and further
     // behind whenever several things happened at once.
     while (SDL_PollEvent(&sdlEvent)) {
-        // The editor's GUI sees every event first, so that a focused text box
-        // can claim the keyboard. In the standalone game this call does
-        // nothing and always returns false.
-        const bool guiHandled = EditorGui::ProcessEvent(&sdlEvent);
+        // The editor's interface sees every event first, so that a text box
+        // with focus can claim the keyboard.
+        const bool guiHandled =
+            (gui.ProcessEvent != nullptr) && gui.ProcessEvent(&sdlEvent);
 
         RawEvent event;
         bool     recognised = true;
@@ -111,6 +120,21 @@ void EventPump::Poll() {
                 event.mouseY = static_cast<float>(sdlEvent.window.data2);   // new height
                 break;
 
+            // "Keyboard focus" is the operating system's idea of which window
+            // the user is typing into - which is what changes when somebody
+            // alt-tabs away and back. The editor watches for the "gained" one
+            // to notice that scripts may have been edited while it was in the
+            // background.
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                event.kind    = RawEventKind::WindowFocusGained;
+                m_focusGained = true;
+                break;
+
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                event.kind  = RawEventKind::WindowFocusLost;
+                m_focusLost = true;
+                break;
+
             default:
                 // Plenty of SDL event types are of no interest here. Ignoring
                 // them keeps the list short and meaningful.
@@ -130,13 +154,14 @@ void EventPump::Poll() {
         switch (event.kind) {
             case RawEventKind::KeyDown:
             case RawEventKind::KeyUp:
-                consumed = guiHandled && EditorGui::WantsKeyboard();
+                consumed = guiHandled && gui.WantsKeyboard != nullptr &&
+                           gui.WantsKeyboard();
                 break;
             case RawEventKind::MouseButtonDown:
             case RawEventKind::MouseButtonUp:
             case RawEventKind::MouseMove:
             case RawEventKind::MouseWheel:
-                consumed = guiHandled && EditorGui::WantsMouse();
+                consumed = guiHandled && gui.WantsMouse != nullptr && gui.WantsMouse();
                 break;
             default:
                 consumed = false;

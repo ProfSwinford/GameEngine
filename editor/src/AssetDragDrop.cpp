@@ -33,10 +33,10 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
 } // namespace
 
 AssetKind ClassifyAsset(std::string_view virtualPath) {
-    // A script is recognised by its extension AND by living in gamescripts/.
+    // A script is recognised by its extension AND by living in scripts/.
     // A .cpp anywhere else is engine or game source, which this panel has no
     // business offering to attach to an entity.
-    if (virtualPath.starts_with("gamescripts/") &&
+    if (virtualPath.starts_with("scripts/") &&
         (EndsWithNoCase(virtualPath, ".cpp") || EndsWithNoCase(virtualPath, ".h"))) {
         return AssetKind::Script;
     }

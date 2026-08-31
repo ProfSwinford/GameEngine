@@ -1,12 +1,15 @@
 // ============================================================================
 //  EditorGui.cpp - starting, running and stopping Dear ImGui. See EditorGui.h.
 //
-//  This is the only file in the engine that includes both SDL and ImGui.
+//  This is the only file in the editor that includes SDL, and it only does so
+//  because ImGui's backends are written against it.
 // ============================================================================
+
+#include "EditorGui.h"
 
 #include <engine/core/Log.h>
 #include <engine/platform/Window.h>
-#include <engine/tools/EditorGui.h>
+#include <engine/tools/GuiHooks.h>
 
 #include <SDL3/SDL.h>
 
@@ -15,7 +18,7 @@
 #include <imgui_impl_sdl3.h>         // the input half of ImGui's SDL support
 #include <imgui_impl_sdlrenderer3.h> // the drawing half
 
-namespace eng {
+namespace editor {
 namespace {
 
 bool          g_initialised = false;
@@ -23,21 +26,50 @@ SDL_Renderer* g_renderer    = nullptr;
 bool          g_gameFocus   = false;
 bool          g_layoutBuilt = false;
 
+// ---------------------------------------------------------------------------
+//  The three functions the engine calls to find out whether the interface
+//  claimed an input event. They are plain functions rather than members so
+//  their addresses fit the function pointers in eng::GuiHooks.
+// ---------------------------------------------------------------------------
+
+bool HookProcessEvent(const void* platformEvent) {
+    if (!g_initialised || platformEvent == nullptr) {
+        return false;
+    }
+    return ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(platformEvent));
+}
+
+bool HookWantsKeyboard() {
+    if (!g_initialised) {
+        return false;
+    }
+    // While the Game view has focus the editor gives up the keyboard entirely,
+    // so key presses stop being marked as claimed and reach the game.
+    if (g_gameFocus) {
+        return false;
+    }
+    return ImGui::GetIO().WantCaptureKeyboard;
+}
+
+bool HookWantsMouse() {
+    return g_initialised && ImGui::GetIO().WantCaptureMouse;
+}
+
 } // namespace
 
-bool EditorGui::Init(Window& window) {
+bool EditorGui::Init(eng::Window& window) {
     if (g_initialised) {
         return true;
     }
     if (!window.IsValid()) {
-        ENGINE_LOG_ERROR(Channels::kEditor,
+        ENGINE_LOG_ERROR(eng::Channels::kEditor,
                          "the editor interface was given a window that failed to open");
         return false;
     }
 
     IMGUI_CHECKVERSION();
     if (ImGui::CreateContext() == nullptr) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "could not create the ImGui context");
+        ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not create the ImGui context");
         return false;
     }
 
@@ -57,12 +89,13 @@ bool EditorGui::Init(Window& window) {
     // and windowing; the second lets it draw through SDL's renderer. Starting
     // only the first gives you a program that runs perfectly and shows nothing.
     if (!ImGui_ImplSDL3_InitForSDLRenderer(sdlWindow, sdlRenderer)) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "could not connect ImGui to SDL");
+        ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not connect ImGui to SDL");
         ImGui::DestroyContext();
         return false;
     }
     if (!ImGui_ImplSDLRenderer3_Init(sdlRenderer)) {
-        ENGINE_LOG_ERROR(Channels::kEditor, "could not connect ImGui to the renderer");
+        ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                         "could not connect ImGui to the renderer");
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
         return false;
@@ -70,7 +103,17 @@ bool EditorGui::Init(Window& window) {
 
     g_renderer    = sdlRenderer;
     g_initialised = true;
-    ENGINE_LOG_INFO(Channels::kEditor, "editor interface ready (ImGui {})", IMGUI_VERSION);
+
+    // Hand the engine its three function pointers. From here on, every input
+    // event goes past ImGui before it reaches the game.
+    eng::GuiHooks hooks;
+    hooks.ProcessEvent  = &HookProcessEvent;
+    hooks.WantsKeyboard = &HookWantsKeyboard;
+    hooks.WantsMouse    = &HookWantsMouse;
+    eng::SetGuiHooks(hooks);
+
+    ENGINE_LOG_INFO(eng::Channels::kEditor, "editor interface ready (ImGui {})",
+                    IMGUI_VERSION);
     return true;
 }
 
@@ -78,6 +121,11 @@ void EditorGui::Shutdown() {
     if (!g_initialised) {
         return;
     }
+
+    // Clear the hooks FIRST. After this the engine stops calling in, so
+    // nothing can reach ImGui while it is being taken apart.
+    eng::SetGuiHooks(eng::GuiHooks{});
+
     // The exact reverse of Init: drawing backend, input backend, context.
     ImGui_ImplSDLRenderer3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
@@ -85,17 +133,10 @@ void EditorGui::Shutdown() {
 
     g_renderer    = nullptr;
     g_initialised = false;
-    ENGINE_LOG_INFO(Channels::kEditor, "editor interface shut down");
+    ENGINE_LOG_INFO(eng::Channels::kEditor, "editor interface shut down");
 }
 
 bool EditorGui::IsInitialised() { return g_initialised; }
-
-bool EditorGui::ProcessEvent(const void* sdlEvent) {
-    if (!g_initialised || sdlEvent == nullptr) {
-        return false;
-    }
-    return ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(sdlEvent));
-}
 
 void EditorGui::BeginFrame() {
     if (!g_initialised) {
@@ -112,22 +153,6 @@ void EditorGui::EndFrame() {
     }
     ImGui::Render();
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), g_renderer);
-}
-
-bool EditorGui::WantsKeyboard() {
-    if (!g_initialised) {
-        return false;
-    }
-    // While the Game view has focus the editor gives up the keyboard entirely,
-    // so key presses stop being marked as claimed and reach the game.
-    if (g_gameFocus) {
-        return false;
-    }
-    return ImGui::GetIO().WantCaptureKeyboard;
-}
-
-bool EditorGui::WantsMouse() {
-    return g_initialised && ImGui::GetIO().WantCaptureMouse;
 }
 
 void EditorGui::SetGameInputFocus(bool focused) {
@@ -201,8 +226,8 @@ void EditorGui::BeginDockspace() {
     if (!g_layoutBuilt) {
         g_layoutBuilt = true;
 
-        ImGuiDockNode* node  = ImGui::DockBuilderGetNode(dockspaceId);
-        const bool     empty = (node == nullptr) || (node->IsEmpty() && !node->IsSplitNode());
+        ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockspaceId);
+        const bool empty = (node == nullptr) || (node->IsEmpty() && !node->IsSplitNode());
         if (empty) {
             ImGui::DockBuilderRemoveNode(dockspaceId);
 
@@ -248,7 +273,7 @@ void EditorGui::BeginDockspace() {
             ImGui::DockBuilderDockWindow("Console", bottom);
 
             ImGui::DockBuilderFinish(dockspaceId);
-            ENGINE_LOG_INFO(Channels::kEditor,
+            ENGINE_LOG_INFO(eng::Channels::kEditor,
                             "no saved window layout found, so the default one was built");
         }
     }
@@ -261,4 +286,4 @@ void EditorGui::EndDockspace() {
     ImGui::End();
 }
 
-} // namespace eng
+} // namespace editor

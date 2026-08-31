@@ -75,12 +75,17 @@ void Engine::RegisterBuiltinSubsystems(const Options& options) {
         [] { Renderer::Shutdown(); }));
 
     // 5. The editor's interface. Needs the window and the renderer, and is
-    //    only registered when the editor asked for it - the standalone game
-    //    never has it, which is what proves the engine ships without its tools.
-    if (options.withEditorGui) {
+    //    only registered when the editor supplied the two functions - the
+    //    standalone game never does, which is what proves the engine ships
+    //    without its tools.
+    //
+    //    Note that the engine calls these without knowing what they do. The
+    //    interface library lives entirely in the editor; all the engine
+    //    provides is the correct moment to start and stop it.
+    if (options.guiInit) {
         m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-            "EditorGui", [this] { return EditorGui::Init(*m_window); },
-            [] { EditorGui::Shutdown(); }));
+            "EditorGui", options.guiInit,
+            options.guiShutdown ? options.guiShutdown : [] {}));
     }
 
     // 6. Input. Needs the window (events come from it) and the editor GUI when
@@ -123,8 +128,26 @@ void Engine::RegisterBuiltinSubsystems(const Options& options) {
     m_subsystems.Register(std::make_unique<LambdaSubsystem>(
         "Messaging", [] { return true; }, [] { MessageBus::Clear(); }));
 
-    // 10. The scene. Needs textures (components load them as they attach) and
-    //     messaging.
+    // 10. The project's compiled scripts.
+    //
+    //     Registered BEFORE the scene, which means it is torn down AFTER it -
+    //     and that order is not optional. Unloading the scene destroys every
+    //     entity, which destroys their script objects, and those objects live
+    //     in the compiled library. Unload the library first and the scene's
+    //     teardown would be calling destructors that no longer exist.
+    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
+        "Scripts",
+        [] {
+            std::string error;
+            // A project with no scripts is fine and returns true. Only a
+            // library that exists and will not load is a failure.
+            return ScriptLibrary::Load(ScriptLibrary::DefaultVirtualPath(), error);
+        },
+        [] { ScriptLibrary::Unload(); }));
+
+    // 11. The scene. Needs textures (components load them as they attach),
+    //     messaging, and the scripts (so a ScriptComponent finds its behaviour
+    //     as the scene loads rather than a frame later).
     m_subsystems.Register(std::make_unique<LambdaSubsystem>(
         "Scene",
         [this] {
@@ -141,17 +164,6 @@ void Engine::RegisterBuiltinSubsystems(const Options& options) {
 
             m_scene = std::make_unique<Scene>();
             Scene::SetActive(m_scene.get());
-
-            // How many scripts were compiled into this build. Worth a line at
-            // start-up because the failure it catches is otherwise invisible:
-            // if the build is not set up to keep them, every script silently
-            // disappears and the only symptom is that nothing happens when you
-            // press Play.
-            ENGINE_LOG_INFO(Channels::kScene, "{} script(s) available",
-                            ScriptRegistry::Count());
-            ScriptRegistry::ForEachScript([](const char* name) {
-                ENGINE_LOG_INFO(Channels::kScene, "    script '{}'", name);
-            });
             return true;
         },
         [this] {
@@ -173,7 +185,7 @@ void Engine::RegisterBuiltinSubsystems(const Options& options) {
             m_scene.reset();
         }));
 
-    // 11. Collision. Needs messaging and the scene.
+    // 12. Collision. Needs messaging and the scene.
     m_subsystems.Register(std::make_unique<LambdaSubsystem>(
         "Collision",
         [this] {
@@ -195,7 +207,6 @@ void Engine::RegisterBuiltinSubsystems(const Options& options) {
 }
 
 bool Engine::Init(const Options& options) {
-    m_withEditorGui = options.withEditorGui;
 
     // Two things have to happen BEFORE the ordered start-up above: the
     // settings file has to be read (the log's level and the window's size come

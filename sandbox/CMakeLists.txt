@@ -15,16 +15,14 @@ add_executable(sandbox
 
 target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# WHOLE_ARCHIVE on gamescripts, and it is not optional.
+# The engine, and nothing else.
 #
-# A script registers itself using an object at file scope that nothing else
-# refers to by name (see ENGINE_REGISTER_SCRIPT in ScriptComponent.h). A normal
-# static-library link throws away anything that appears unused, which would
-# silently discard every script - and the only symptom would be that nothing
-# happens when you press Play. WHOLE_ARCHIVE tells the linker to keep the lot.
-target_link_libraries(sandbox PRIVATE
-    Engine2D::engine
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Engine2D::gamescripts>")
+# The project's scripts are deliberately NOT linked here. They are LOADED at
+# run time from scripts/.build/, exactly as the editor loads them - see
+# engine/include/engine/scene/ScriptLibrary.h. One mechanism, used by both
+# programs, so a script cannot work in one and not the other.
+target_link_libraries(sandbox PRIVATE Engine2D::engine)
+
 
 engine_set_warnings(sandbox)
 
