@@ -1,0 +1,45 @@
+{
+  "_comment": "WEEK 8 EXAMPLE. Your schema does not have to match this one. It is here so you have something concrete to react to rather than a blank file. Copy it to config/engine.json, change it to suit your engine, and commit BOTH - the example is documentation, the real one is configuration.",
+
+  "window": {
+    "title": "Engine2D",
+    "width": 1280,
+    "height": 720
+  },
+
+  "logging": {
+    "threshold": "Info",
+    "file": "logs/engine.log"
+  },
+
+  "tunables": {
+    "workerThreadCount": 4,
+    "debugCircleSegments": 24,
+    "frameAllocatorBytes": 1048576,
+    "entityPoolBlocks": 4096
+  },
+
+  "cvars": {
+    "debug.drawColliders": true,
+    "debug.showAllocatorHud": true,
+    "camera.defaultZoom": 1.0
+  },
+
+  "input": {
+    "contexts": {
+      "gameplay": {
+        "MoveLeft":  ["Key.A", "Key.Left",  "Gamepad.LeftStick.X-"],
+        "MoveRight": ["Key.D", "Key.Right", "Gamepad.LeftStick.X+"],
+        "Jump":      ["Key.Space", "Gamepad.A"],
+        "Pause":     ["Key.Escape", "Gamepad.Start"]
+      },
+      "menu": {
+        "NavigateUp":   ["Key.W", "Key.Up"],
+        "NavigateDown": ["Key.S", "Key.Down"],
+        "Confirm":      ["Key.Space", "Key.Return", "Gamepad.A"],
+        "Back":         ["Key.Escape", "Gamepad.B"]
+      }
+    },
+    "deadZone": 0.18
+  }
+}

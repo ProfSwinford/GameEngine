@@ -1,0 +1,12 @@
+# Optional but recommended. Consistent formatting means your diffs show what
+# you changed instead of where your editor put the braces.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+BreakBeforeBraces: Attach
+SortIncludes: CaseSensitive

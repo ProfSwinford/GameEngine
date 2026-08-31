@@ -1,47 +1,53 @@
-# Define the minimum CMake version (3.25+ is highly recommended for stable C++23 support)
-cmake_minimum_required(VERSION 3.25)
+# =============================================================================
+#  2D Game Engine Architecture - root build
+#
+#  Grown one week at a time, Weeks 1-10. Three targets plus a test binary:
+#
+#      engine/   static library   - knows nothing about any game or any tool
+#      sandbox/  executable       - the standalone game runtime (the Gate)
+#      editor/   executable       - the ImGui IDE, one panel per week
+#      tests/    executable       - doctest unit tests
+# =============================================================================
+cmake_minimum_required(VERSION 3.28)
 
-# Set the project name, version, and language
-project(Name VERSION 1.0.0 LANGUAGES CXX)
+project(Engine2D
+    VERSION 0.10.0
+    DESCRIPTION "2D game engine, built one week at a time"
+    LANGUAGES CXX)
 
-# Enforce the C++23 standard
+# --- Language standard ------------------------------------------------------
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF) # Disables compiler-specific extensions for pure C++23
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Enable FetchContent module to import SDL3 version 3.4.14 directly from its Git repository
-include(FetchContent)
-FetchContent_Declare(
-    SDL3
-    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG        release-3.4.14  # Targets the exact 3.4.14 release tag
-    GIT_SHALLOW    TRUE            # Downloads only the tag without full history (faster)
-)
-set(SDL_TESTS OFF CACHE BOOL "" FORCE) # Disables building SDL3 tests to reduce build time and dependencies
-FetchContent_MakeAvailable(SDL3) # Ensures SDL3 is built and available for linking
+# --- Where build output goes ------------------------------------------------
+# Everything lands in one place so the sandbox executable can find assets/
+# by walking a known relative path. Week 9's FileSystem depends on this being
+# predictable. 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# SDL3 resources/examples are available @ https://examples.libsdl.org/SDL3/
+# --- Options ----------------------------------------------------------------
+option(ENGINE_BUILD_TESTS       "Build the unit test target"          ON)
+option(ENGINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"  OFF)
+option(ENGINE_WITH_IMGUI        "Build the ImGui editor layer"        ON)   # Week 2
 
-# Define the executable target and its main entry point
-add_executable(build src/main.cpp)
+# Week 5: std::thread needs the platform thread library on most toolchains.
+find_package(Threads REQUIRED)
 
-# Map the "Name" project name to the target for clean organization
-add_executable(Name::Name ALIAS build)
+include(cmake/Dependencies.cmake)
+include(cmake/CompilerWarnings.cmake)
 
-# Configure include directories for header files
-target_include_directories(build PRIVATE include)
+add_subdirectory(engine)
+add_subdirectory(gamescripts)     # the behaviours the editor creates; linked by both targets below
+add_subdirectory(sandbox)
 
-target_link_libraries(build PRIVATE SDL3::SDL3)
+if(ENGINE_WITH_IMGUI)
+    add_subdirectory(editor)          # Week 2: the third target
+endif()
 
-add_custom_command(TARGET build POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_FILE:SDL3::SDL3>
-    $<TARGET_FILE_DIR:build>
-)
-
-# Recommended: Enable standard compiler warnings to catch errors early
-if(MSVC)
-    target_compile_options(build PRIVATE /W4)
-else()
-    target_compile_options(build PRIVATE -Wall -Wextra -Wpedantic)
+if(ENGINE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()

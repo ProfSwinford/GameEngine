@@ -1,0 +1,60 @@
+﻿{
+  "_comment": "Live engine configuration. config/engine.example.json is the documented reference; this is the one the engine actually reads. Both are committed - the example is documentation, this is configuration.",
+
+  "window": {
+    "title": "Engine2D",
+    "width": 1280,
+    "height": 720
+  },
+
+  "logging": {
+    "threshold": "Info",
+    "file": "logs/engine.log"
+  },
+
+  "tunables": {
+    "workerThreadCount": 0,
+    "debugCircleSegments": 24,
+    "frameAllocatorBytes": 1048576,
+    "entityPoolBlocks": 4096,
+    "logBufferCapacity": 4096,
+    "fixedTimestepSeconds": 0.016666667,
+    "maxStepsPerFrame": 5
+  },
+
+  "startup": {
+    "scene": "scenes/orbit_test.json"
+  },
+
+  "cvars": {
+    "debug.drawColliders": true,
+    "debug.showAllocatorHud": true,
+    "debug.showGrid": false,
+    "camera.defaultZoom": 1.0
+  },
+
+  "input": {
+    "deadZone": 0.18,
+    "contexts": {
+      "gameplay": {
+        "MoveLeft":  ["Key.A", "Key.Left"],
+        "MoveRight": ["Key.D", "Key.Right"],
+        "MoveUp":    ["Key.W", "Key.Up"],
+        "MoveDown":  ["Key.S", "Key.Down"],
+        "Jump":      ["Key.Space"],
+        "Interact":  ["Key.E", "Mouse.Left"],
+        "Pause":     ["Key.Escape"],
+        "Quit":      ["Key.Q"]
+      },
+      "menu": {
+        "NavigateUp":   ["Key.W", "Key.Up"],
+        "NavigateDown": ["Key.S", "Key.Down"],
+        "Confirm":      ["Key.Space", "Key.Return"],
+        "Back":         ["Key.Escape"],
+        "Pause":        ["Key.P"]
+      }
+    }
+  }
+}
+
+

@@ -1,52 +1,73 @@
-# ==========================================
-# 1. CMake & Local Build Outputs
-# ==========================================
-# Ignore the entire build directory where CMake generates files, downloads SDL3, and compiles targets
+# ---- Build output ----------------------------------------------------------
+# Everything CMake generates. Nothing in here belongs in version control:
+# it is machine-specific, it is enormous, and it is reproducible from source.
 build/
 build_output/
-CMakeUserPresets.json
+out/
+cmake-build-*/
 
-# ==========================================
-# 2. Visual Studio 2026 / MSVC Logs & Cache
-# ==========================================
+# ---- Fetched dependencies --------------------------------------------------
+# FetchContent puts SDL, doctest, nlohmann_json and ImGui inside build/, so
+# the line above already covers them. Listed explicitly in case you ever
+# relocate FETCHCONTENT_BASE_DIR.
+_deps/
+
+# ---- IDE and editor --------------------------------------------------------
 .vs/
+.vscode/
+!.vscode/settings.json
+.idea/
 *.user
 *.suo
+*.sln
 *.sln.docstates
-*.VisualState
+*.vcxproj*
+CMakeUserPresets.json
 IntelGraphicsProfiles/
-MSVC.VisualC.Baseline.txt
 
-# Compile history and diagnostic logs
-*.log
-*.tlog
-*.lastbuildstate
-*.pdb
-*.idb
-*.ilk
-*.exe
-*.dll
+# ---- Compiler and linker artefacts -----------------------------------------
+*.o
+*.obj
+*.a
 *.lib
 *.so
 *.dylib
+*.dll
+*.exe
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.tlog
+*.lastbuildstate
 
-# ==========================================
-# 3. Future C# Build Artifacts
-# ==========================================
-# Ignore standard .NET compiler directories
-[Bb]in/
-[Oo]bj/
+# ---- Runtime output --------------------------------------------------------
+# Week 3's file sink writes here. Logs are evidence, not source - paste the
+# interesting lines into a writeup instead of committing the raw file.
+logs/
+*.log
 
-# User-specific C# project configurations
-*.userosxx
-*.suo
-*.userprefs
-.sc/
+# Week 2: ImGui writes its own imgui.ini storing the docked panel layout.
+# A window arrangement is a personal preference, not source.
+imgui.ini
 
-# ==========================================
-# 4. Operating System Files
-# ==========================================
+# ---- OS noise --------------------------------------------------------------
+.DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-.DS_Store
+
+# ---- Profiler and sanitizer output -----------------------------------------
+# Reports are evidence, not source. Paste findings into your writeups instead
+# of committing raw dumps.
+*.trace
+*.heaptrack.*
+callgrind.out.*
+massif.out.*
+perf.data*
+
+# ---- NOT ignored, deliberately ---------------------------------------------
+# assets/**/*.bmp and assets/**/*.json ARE committed. Week 9's milestone check
+# is a fresh clone on another machine loading the same scene, and the classic
+# failure is an asset that only ever existed on the author's disk.
+!assets/**
