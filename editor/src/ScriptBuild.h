@@ -12,8 +12,8 @@
 //
 //  So the editor does the build. It finds a C++ compiler on the machine,
 //  writes a small build script, runs it, and loads the result. Every .cpp in
-//  the project's scripts/ folder is compiled together into ONE library,
-//  scripts/.build/userContent.dll, which the engine then loads at run time -
+//  the project's assets/ folder - at any depth - is compiled together into ONE
+//  library, .build/userContent.dll, which the engine loads at run time -
 //  see engine/include/engine/scene/ScriptLibrary.h.
 //
 //  ==========================================================================
@@ -74,7 +74,7 @@ public:
     static const std::string& CompilerDescription();
     static bool               HasCompiler();
 
-    // True when a .cpp in scripts/ has been added, changed or removed since
+    // True when a script under assets/ has been added, changed or removed since
     // the library was last built. Cheap - it only looks at timestamps.
     static bool NeedsRebuild();
 
@@ -90,8 +90,48 @@ public:
     // What the last build printed. Kept so a panel can show it after the fact.
     static const std::string& LastOutput();
 
+    // Every script source found under assets/, split by how it gets compiled.
+    struct Sources {
+        // .cpp files, handed to the compiler directly.
+        std::vector<std::string> compiled;
+
+        // .h / .hpp files that contain an ENGINE_REGISTER_SCRIPT. A header is
+        // not compiled on its own, so these are pulled in through one
+        // generated translation unit - otherwise a script written entirely in
+        // a header would be found by the Assets panel and never run.
+        //
+        // Headers WITHOUT a registration are left alone. They are helpers, and
+        // including a helper that was written to be included in one particular
+        // place can easily fail to compile on its own.
+        std::vector<std::string> headers;
+
+        // Every other .h under assets/ - helpers, included by something else.
+        //
+        // These are never handed to the compiler, but they ARE watched: a
+        // helper header is part of what the scripts are built from, so editing
+        // one has to trigger a rebuild. Leaving them out would mean changing a
+        // shared header and finding that nothing happened.
+        std::vector<std::string> helpers;
+
+        bool        Empty() const { return compiled.empty() && headers.empty(); }
+        std::size_t Count() const { return compiled.size() + headers.size(); }
+
+        // Everything, in one sorted list - what gets recorded and compared to
+        // decide whether a rebuild is needed. Helpers included, for the reason
+        // above.
+        std::vector<std::string> All() const;
+    };
+
+    // Walks assets/ and every folder under it. Public because the Assets panel
+    // reports the count, and because it is the honest answer to "which files
+    // does the editor think are scripts?".
+    static Sources GatherSources();
+
 private:
-    static std::vector<std::string> GatherSources();
+    // After a successful build: compares the classes each file registers
+    // against the classes it registered last time, and reports - or repairs -
+    // anything that moved. See the note on ClassManifestFile in the .cpp.
+    static void VerifyRegistrations(const Sources& sources);
 };
 
 } // namespace editor

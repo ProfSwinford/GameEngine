@@ -29,7 +29,7 @@ namespace {
 // there before it runs the game.
 int BuildScriptsAndExit() {
     // Only the two pieces this actually needs, started by hand: somewhere to
-    // write messages, and the ability to turn "scripts/" into a real path.
+    // write messages, and the ability to turn a virtual path into a real one.
     // There is no window, no renderer and no scene.
     eng::Log::Init("logs/engine.log", eng::LogLevel::Info);
     eng::FileSystem::Init();

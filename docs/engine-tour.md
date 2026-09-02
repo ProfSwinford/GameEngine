@@ -113,10 +113,11 @@ are printed to the log at start-up, so it is never a guess.
 environment. Both are built on the same `engine`, which is a **shared** library
 - one copy of it in the process, shared by everything.
 
-That matters because of the third piece. Everything in `scripts/` is compiled
-into `userContent.dll` by the editor while it is running, and **loaded** by
-both programs rather than linked into them. A script calls `InputMap::IsDown`
-and reaches the same engine the editor is running, because there is only one.
+That matters because of the third piece. Every `.cpp` and `.h` under `assets/`
+is compiled into `.build/userContent.dll` by the editor while it is running,
+and **loaded** by both programs rather than linked into them. A script calls
+`InputMap::IsDown` and reaches the same engine the editor is running, because
+there is only one.
 
 The consequences are worth spelling out:
 

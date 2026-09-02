@@ -33,11 +33,12 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
 } // namespace
 
 AssetKind ClassifyAsset(std::string_view virtualPath) {
-    // A script is recognised by its extension AND by living in scripts/.
-    // A .cpp anywhere else is engine or game source, which this panel has no
-    // business offering to attach to an entity.
-    if (virtualPath.starts_with("scripts/") &&
-        (EndsWithNoCase(virtualPath, ".cpp") || EndsWithNoCase(virtualPath, ".h"))) {
+    // A script is recognised by its extension alone. Everything the browser
+    // can see is already under assets/, and every .cpp and .h under assets/ is
+    // compiled into the project's script library - so if it is visible here
+    // and it is source, it is a script.
+    if (EndsWithNoCase(virtualPath, ".cpp") || EndsWithNoCase(virtualPath, ".h") ||
+        EndsWithNoCase(virtualPath, ".hpp")) {
         return AssetKind::Script;
     }
     if (EndsWithNoCase(virtualPath, ".bmp")) {

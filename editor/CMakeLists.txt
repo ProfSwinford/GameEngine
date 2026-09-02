@@ -4,7 +4,7 @@
 #      engine/       a shared library. Knows nothing about any game or any tool.
 #      editor/       this program. All the panels live here.
 #      sandbox/      the game running on its own, with no editor attached.
-#      scripts/      the project's scripts, compiled into a library that both
+#      assets/       the project's scripts, compiled into a library that both
 #                    programs LOAD at run time.
 #
 #  ---------------------------------------------------------------------------

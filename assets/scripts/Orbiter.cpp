@@ -14,20 +14,20 @@
 //  the Hierarchy or the Inspector.
 // ============================================================================
 
-#include <engine/core/Log.h>
-#include <engine/math/Transform2D.h>
-#include <engine/math/Vec2.h>
-#include <engine/scene/Entity.h>
-#include <engine/scene/Scene.h>
-#include <engine/scene/ScriptComponent.h>
-
+//#include <engine/core/Log.h>
+//#include <engine/math/Transform2D.h>
+//#include <engine/math/Vec2.h>
+//#include <engine/scene/Entity.h>
+//#include <engine/scene/Scene.h>
+//#include <engine/scene/ScriptComponent.h>
+#include <engine/Engine.h>
 #include <cmath>
 
 namespace {
 
 class Orbiter final : public eng::ScriptBehaviour {
 public:
-    void OnStart() override {
+    void OnStart() {
         // The centre of the circle is remembered HERE rather than in a
         // constructor, because a constructor runs before the script is
         // connected to its entity - Transform() would be null. OnStart is the
@@ -37,7 +37,7 @@ public:
         }
     }
 
-    void OnUpdate(float deltaSeconds) override {
+    void OnUpdate(float deltaSeconds) {
         eng::Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;
@@ -61,7 +61,7 @@ public:
                                  std::sin(m_angle) * kRadius});
     }
 
-    void OnCollisionEnter(eng::EntityId other) override {
+    void OnCollisionEnter(eng::EntityId other) {
         // The other entity is looked up through the scene rather than
         // remembered as a pointer, because it may already have been destroyed.
         // That is the rule the whole engine runs on, and a script is not

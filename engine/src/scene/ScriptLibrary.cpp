@@ -27,18 +27,21 @@ std::string g_loadedPath;
 } // namespace
 
 std::string ScriptLibrary::DefaultVirtualPath() {
-    // The compiled scripts go in a hidden folder inside the project's scripts
-    // folder. Hidden - the leading dot - so the Assets panel does not show it:
-    // it is build output, not something anybody edits.
+    // Every script in the project is compiled into this one library.
     //
-    // This is the ONE definition of the name. Both things that produce the
-    // file - the editor's own compiler call, and scripts/CMakeLists.txt - are
-    // written to match it, so there is never a question of which file is the
-    // current one.
+    // It sits in .build/ beside assets/ rather than inside it. Your scripts
+    // live in assets/, next to the scenes and images they belong with - but
+    // the compiled result is not something you wrote and not something to
+    // browse, and putting it in the tree the Assets panel shows would just be
+    // clutter you have to learn to ignore.
+    //
+    // This is the ONE definition of the name, used by the engine that loads it
+    // and by the editor that writes it, so there is never a question of which
+    // file is the current one.
 #if defined(_WIN32)
-    return "scripts/.build/userContent.dll";
+    return ".build/userContent.dll";
 #else
-    return "scripts/.build/userContent.so";
+    return ".build/userContent.so";
 #endif
 }
 
@@ -73,8 +76,21 @@ bool ScriptLibrary::Load(std::string_view virtualPath, std::string& outError) {
 
     ENGINE_LOG_INFO(Channels::kScene, "loaded {} script(s) from '{}'",
                     ScriptRegistry::Count(), virtualPath);
-    ScriptRegistry::ForEachScript([](const char* name) {
-        ENGINE_LOG_INFO(Channels::kScene, "    script '{}'", name);
+    // Each script is listed WITH THE HOOKS IT TURNED OUT TO HAVE.
+    //
+    // Because hooks are found by name rather than declared, a misspelled
+    // OnUpdate is not a compile error - it is a function nobody calls. This
+    // line is what makes that visible: if your script is listed with hooks you
+    // did not expect, the spelling is where to look. A script with none at all
+    // is reported as a warning, because it is almost certainly a mistake.
+    ScriptRegistry::ForEachEntry([](const char* name, const ScriptRegistry::Entry& e) {
+        const std::string hooks = DescribeHooks(e.hooks);
+        if (e.hooks.start == nullptr && e.hooks.update == nullptr &&
+            e.hooks.destroy == nullptr && !e.hooks.AnyCollision()) {
+            ENGINE_LOG_WARN(Channels::kScene, "    script '{}' has {}", name, hooks);
+        } else {
+            ENGINE_LOG_INFO(Channels::kScene, "    script '{}' - {}", name, hooks);
+        }
     });
 
     // Step 5: anything in the scene that was waiting for a script by name can

@@ -4,15 +4,23 @@
 //  ==========================================================================
 //  HOW THE COMPILER IS ACTUALLY RUN
 //
-//  The editor writes a small build script into scripts/.build/ and runs it,
-//  with everything the compiler prints redirected into a log file it then
-//  reads back.
+//  The editor writes a small build script into .build/ and runs it, with
+//  everything the compiler prints redirected into a log file it then reads
+//  back.
 //
 //  That is deliberately low-tech, and it has one property worth the trouble:
 //  the build script is a real file that stays on disk afterwards. When a build
-//  does something surprising, you can open scripts/.build/build.bat and read
-//  the exact command that ran, or run it yourself in a terminal. A build step
-//  hidden inside the program would give you nothing to look at.
+//  does something surprising, you can open .build/build.bat and read the exact
+//  command that ran, or run it yourself in a terminal. A build step hidden
+//  inside the program would give you nothing to look at.
+//
+//  ==========================================================================
+//  WHAT COUNTS AS A SCRIPT
+//
+//  Every .cpp under assets/, at any depth, plus every .h that registers one.
+//  There is no designated scripts folder: you arrange your project the way it
+//  suits the game - enemies/, player/, ui/ - and the scripts live next to the
+//  scenes and images they belong with.
 // ============================================================================
 
 #if defined(_MSC_VER)
@@ -28,6 +36,7 @@
 
 #include <engine/core/Log.h>
 #include <engine/fs/FileSystem.h>
+#include <engine/scene/ScriptComponent.h>
 #include <engine/scene/ScriptLibrary.h>
 
 // SDL is used for one thing: asking where the editor's own executable is, so a
@@ -39,6 +48,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <map>
+#include <set>
 #include <sstream>
 
 namespace editor {
@@ -159,7 +171,7 @@ fs::path EngineLinkLibrary() {
 }
 
 fs::path BuildDirectory() {
-    return fs::path(eng::FileSystem::Resolve("scripts/.build"));
+    return fs::path(eng::FileSystem::Resolve(".build"));
 }
 
 fs::path OutputLibrary() {
@@ -173,6 +185,48 @@ fs::path OutputLibrary() {
 // the deleted script would go on running. Comparing the list catches that.
 fs::path SourceListFile() {
     return BuildDirectory() / "sources.txt";
+}
+
+// Which class names each file registered, as of the last successful build.
+//
+// This is what lets a rebuild notice that a file which used to define `Player`
+// now defines `PlayerController`. Without it, renaming a class in your editor
+// would quietly turn every entity using it into an unresolved script, and the
+// only symptom would be that the game stopped doing something.
+fs::path ClassManifestFile() {
+    return BuildDirectory() / "classes.txt";
+}
+
+// The one generated file: a translation unit that includes every script
+// written in a HEADER.
+//
+// A .cpp is handed to the compiler directly. A .h is not compiled by itself -
+// it only becomes code when something includes it - so a script written
+// entirely in a header would never run. This file is what includes them.
+fs::path GeneratedHeaderUnit() {
+    return BuildDirectory() / "_headers.cpp";
+}
+
+// Is this text somewhere in the file? Used for two cheap checks that catch
+// real mistakes: a file that declares a script but never registers it, and a
+// header that is a script rather than a helper.
+bool FileContains(const fs::path& path, std::string_view needle) {
+    const std::string text = ReadWholeFile(path);
+    return text.find(needle) != std::string::npos;
+}
+
+// Turns a real path back into the short form the rest of the engine uses, so
+// what gets logged and recorded is "enemies/Chaser.cpp" rather than a path
+// with somebody's user name in it. Falls back to the full path if the file is
+// somehow outside the project.
+std::string ToVirtualPath(const fs::path& real) {
+    std::error_code ec;
+    const fs::path  assetsRoot = fs::path(eng::FileSystem::Resolve(""));
+    const fs::path  relative   = fs::relative(real, assetsRoot, ec);
+    if (ec || relative.empty() || relative.native().starts_with(fs::path("..").native())) {
+        return real.lexically_normal().generic_string();
+    }
+    return relative.generic_string();
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +283,33 @@ std::string FindVisualStudioVcvars() {
 
 #endif // _WIN32
 
+#if defined(_WIN32)
+
+// Is cl.exe's environment set up, as opposed to cl.exe merely being findable?
+//
+// This distinction is the whole reason this function exists. MSVC does not
+// know where its own standard headers are: it reads the INCLUDE environment
+// variable to find <cmath>, and LIB to find the C runtime it links against.
+// vcvars64.bat is what sets them. So a machine can have cl.exe sitting on the
+// PATH and still be completely unable to compile anything - which is exactly
+// what happens when the editor is launched from the Visual Studio IDE, because
+// Visual Studio puts the toolchain's bin directory on the program's PATH
+// without passing INCLUDE and LIB along with it.
+//
+// Getting this wrong produces a baffling error rather than an obvious one:
+//
+//     fatal error C1083: Cannot open include file: 'cmath'
+//
+// which reads like a broken compiler or a broken engine header, when in fact
+// the compiler simply has not been told where its own headers live.
+bool MsvcEnvironmentIsSetUp() {
+    const char* include = std::getenv("INCLUDE");
+    const char* lib     = std::getenv("LIB");
+    return include != nullptr && *include != '\0' && lib != nullptr && *lib != '\0';
+}
+
+#endif // _WIN32
+
 // Is this command available on the PATH?
 bool IsOnPath(const std::string& program) {
 #if defined(_WIN32)
@@ -255,13 +336,21 @@ void ScriptBuild::Init() {
 #if defined(_WIN32)
     // Best case: the editor was started from a developer prompt, so cl.exe
     // already works and needs no environment set up.
-    if (IsOnPath("cl.exe")) {
+    //
+    // Both halves of this condition matter. Finding cl.exe proves only that
+    // the EXECUTABLE is reachable; MsvcEnvironmentIsSetUp proves the compiler
+    // can find its own headers and libraries. Skipping the second check is how
+    // the editor ends up running a compiler that cannot open <cmath>.
+    if (IsOnPath("cl.exe") && MsvcEnvironmentIsSetUp()) {
         g_compilerPath        = "cl.exe";
         g_haveCompiler        = true;
         g_compilerDescription = "MSVC (cl.exe, already on PATH)";
     } else if (const std::string vcvars = FindVisualStudioVcvars(); !vcvars.empty()) {
-        // Usual case: Visual Studio is installed but its compiler is not on
-        // the PATH, so the build script runs vcvars64.bat first to set it up.
+        // Usual case: Visual Studio is installed but its compiler is not set
+        // up for this process, so the build script runs vcvars64.bat first.
+        // This branch is also where a half-configured environment lands - an
+        // unconfigured cl.exe on the PATH is worse than no cl.exe at all, so
+        // it is deliberately passed over in favour of vcvars.
         g_vcvarsPath          = vcvars;
         g_compilerPath        = "cl.exe";
         g_haveCompiler        = true;
@@ -312,27 +401,74 @@ const std::string& ScriptBuild::LastOutput()          { return g_lastOutput; }
 //  Deciding whether anything needs doing
 // ---------------------------------------------------------------------------
 
-std::vector<std::string> ScriptBuild::GatherSources() {
-    std::vector<std::string> sources;
+std::vector<std::string> ScriptBuild::Sources::All() const {
+    std::vector<std::string> all;
+    all.reserve(compiled.size() + headers.size() + helpers.size());
+    all.insert(all.end(), compiled.begin(), compiled.end());
+    all.insert(all.end(), headers.begin(), headers.end());
+    all.insert(all.end(), helpers.begin(), helpers.end());
+    std::sort(all.begin(), all.end());
+    return all;
+}
 
-    std::vector<eng::FileSystem::DirEntry> entries;
-    if (!eng::FileSystem::ListDirectory("scripts", entries)) {
-        return sources;   // no scripts folder yet, which is a normal state
+ScriptBuild::Sources ScriptBuild::GatherSources() {
+    Sources sources;
+
+    const fs::path  root = fs::path(eng::FileSystem::Resolve(""));
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) {
+        return sources;   // no assets folder, which nothing can do anything about
     }
 
-    for (const eng::FileSystem::DirEntry& entry : entries) {
-        if (!entry.isDirectory && entry.name.ends_with(".cpp")) {
-            sources.push_back(entry.virtualPath);
+    // EVERY folder under assets/, however deep. That is the point: you arrange
+    // your project however you like - enemies/, player/, ui/ - and the editor
+    // finds the scripts wherever you put them, rather than making you keep
+    // them all in one flat folder because the build only looks there.
+    fs::recursive_directory_iterator it(
+        root, fs::directory_options::skip_permission_denied, ec);
+    if (ec) {
+        return sources;
+    }
+
+    for (const fs::directory_entry& entry : it) {
+        // Skip hidden folders wholesale - .build, .git, and anything else
+        // beginning with a dot is not somebody's game code.
+        if (entry.is_directory(ec)) {
+            const std::string name = entry.path().filename().string();
+            if (!name.empty() && name.front() == '.') {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+
+        const std::string ext = entry.path().extension().string();
+        if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+            sources.compiled.push_back(ToVirtualPath(entry.path()));
+        } else if (ext == ".h" || ext == ".hpp" || ext == ".hxx") {
+            // A header that registers a script is compiled through the
+            // generated unit; every other header is only watched for changes.
+            // See Sources.
+            if (FileContains(entry.path(), "ENGINE_REGISTER_SCRIPT")) {
+                sources.headers.push_back(ToVirtualPath(entry.path()));
+            } else {
+                sources.helpers.push_back(ToVirtualPath(entry.path()));
+            }
         }
     }
+
     // Sorted so that the recorded list is comparable between runs rather than
     // depending on the order the operating system happened to hand them back.
-    std::sort(sources.begin(), sources.end());
+    std::sort(sources.compiled.begin(), sources.compiled.end());
+    std::sort(sources.headers.begin(), sources.headers.end());
+    std::sort(sources.helpers.begin(), sources.helpers.end());
     return sources;
 }
 
 bool ScriptBuild::NeedsRebuild() {
-    const std::vector<std::string> sources = GatherSources();
+    const std::vector<std::string> sources = GatherSources().All();
 
     std::error_code ec;
     const fs::path  library = OutputLibrary();
@@ -383,20 +519,22 @@ bool ScriptBuild::NeedsRebuild() {
 ScriptBuild::Result ScriptBuild::BuildAndReload() {
     Result result;
 
-    const std::vector<std::string> sources = GatherSources();
+    const Sources                  sources    = GatherSources();
+    const std::vector<std::string> allSources = sources.All();
 
     std::error_code ec;
     const fs::path  buildDir = BuildDirectory();
     fs::create_directories(buildDir, ec);
 
     // ---- nothing to compile ----------------------------------------------
-    if (sources.empty()) {
+    if (sources.Empty()) {
         eng::ScriptLibrary::Unload();
         fs::remove(OutputLibrary(), ec);
-        std::ofstream(SourceListFile(), std::ios::trunc);   // record: nothing built
+        std::ofstream(SourceListFile(), std::ios::trunc);      // record: nothing built
+        std::ofstream(ClassManifestFile(), std::ios::trunc);
 
         result.rebuilt = true;
-        result.summary = "no scripts in scripts/ - nothing to build";
+        result.summary = "no scripts found in assets/ - nothing to build";
         ENGINE_LOG_INFO(eng::Channels::kEditor, "{}", result.summary);
         return result;
     }
@@ -423,6 +561,41 @@ ScriptBuild::Result ScriptBuild::BuildAndReload() {
     const fs::path       scriptLog = buildDir / "build.log";
     const fs::path       engineLib = EngineLinkLibrary();
     std::vector<fs::path> includes = IncludeDirectories();
+
+    // The list actually handed to the compiler: every .cpp, plus one generated
+    // file that includes the scripts written in headers.
+    std::vector<std::string> compileList;
+    for (const std::string& source : sources.compiled) {
+        compileList.push_back(eng::FileSystem::Resolve(source));
+    }
+
+    if (!sources.headers.empty()) {
+        // Generated, and left on disk on purpose - if a header script will not
+        // compile, this is the file the error refers to, and being able to
+        // open it is the difference between a confusing message and an
+        // obvious one.
+        std::ofstream unit(GeneratedHeaderUnit(), std::ios::trunc);
+        unit << "// Written by the editor. Do not edit - it is regenerated on every\n";
+        unit << "// build from the .h files under assets/ that register a script.\n";
+        unit << "//\n";
+        unit << "// A header is not compiled on its own. Without this file, a script\n";
+        unit << "// written entirely in a .h would be listed in the Assets panel and\n";
+        unit << "// would never run.\n";
+        for (const std::string& header : sources.headers) {
+            // Forward slashes even on Windows: a backslash inside an #include
+            // is an escape sequence as far as the preprocessor is concerned.
+            unit << "#include \""
+                 << fs::path(eng::FileSystem::Resolve(header)).generic_string()
+                 << "\"\n";
+        }
+        compileList.push_back(GeneratedHeaderUnit().string());
+    } else {
+        // No header scripts any more. Delete the generated unit rather than
+        // leaving a stale one behind - .build/ is a folder people are told
+        // they can open and read, so a file in it that is no longer part of
+        // the build is just something to be misled by.
+        fs::remove(GeneratedHeaderUnit(), ec);
+    }
 
     std::ostringstream cmd;
 
@@ -457,8 +630,8 @@ ScriptBuild::Result ScriptBuild::BuildAndReload() {
         for (const fs::path& include : includes) {
             bat << " /I\"" << include.string() << "\"";
         }
-        for (const std::string& source : sources) {
-            bat << " \"" << eng::FileSystem::Resolve(source) << "\"";
+        for (const std::string& source : compileList) {
+            bat << " \"" << source << "\"";
         }
 
         bat << " /Fo\"" << buildDir.string() << "\\\\\"";
@@ -476,8 +649,8 @@ ScriptBuild::Result ScriptBuild::BuildAndReload() {
         for (const fs::path& include : includes) {
             sh << " -I\"" << include.string() << "\"";
         }
-        for (const std::string& source : sources) {
-            sh << " \"" << eng::FileSystem::Resolve(source) << "\"";
+        for (const std::string& source : compileList) {
+            sh << " \"" << source << "\"";
         }
         sh << " -o \"" << output.string() << "\"";
         sh << " \"" << engineLib.string() << "\"\n";
@@ -516,7 +689,7 @@ ScriptBuild::Result ScriptBuild::BuildAndReload() {
     // Record what went into this build, so a deleted script is noticed later.
     {
         std::ofstream list(SourceListFile(), std::ios::trunc);
-        for (const std::string& source : sources) {
+        for (const std::string& source : allSources) {
             list << source << "\n";
         }
     }
@@ -530,10 +703,155 @@ ScriptBuild::Result ScriptBuild::BuildAndReload() {
         return result;
     }
 
-    result.summary = "built " + std::to_string(sources.size()) + " script(s), " +
-                     std::to_string(eng::ScriptLibrary::ScriptCount()) + " available";
+    // ---- did any class change its name? -----------------------------------
+    VerifyRegistrations(sources);
+
+    result.summary = "built " + std::to_string(sources.Count()) + " file(s), " +
+                     std::to_string(eng::ScriptLibrary::ScriptCount()) + " script(s) available";
     ENGINE_LOG_INFO(eng::Channels::kEditor, "{}", result.summary);
     return result;
+}
+
+// ---------------------------------------------------------------------------
+//  Checking the registrations against last time
+//
+//  Renaming a class is an ordinary thing to do in a text editor, and it is
+//  invisible to everything else: the file keeps its name, it still compiles,
+//  and it still registers a script. But the SCENE refers to the class by its
+//  old name, so every entity using it silently becomes unresolved and stops
+//  doing anything.
+//
+//  So after every successful build the editor compares what each file
+//  registers now against what it registered last time. When one class in a
+//  file has been replaced by exactly one other, that is a rename, and the
+//  components using it are moved across and the move is reported. Anything
+//  less clear-cut is reported and left alone - guessing would be worse.
+//
+//  The scene is NOT saved by this. Nothing is written to disk, so an
+//  unwanted rebind is undone by not saving.
+// ---------------------------------------------------------------------------
+void ScriptBuild::VerifyRegistrations(const Sources& sources) {
+    using ClassesByFile = std::map<std::string, std::set<std::string>>;
+
+    // ---- what is registered right now, straight from the engine ------------
+    ClassesByFile current;
+    eng::ScriptRegistry::ForEachEntry(
+        [&current](const char* name, const eng::ScriptRegistry::Entry& entry) {
+            current[ToVirtualPath(fs::path(entry.sourceFile))].insert(name);
+        });
+
+    // ---- what was registered after the previous build -----------------------
+    ClassesByFile previous;
+    {
+        std::istringstream lines(ReadWholeFile(ClassManifestFile()));
+        std::string        line;
+        while (std::getline(lines, line)) {
+            const std::size_t tab = line.find('\t');
+            if (tab == std::string::npos) {
+                continue;
+            }
+            const std::string file = line.substr(0, tab);
+            std::istringstream names(line.substr(tab + 1));
+            std::string        name;
+            while (std::getline(names, name, ',')) {
+                if (!name.empty()) {
+                    previous[file].insert(name);
+                }
+            }
+        }
+    }
+
+    // ---- compare, file by file ---------------------------------------------
+    for (const auto& [file, before] : previous) {
+        const auto        it    = current.find(file);
+        const std::set<std::string> after = (it != current.end()) ? it->second
+                                                                  : std::set<std::string>{};
+
+        std::vector<std::string> gone;
+        std::vector<std::string> added;
+        std::set_difference(before.begin(), before.end(), after.begin(), after.end(),
+                            std::back_inserter(gone));
+        std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
+                            std::back_inserter(added));
+
+        if (gone.empty()) {
+            continue;
+        }
+
+        // The clear-cut case: one class replaced by exactly one other, in the
+        // same file. That is a rename, and it can be followed.
+        if (gone.size() == 1 && added.size() == 1) {
+            const std::size_t moved =
+                eng::ScriptSystem::RebindRenamed(gone.front(), added.front());
+            if (moved > 0) {
+                ENGINE_LOG_WARN(eng::Channels::kEditor,
+                                "'{}' renamed its script class from '{}' to '{}' - "
+                                "{} attached component(s) moved across. Save the scene "
+                                "to keep the change.",
+                                file, gone.front(), added.front(), moved);
+            } else {
+                ENGINE_LOG_INFO(eng::Channels::kEditor,
+                                "'{}' renamed its script class from '{}' to '{}' "
+                                "(nothing in the scene was using it)",
+                                file, gone.front(), added.front());
+            }
+            continue;
+        }
+
+        // Anything else is reported rather than guessed at.
+        for (const std::string& name : gone) {
+            const std::size_t using_ = eng::ScriptSystem::CountUsing(name);
+            if (using_ > 0) {
+                ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                                 "the script '{}' no longer exists in '{}', and {} "
+                                 "entity component(s) still refer to it - they will not "
+                                 "run until the class is back or they are pointed "
+                                 "somewhere else",
+                                 name, file, using_);
+            } else {
+                ENGINE_LOG_INFO(eng::Channels::kEditor,
+                                "the script '{}' is no longer defined in '{}'", name,
+                                file);
+            }
+        }
+    }
+
+    // ---- files that look like scripts but register nothing ------------------
+    //
+    // Writing the class and forgetting the one line that registers it is the
+    // single easiest mistake to make here, and its symptom - the script simply
+    // not appearing anywhere - gives no hint about the cause.
+    for (const std::string& source : sources.All()) {
+        if (current.find(source) != current.end()) {
+            continue;   // this file registered something
+        }
+        const fs::path real = fs::path(eng::FileSystem::Resolve(source));
+        if (FileContains(real, "ScriptBehaviour") &&
+            !FileContains(real, "ENGINE_REGISTER_SCRIPT")) {
+            ENGINE_LOG_WARN(eng::Channels::kEditor,
+                            "'{}' defines a ScriptBehaviour but never registers it - add "
+                            "ENGINE_REGISTER_SCRIPT(YourClassName) at the bottom of the "
+                            "file, or the engine cannot find it",
+                            source);
+        }
+    }
+
+    // ---- record this build's answer for next time ---------------------------
+    {
+        std::ofstream manifest(ClassManifestFile(), std::ios::trunc);
+        for (const auto& [file, names] : current) {
+            manifest << file << '\t';
+            bool first = true;
+            for (const std::string& name : names) {
+                if (!first) {
+                    manifest << ',';
+                }
+                manifest << name;
+                first = false;
+            }
+            manifest << '\n';
+        }
+    }
 }
 
 } // namespace editor

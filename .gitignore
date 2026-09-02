@@ -7,9 +7,10 @@ out/
 cmake-build-*/
 
 # The library the editor compiles the project's scripts into, plus the build
-# script and log it writes alongside. All of it is regenerated from scripts/*.cpp
-# the next time the editor starts, so none of it belongs in version control.
-scripts/.build/
+# script, the log and the generated header unit it writes alongside. All of it
+# is regenerated from the sources under assets/ the next time the editor
+# builds, so none of it belongs in version control.
+.build/
 
 # ---- Fetched dependencies --------------------------------------------------
 # FetchContent puts SDL, doctest, nlohmann_json and ImGui inside build/, so

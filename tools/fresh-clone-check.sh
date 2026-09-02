@@ -7,7 +7,7 @@
 #  actually committed. It catches the file you forgot to "git add", and it
 #  catches it in a couple of minutes instead of in the lab.
 #
-#  usage:  scripts/fresh-clone-check.sh <repo-url-or-path> [preset]
+#  usage:  tools/fresh-clone-check.sh <repo-url-or-path> [preset]
 # =============================================================================
 set -euo pipefail
 
@@ -88,7 +88,7 @@ done
 # can find a C++ compiler on this machine at all.
 echo "==> Building the project's scripts (editor --build-scripts)"
 editor_path="$(find_binary editor)" || fail "the editor was not produced"
-"$editor_path" --build-scripts || fail "the editor could not compile scripts/"
+"$editor_path" --build-scripts || fail "the editor could not compile the scripts under assets/"
 
 # --- run the tests ---------------------------------------------------------
 # A fresh clone that builds but does not pass is not a fresh clone that works.
@@ -107,7 +107,7 @@ for asset in \
     assets/textures/checker_green.bmp \
     assets/textures/marker_up.bmp \
     assets/textures/missing.bmp \
-    scripts/Orbiter.cpp \
+    assets/scripts/Orbiter.cpp \
     config/engine.json
 do
     [[ -f "$asset" ]] || fail "$asset is missing from the clone - was it committed? Check .gitignore."

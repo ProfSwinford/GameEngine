@@ -277,7 +277,16 @@ void DrawScript(eng::ScriptComponent& script) {
     if (script.IsResolved()) {
         ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.60f, 1.0f), "%s",
                            script.ScriptName().c_str());
+
+        // WHICH HOOKS THIS SCRIPT ACTUALLY HAS.
+        //
+        // Hooks are found by name while the script compiles, so a misspelled
+        // OnUpdate is not an error - it is a function nobody calls. Showing
+        // the list here turns "why is nothing happening?" into something you
+        // can answer by looking at the entity you are already looking at.
+        const std::string hooks = eng::DescribeHooks(script.Hooks());
         ImGui::TextDisabled("compiled in and running");
+        ImGui::TextWrapped("Hooks: %s", hooks.c_str());
     } else {
         // RED AND LOUD. A script that silently does nothing because it was
         // never compiled is the worst failure this feature can have, so it is

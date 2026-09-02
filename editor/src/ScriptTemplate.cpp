@@ -77,18 +77,28 @@ std::string DefaultScriptText(std::string_view scriptName) {
 //  Hierarchy or the Inspector.
 //
 //  -----------------------------------------------------------------------------
-//  THIS IS COMPILED C++, NOT AN INTERPRETED SCRIPT.
+//  THIS IS COMPILED C++, NOT AN INTERPRETED SCRIPT - but you never rebuild the
+//  editor. Save this file, switch back to the editor window, and it compiles
+//  and reloads by itself. There is a Build Scripts button in the Assets panel
+//  for when you would rather not alt-tab.
 //
-//  Saving this file changes nothing in a running editor. Build the project and
-//  start the editor again, and it connects itself - the scene already refers to
-//  "{0}" by name, so nothing needs reattaching.
-//
-//  Until then the Inspector shows this script as NOT FOUND, which is the editor
-//  telling you the truth rather than pretending.
+//  If it does not compile, the errors appear in the Console with the file and
+//  line, and the menu bar says so.
 //
 //  -----------------------------------------------------------------------------
-//  THE LIFECYCLE. Every one of these is optional; delete the ones you do not
-//  need.
+//  DELETE THE HOOKS YOU DO NOT NEED. All of them are optional, and that is
+//  literal: there is no `override` and nothing to declare. The engine works out
+//  which of these functions you actually wrote, while your script is being
+//  compiled, and only calls those. A script with no OnUpdate is not asked to
+//  update - it costs nothing at all per frame.
+//
+//  The catch is the same one every engine that works this way has: a MISSPELLED
+//  hook is not an error, it is just a function nobody calls. If your script
+//  seems to do nothing, check the Console - it lists every script it loaded
+//  together with the hooks it found in it.
+//
+//  -----------------------------------------------------------------------------
+//  THE LIFECYCLE.
 //
 //    OnStart()            Once, on the first simulation step after this script
 //                         is attached and its entity is fully built. NOT at
@@ -131,23 +141,20 @@ std::string DefaultScriptText(std::string_view scriptName) {
 //  entity has been destroyed, so check before using one.
 // =============================================================================
 
-#include <engine/core/Log.h>
-#include <engine/math/Transform2D.h>
-#include <engine/scene/Entity.h>
-#include <engine/scene/Scene.h>
-#include <engine/scene/ScriptComponent.h>
+#include <engine/Engine.h>
+using namespace eng;
 
 namespace {{
 
-class {0} final : public eng::ScriptBehaviour {{
+class {0} final : public ScriptBehaviour {{
 public:
-    void OnStart() override {{
-        ENGINE_LOG_INFO(eng::Channels::kGame, "{0} started on '{{}}'",
+    void OnStart() {{
+        ENGINE_LOG_INFO(Channels::kGame, "{0} started on '{{}}'",
                         Owner() != nullptr ? Owner()->Name() : "<none>");
     }}
 
-    void OnUpdate(float deltaSeconds) override {{
-        eng::Transform2D* transform = Transform();
+    void OnUpdate(float deltaSeconds) {{
+        Transform2D* transform = Transform();
         if (transform == nullptr) {{
             return;
         }}
@@ -159,20 +166,20 @@ public:
         m_secondsAlive += deltaSeconds;
     }}
 
-    void OnDestroy() override {{
-        ENGINE_LOG_INFO(eng::Channels::kGame, "{0} lived {{:.2f}} seconds",
+    void OnDestroy() {{
+        ENGINE_LOG_INFO(Channels::kGame, "{0} lived {{:.2f}} seconds",
                         m_secondsAlive);
     }}
 
-    void OnCollisionEnter(eng::EntityId other) override {{
+    void OnCollisionEnter(EntityId other) {{
         // The other entity is looked up fresh rather than remembered, because
         // it may already have been destroyed this step.
-        eng::Scene* scene = GetScene();
+        Scene* scene = GetScene();
         if (scene == nullptr) {{
             return;
         }}
-        const eng::Entity* partner = scene->Get(other);
-        ENGINE_LOG_INFO(eng::Channels::kGame, "{0} touched '{{}}'",
+        const Entity* partner = scene->Get(other);
+        ENGINE_LOG_INFO(Channels::kGame, "{0} touched '{{}}'",
                         partner != nullptr ? partner->Name() : "<already gone>");
     }}
 

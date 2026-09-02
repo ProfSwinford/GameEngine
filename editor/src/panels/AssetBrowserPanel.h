@@ -14,17 +14,19 @@
 //    * "+ Script" writes a new script from the template
 //
 //  ==========================================================================
-//  TWO ROOTS, and the split is not cosmetic:
+//  ONE ROOT: assets/, and everything in it is yours to arrange.
 //
-//    assets/       data the game ships with - images and scenes. Loaded while
-//                  the game runs, and packaged with it.
-//    scripts/  C++ SOURCE that the build compiles. Never shipped and never
-//                  loaded - it becomes part of the program itself.
+//  Scenes, images and scripts all live in the same tree, in whatever folders
+//  suit the game - enemies/, player/, ui/. There is no designated scripts
+//  folder, because the editor compiles every .cpp and .h it finds anywhere
+//  under assets/, so a script works wherever you decide to put it.
 //
-//  Showing them as two separate roots rather than one tree is what keeps that
-//  distinction visible. A browser that showed scripts nested inside assets/
-//  would be quietly teaching that source code is data, and the day somebody
-//  writes a packaging step, that mistake ships the game's own source with it.
+//  That is the point of the arrangement: the things that belong to one part of
+//  your game stay together, rather than being split across the project by what
+//  language they happen to be written in.
+//
+//  The compiled result does NOT go here - it is written to .build/ beside
+//  assets/, so the tree this panel shows contains only files you wrote.
 //
 //  ==========================================================================
 //  THE LISTING IS CACHED AND REFRESHED ON DEMAND, not read every frame.
@@ -59,9 +61,10 @@ private:
     void DrawNewScriptPopup();
     void DrawNewFolderPopup();
 
-    // Writes scripts/<name>.cpp from the template. Returns false with a
-    // reason - it refuses to overwrite, because silently replacing somebody's
-    // script with a blank template would be unforgivable.
+    // Writes <the folder being browsed>/<name>.cpp from the template, then
+    // compiles and loads it so it can be attached immediately. Returns false
+    // with a reason - it refuses to overwrite, because silently replacing
+    // somebody's script with a blank template would be unforgivable.
     bool CreateScript(const std::string& name, std::string& outError);
 
     // The assets root is the EMPTY virtual path - see the note in the .cpp.

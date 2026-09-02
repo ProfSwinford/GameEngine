@@ -91,7 +91,8 @@ private:
 
     // Called when the editor window regains focus - the user alt-tabbed away,
     // edited a script in their text editor, and came back. If anything in
-    // scripts/ has changed, it is rebuilt and reloaded before the next frame.
+    // any script under assets/ has changed, it is rebuilt and reloaded before
+    // the next frame.
     // See ScriptBuild.h.
     void RebuildScriptsIfChanged();
 

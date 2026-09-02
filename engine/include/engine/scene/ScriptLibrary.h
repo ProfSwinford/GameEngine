@@ -54,7 +54,7 @@ namespace eng {
 class ScriptLibrary {
 public:
     // The file name the editor builds and this loads, for the platform being
-    // run on - "scripts/.build/userContent.dll" on Windows, ".so" on Linux,
+    // run on - ".build/userContent.dll" on Windows, ".so" on Linux,
     // ".dylib" on macOS. A virtual path, so it resolves the same way anywhere.
     static std::string DefaultVirtualPath();
 

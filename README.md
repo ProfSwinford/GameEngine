@@ -71,9 +71,9 @@ ctest --preset debug
 | `tests`       | The unit tests.                                                      |
 
 **The project's scripts are not on that list, and that is the point.**
-Everything in `scripts/` is compiled by the **editor**, while it is running,
-into a library that both programs load. Adding a script never rebuilds
-anything here. To build them without opening the editor:
+Every `.cpp` and `.h` under `assets/` is compiled by the **editor**, while it
+is running, into a library that both programs load. Adding a script never
+rebuilds anything here. To build them without opening the editor:
 
 ```bash
 build/debug/bin/editor --build-scripts
@@ -119,13 +119,18 @@ it exercises the real input path rather than going round it.
 | `engine/`      | The engine, built as a shared library.                            |
 | `editor/`      | The development environment. Panels live here.                    |
 | `sandbox/`     | The game. The only place game-shaped code belongs.                |
-| `scripts/`     | Your behaviour scripts. Compiled by the editor, not by CMake.     |
+| `assets/`      | Scenes, images **and your scripts**, in whatever folders suit the game. **Committed.** |
 | `tests/`       | Unit tests.                                                       |
 | `cmake/`       | Build system pieces.                                              |
 | `tools/`       | The fresh-clone check script.                                     |
 | `config/`      | `engine.json` is read at start-up; `engine.example.json` documents every setting. |
-| `assets/`      | Scenes and images, loaded while the game runs. **Committed.**     |
 | `docs/`        | The editor guide and the engine tour.                             |
+| `.build/`      | Where the editor compiles your scripts to. Generated; not committed. |
+
+There is no `scripts/` folder, and that is deliberate. Your behaviour scripts
+live in `assets/` next to the scenes and images they belong with — the editor
+compiles every `.cpp` and `.h` it finds anywhere under `assets/`, so a script
+works wherever you decide to put it.
 
 ---
 
@@ -159,25 +164,37 @@ lives in data, and the engine only knows how to read it.
 
 ## Writing your own behaviour
 
-**Assets → + Script** in the editor writes a new file from a template with
-every lifecycle hook explained. Drag the `.cpp` onto an entity to attach it.
+**Assets → + Script** writes a new file from a template into whichever folder
+you are browsing. Drag the `.cpp` onto an entity to attach it.
+
+**Write only the hooks you want.** No `virtual`, no `override`, no empty stubs:
 
 ```cpp
-class MyScript final : public eng::ScriptBehaviour {
-    void OnStart() override {}
-    void OnUpdate(float dt) override {}
-    void OnDestroy() override {}
-    void OnCollisionEnter(eng::EntityId other) override {}
+class MyScript : public eng::ScriptBehaviour {
+public:
+    void OnUpdate(float dt) { Transform()->Translate({0, dt * 50}); }
 };
 ENGINE_REGISTER_SCRIPT(MyScript)   // without this it can never be found
 ```
 
-Scripts are **compiled C++**, but the EDITOR compiles them: save a script, switch
-back to the editor window, and it rebuilds and reloads them by itself. You never
-rebuild the editor. That does need a C++ compiler installed - see
+That is the same convenience a C# engine gets from reflection, except the
+question "does this class have an OnUpdate?" is answered by the **compiler**
+while your script builds. There is no run-time lookup, and a script with no
+`OnUpdate` is never put in the update list at all — it costs nothing per frame.
+
+The hooks are `OnStart`, `OnUpdate(float)`, `OnDestroy`, and
+`OnCollisionEnter/Stay/Exit(EntityId)`. **They must be public**, because the
+engine calls them from outside your class. Getting a name or a signature wrong
+is a compile error that says what to write instead, and a script with no hooks
+at all is a compile error too — those checks exist because a misspelled hook
+would otherwise be a function nobody calls.
+
+Scripts are **compiled C++**, but the EDITOR compiles them: save a script,
+switch back to the editor window, and it rebuilds and reloads by itself. You
+never rebuild the editor. That does need a C++ compiler installed - see
 [docs/editor-guide.md](docs/editor-guide.md).
 
-`scripts/Orbiter.cpp` is a worked example.
+`assets/scripts/Orbiter.cpp` is a worked example.
 
 ---
 

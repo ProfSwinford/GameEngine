@@ -18,7 +18,7 @@
 #  ---------------------------------------------------------------------------
 #  NOTE WHAT CMAKE DOES NOT BUILD: the project's scripts.
 #
-#  Everything in scripts/ is compiled by the EDITOR, while it is running, into
+#  Every .cpp and .h under assets/ is compiled by the EDITOR, while it runs, into
 #  a library that both programs above load - see editor/src/ScriptBuild.h. That
 #  is the whole point: somebody using the released editor has a compiler and a
 #  project folder, not this source tree, and adding a script must not require

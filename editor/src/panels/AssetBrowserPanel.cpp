@@ -18,31 +18,18 @@
 namespace editor {
 namespace {
 
-// The two roots. They are written down rather than discovered, because "which
-// folders matter" is a decision about this project rather than something to
-// work out from whatever happens to be on disk - listing the project root
-// would show build/, engine/ and .git.
+// ONE root: assets/. Scenes, images and scripts all live in it, in whatever
+// folder structure suits the game.
 //
 // THE ASSETS ROOT IS THE EMPTY STRING, and that is not a shortcut. Virtual
 // paths are ALREADY relative to assets/ - "scenes/level1.json" resolves to
 // <project>/assets/scenes/level1.json - so the virtual path OF assets/ itself
 // is "". Writing "assets" here would ask for <project>/assets/assets.
-//
-// scripts/ is the exception that FileSystem::Resolve already knows about,
-// so it keeps its name.
-constexpr const char* kRootAssets  = "";
-constexpr const char* kRootScripts = "scripts";
-
-bool IsScriptsRoot(const std::string& directory) {
-    return directory == kRootScripts || directory.starts_with("scripts/");
-}
+constexpr const char* kRootAssets = "";
 
 // What to show at the top of the panel. "" is a real virtual path and a
 // terrible thing to display.
 std::string DisplayPath(const std::string& directory) {
-    if (IsScriptsRoot(directory)) {
-        return directory;
-    }
     return directory.empty() ? "assets" : "assets/" + directory;
 }
 
@@ -64,6 +51,13 @@ const char* LabelFor(AssetKind kind) {
         case AssetKind::Unknown: break;
     }
     return "---";
+}
+
+// Joined carefully rather than concatenated, because the assets root IS the
+// empty string and "" + "/" + name would start with a slash - which means
+// something quite different.
+std::string JoinPath(const std::string& directory, const std::string& leaf) {
+    return directory.empty() ? leaf : directory + "/" + leaf;
 }
 
 std::string ParentOf(const std::string& directory) {
@@ -104,20 +98,9 @@ void AssetBrowserPanel::Refresh() {
 }
 
 void AssetBrowserPanel::DrawBreadcrumb() {
-    // Two buttons rather than a tree, because there are exactly two roots and
-    // a tree control for two items is ceremony.
-    const bool inScripts = IsScriptsRoot(m_directory);
-
-    ImGui::BeginDisabled(!inScripts);
+    ImGui::BeginDisabled(m_directory == kRootAssets);
     if (ImGui::SmallButton("assets")) {
         Navigate(kRootAssets);
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-
-    ImGui::BeginDisabled(inScripts);
-    if (ImGui::SmallButton("scripts")) {
-        Navigate(kRootScripts);
     }
     ImGui::EndDisabled();
 
@@ -125,14 +108,13 @@ void AssetBrowserPanel::DrawBreadcrumb() {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // "Up" is greyed out AT a root rather than hidden, so the toolbar keeps
+    // "Up" is greyed out AT the root rather than hidden, so the toolbar keeps
     // its shape as you navigate and the buttons stay where your hand expects.
     //
-    // Being "at a root" is a comparison against the root itself, not a test
+    // Being "at the root" is a comparison against the root itself, not a test
     // for an empty parent - because the assets root IS the empty string, and
     // an empty-parent test would grey Up out inside every first-level folder.
-    const std::string root = inScripts ? kRootScripts : kRootAssets;
-    ImGui::BeginDisabled(m_directory == root);
+    ImGui::BeginDisabled(m_directory == kRootAssets);
     if (ImGui::SmallButton("Up")) {
         Navigate(ParentOf(m_directory));
     }
@@ -300,12 +282,11 @@ void AssetBrowserPanel::Draw() {
     ImGui::Separator();
 
     if (!m_valid) {
-        // scripts/ legitimately does not exist until the first script is
-        // created, so this is an instruction rather than an error.
+        // A folder can legitimately be missing - it may have been deleted from
+        // outside the editor while you were looking at it - so this is an
+        // instruction rather than an error.
         ImGui::TextDisabled("'%s' does not exist yet.", DisplayPath(m_directory).c_str());
-        if (m_directory == kRootScripts) {
-            ImGui::TextDisabled("Press + Script to create one.");
-        }
+        ImGui::TextDisabled("Press Up to go back, or Refresh.");
         DrawNewScriptPopup();
         DrawNewFolderPopup();
         return;
@@ -346,19 +327,15 @@ bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outEr
         return false;
     }
 
-    // Always into scripts/, never into whichever folder is being browsed.
-    // The build only compiles scripts/*.cpp and does not look in
-    // sub-folders, so a script written into one would be created, listed, and
-    // never compiled - a worse outcome than refusing to put it there.
-    const std::string path = std::string(kRootScripts) + "/" + name + ".cpp";
+    // Into WHICHEVER FOLDER IS BEING BROWSED. The build walks all of assets/,
+    // so a script is found wherever you put it - which means the right place
+    // for a new one is where you were already looking, next to the scene and
+    // the images it belongs with.
+    const std::string path = JoinPath(m_directory, name + ".cpp");
 
     if (eng::FileSystem::Exists(path)) {
         outError = "'" + path + "' already exists - overwriting it would destroy "
                                 "whatever is in it";
-        return false;
-    }
-
-    if (!eng::FileSystem::CreateDirectory(kRootScripts, outError)) {
         return false;
     }
 
@@ -368,6 +345,23 @@ bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outEr
     }
 
     ENGINE_LOG_INFO(eng::Channels::kEditor, "created the script '{}'", path);
+
+    // Compiled AND registered straight away, rather than waiting for the next
+    // time the window regains focus.
+    //
+    // A script you cannot attach to anything until some unexplained later
+    // moment is a script that appears not to work. Building it now means the
+    // class exists by the time you have finished reading the file, and it
+    // turns up in the Inspector's script list immediately.
+    const ScriptBuild::Result build = ScriptBuild::BuildAndReload();
+    if (!build.ok) {
+        // Not a failure of CreateScript - the file was written and is fine.
+        // The template compiles, so a failure here is almost always another
+        // script that was already broken.
+        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                        "'{}' was created, but the project's scripts did not build: {}",
+                        path, build.summary);
+    }
     return true;
 }
 
@@ -396,29 +390,28 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
     // the reason.
     std::string       error;
     const bool        nameOk = IsValidScriptName(m_newScriptName, error);
-    const std::string path   = std::string(kRootScripts) + "/" + m_newScriptName + ".cpp";
+    const std::string path = JoinPath(m_directory, std::string(m_newScriptName) + ".cpp");
 
     if (!nameOk) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", error.c_str());
     } else {
-        ImGui::TextDisabled("writes %s", path.c_str());
+        ImGui::TextDisabled("writes assets/%s", path.c_str());
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped("The file is created from a template with every lifecycle hook "
-                       "written out and explained. It is COMPILED C++ - build the "
-                       "project and start the editor again before it will run. Until "
-                       "then it can still be attached to an entity and saved into a "
-                       "scene.");
+    ImGui::TextWrapped("The file is created from a template with the lifecycle hooks "
+                       "written out and explained, and it is compiled and loaded "
+                       "straight away - so you can attach it to an entity as soon as "
+                       "this window closes.");
     ImGui::Separator();
 
     ImGui::BeginDisabled(!nameOk);
     if (submitted || ImGui::Button("Create", ImVec2(120, 0))) {
         std::string createError;
         if (CreateScript(m_newScriptName, createError)) {
-            std::snprintf(m_status, sizeof(m_status), "created %s - rebuild to run it",
+            std::snprintf(m_status, sizeof(m_status), "created and built %s",
                           path.c_str());
-            Navigate(kRootScripts);
+            Refresh();
             ImGui::CloseCurrentPopup();
         } else {
             std::snprintf(m_status, sizeof(m_status), "%s", createError.c_str());
