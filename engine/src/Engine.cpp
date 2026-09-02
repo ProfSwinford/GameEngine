@@ -4,6 +4,25 @@
 //
 //  The most important thing in this file is RegisterBuiltinSubsystems, which
 //  is where the engine's start-up ORDER is written down.
+//
+//  ==========================================================================
+//  THIS FILE IS COMPLETE. Most of the rest of the engine is not.
+//
+//  On this branch the engine is a SHELL: the headers are all here and every
+//  function exists, but the ones under scene/, physics/, math/, input/,
+//  render/Camera, render/Gizmos and resource/ are empty bodies waiting to be
+//  written. Each of those files says so at the top.
+//
+//  This file, and the platform layer it starts up - the log, the settings
+//  file, the clock, the window, the renderer, the file system - are given to
+//  you finished, because they are what makes the editor open at all. You
+//  cannot see the effect of writing Scene::Load if there is no window to see
+//  it in.
+//
+//  So the engine starts, the editor runs, and the parts that are still shells
+//  say so rather than pretending. The line you will see first is the starting
+//  scene refusing to load, which is exactly right: nothing has been written
+//  yet that knows how to read one.
 // ============================================================================
 
 #include <engine/Engine.h>

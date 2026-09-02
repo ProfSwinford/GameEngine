@@ -16,23 +16,15 @@
 #  rebuilding the editor, and without needing this source tree at all.
 # =============================================================================
 
-set(EDITOR_SOURCES
-    src/main.cpp
-    src/EditorApp.cpp                    # the window, the menu bar, the panel list
-    src/EditorGui.cpp                    # starting and stopping Dear ImGui
-    src/ScriptBuild.cpp                  # finds a compiler and builds the project
-    src/AssetDragDrop.cpp                # what happens when you drag a file onto something
-    src/ScriptTemplate.cpp               # the starter script the Assets panel writes
-    src/panels/AssetBrowserPanel.cpp     # Assets   - the files on disk
-    src/panels/ConsolePanel.cpp          # Console  - the log window
-    src/panels/GamePanel.cpp             # Game     - what a player would see
-    src/panels/HierarchyPanel.cpp        # Hierarchy- every entity in the scene
-    src/panels/InspectorPanel.cpp        # Inspector- the selected entity's components
-    src/panels/ScenePanel.cpp            # Scene    - the view you edit in
-    src/panels/ToolbarPanel.cpp          # Toolbar  - Play, Pause, Step
-)
+# Globbed for the same reason the engine is - see engine/CMakeLists.txt. Adding a
+# panel is adding a file; it never needs an edit here.
+file(GLOB_RECURSE EDITOR_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE EDITOR_HEADERS CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 
-add_executable(editor ${EDITOR_SOURCES})
+add_executable(editor ${EDITOR_SOURCES} ${EDITOR_HEADERS})
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${EDITOR_SOURCES} ${EDITOR_HEADERS})
 
 target_include_directories(editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

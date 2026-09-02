@@ -3,6 +3,15 @@
 A tour of the development environment, panel by panel. It is arranged the way
 Unity's is, so if you have used that, most of this will already be familiar.
 
+> **On the Editor-Base branch, this guide describes where you are going, not
+> where you are.** The editor itself is complete and everything here is wired
+> up — but a panel can only show what the engine can tell it, and most of the
+> engine is still a shell. The Hierarchy stays empty until `Scene::Load` and
+> `Scene::CreateEntity` are written, the views stay blank until
+> `SpriteRenderSystem::Render` is, and Play cannot snapshot a scene until
+> `Scene::SaveToString` can. See the README for what is given and what is
+> yours.
+
 Run it with:
 
 ```

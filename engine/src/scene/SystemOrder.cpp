@@ -1,105 +1,53 @@
-// ============================================================================
-//  SystemOrder.cpp - the system scheduler. See SystemOrder.h for the order it
-//  keeps and why that order matters.
-// ============================================================================
+// =============================================================================
+//  SystemOrder.cpp - A SHELL. The declarations are real; the bodies are yours.
+//
+//  Everything here compiles and links, so the editor builds and runs from day
+//  one. It just does not do this part yet: each function returns a harmless
+//  neutral value so nothing crashes and nothing pretends to have worked.
+//
+//  Fill these in as the course reaches them. SystemOrder.h explains WHAT each
+//  function is for and WHY it exists - read it first.
+// =============================================================================
 
 #include <engine/core/Log.h>
 #include <engine/scene/SystemOrder.h>
 
-#include <algorithm>
-#include <vector>
-
 namespace eng {
-namespace {
 
-std::vector<System*> g_systems;
+// TODO: keep the registered systems SORTED BY Order() and run them in that
+// order. SystemOrder.h explains what an accidental order costs: movement after
+// collision means fast objects pass through walls with nothing ever reported.
+//
+// The scheduler only BORROWS a system pointer, so Unregister has to be called
+// before a system is destroyed.
+void SystemScheduler::Register(System* /*system*/) {}
 
-// The list is only re-sorted when something has actually changed, rather than
-// once per frame.
-bool g_needsSort = false;
+void SystemScheduler::Unregister(System* /*system*/) {}
 
-void SortIfNeeded() {
-    if (!g_needsSort) {
-        return;
-    }
-    // std::stable_sort rather than std::sort: two systems registered at the
-    // same stage number keep the order they were added in. Plain sort is free
-    // to put them either way round, which would mean the game behaved slightly
-    // differently on different machines - exactly the kind of bug this file
-    // exists to prevent.
-    std::stable_sort(g_systems.begin(), g_systems.end(),
-                     [](const System* a, const System* b) {
-                         return a->Order() < b->Order();
-                     });
-    g_needsSort = false;
-}
+void SystemScheduler::Clear() {}
 
-} // namespace
+// TODO: run every system whose stage number is in [minOrder, maxOrder).
+//
+// Walk a COPY of the list: a system's Update is allowed to register or
+// unregister another one, and adding to a vector while looping over it can
+// move the whole thing elsewhere in memory.
+void SystemScheduler::UpdateRange(int /*minOrder*/, int /*maxOrder*/,
+                                  float /*deltaSeconds*/) {}
 
-void SystemScheduler::Register(System* system) {
-    if (system == nullptr) {
-        return;
-    }
-    g_systems.push_back(system);
-    g_needsSort = true;
-}
+void SystemScheduler::Simulate(float /*fixedStepSeconds*/) {}
 
-void SystemScheduler::Unregister(System* system) {
-    // std::erase removes every matching element from a container in one call.
-    std::erase(g_systems, system);
-}
+void SystemScheduler::RenderPass(float /*realDeltaSeconds*/) {}
 
-void SystemScheduler::Clear() {
-    g_systems.clear();
-    g_needsSort = false;
-}
-
-void SystemScheduler::UpdateRange(int minOrder, int maxOrder, float deltaSeconds) {
-    SortIfNeeded();
-
-    // The list is COPIED before it is walked, because a system's Update is
-    // allowed to register or unregister another one - and adding to a vector
-    // while looping over it can move the whole thing elsewhere in memory.
-    // Working from a copy sidesteps that entirely.
-    std::vector<System*> running = g_systems;
-
-    for (System* system : running) {
-        const int order = system->Order();
-        if (order < minOrder || order >= maxOrder) {
-            continue;
-        }
-        system->Update(deltaSeconds);
-    }
-}
-
-void SystemScheduler::Simulate(float fixedStepSeconds) {
-    UpdateRange(0, SystemStage::kFirstRenderStage, fixedStepSeconds);
-}
-
-void SystemScheduler::RenderPass(float realDeltaSeconds) {
-    UpdateRange(SystemStage::kFirstRenderStage, 1'000'000, realDeltaSeconds);
-}
-
+// The engine calls this once at start-up so the running order is written down
+// in the Console rather than being a guess. With nothing registered it says
+// so, which is the honest answer.
 void SystemScheduler::LogOrder() {
-    SortIfNeeded();
-
-    ENGINE_LOG_INFO(Channels::kScene, "systems update in this order:");
-    for (const System* system : g_systems) {
-        const bool perFrame = system->Order() >= SystemStage::kFirstRenderStage;
-        ENGINE_LOG_INFO(Channels::kScene, "  {:>4}  {}  ({})", system->Order(),
-                        system->Name(), perFrame ? "per frame" : "per fixed step");
-    }
+    ENGINE_LOG_INFO(Channels::kScene,
+                    "no systems are registered - SystemScheduler is still a shell");
 }
 
-void SystemScheduler::ForEach(const std::function<void(System&)>& fn) {
-    SortIfNeeded();
-    for (System* system : g_systems) {
-        fn(*system);
-    }
-}
+void SystemScheduler::ForEach(const std::function<void(System&)>& /*fn*/) {}
 
-std::size_t SystemScheduler::Count() {
-    return g_systems.size();
-}
+std::size_t SystemScheduler::Count() { return 0; }
 
 } // namespace eng

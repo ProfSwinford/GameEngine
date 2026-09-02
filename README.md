@@ -1,18 +1,19 @@
-# Engine2D
+# Engine2D — Editor Base
 
-A small 2D game engine with a Unity-style editor, written in C++ for learning
-how a game engine actually works.
+The starting point for the course. You get **a finished editor**, **a finished
+game runner**, and **an engine that is mostly empty** — and you fill the engine
+in, one file at a time, watching the editor come to life as you go.
 
-It is deliberately readable. Every file starts with a comment explaining what
-it does and why it is built that way, and there is nothing clever in it that
-does not earn its place.
+It is deliberately readable. Every file starts with a comment explaining what it
+does and why it is built that way, and there is nothing clever in it that does
+not earn its place.
 
 ---
 
-## Building it
+## Start here: build it and run it
 
 You need **CMake 3.28 or newer**, a **C++23 compiler**, and **Git**. Nothing
-else - SDL3, Dear ImGui, nlohmann/json and doctest are downloaded and built
+else — SDL3, Dear ImGui, nlohmann/json and doctest are downloaded and built
 automatically the first time you configure.
 
 ```bash
@@ -23,212 +24,167 @@ cmake --preset debug
 cmake --build --preset debug
 ```
 
-The programs end up in `build/debug/bin/`. On Windows with Visual Studio they
-land one level deeper, in `build/debug/bin/Debug/`, because Visual Studio keeps
-its Debug and Release output side by side.
+```bash
+build/debug/bin/editor
+```
+
+**The editor opens.** The menus work, the panels are there, the Console shows
+the engine starting up. The Console also says this:
+
+```
+the starting scene 'scenes/orbit_test.json' did not load:
+Scene::Load is not implemented yet - this is a shell of the engine
+```
+
+That is not a bug. That is your first assignment.
 
 > The first configure takes several minutes, because it is compiling SDL from
-> source. **It is not stuck** - watch the progress messages.
+> source. **It is not stuck** — watch the progress messages.
 
-### Visual Studio on Windows (the easiest way)
+---
 
-**File → Open → Folder** on this folder. Visual Studio reads `CMakePresets.json`
-by itself, offers `debug` / `release` / `strict` in the configuration dropdown,
-and manages the `build/` folder for you. Nothing else is needed.
+## What is given, and what is yours
 
-**Pick one owner for `build/`.** Visual Studio builds into `build/<preset>`,
-which is the same folder the command line uses. If both are open at once they
-will fight over it, which shows up as spontaneous full rebuilds. Use the IDE
-*or* the terminal for a given copy of the project.
+| Given to you, finished | Yours to write |
+| --- | --- |
+| The whole **editor** — panels, docking, Play/Pause/Step, the asset browser, the script compiler | |
+| The whole **sandbox** — the game running without the editor | |
+| **`engine/include/`** — every header, complete. This is the interface, and it does not change | |
+| `Engine.cpp` — start-up order and the frame loop | |
+| `core/` — the log, settings, the clock, JSON, subsystem ordering | |
+| `fs/`, `platform/`, `render/Renderer.cpp` — files, the window, drawing | |
+| | **`scene/`** — entities, components, scenes, messaging, deferred create/destroy, system order, scripts |
+| | **`physics/Collider.cpp`** — layers, overlap events |
+| | **`math/`** — `Mat3`, `Transform2D`, `Overlap`, `Random` |
+| | **`input/InputMap.cpp`** — key presses into named actions |
+| | **`render/Camera.cpp`**, **`render/Gizmos.cpp`** |
+| | **`resource/ResourceManager.cpp`** — loading images |
 
-### The command line on Windows
+The parts you are given are the ones that make a window appear. You cannot see
+the effect of writing `Scene::Load` if there is nothing to see it in.
 
-Use a **"Developer PowerShell for VS"** or a Developer Command Prompt, not an
-ordinary terminal. Without it you get:
+---
 
+## How a shell file works
+
+Open `engine/src/scene/Scene.cpp`. Every function that belongs there is already
+present, with the right name and the right arguments — it just does nothing yet:
+
+```cpp
+// TODO: the slot-and-generation scheme described in Scene.h.
+EntityId Scene::CreateEntity(std::string_view /*name*/) { return EntityId{}; }
 ```
-fatal error C1083: Cannot open include file: 'cstddef': No such file or directory
-```
 
-which looks like a broken compiler and is not one - the compiler simply has not
-been told where its own headers are.
+So the whole project always compiles, links and runs. Nothing is ever in a
+half-broken state where you cannot try it out.
 
-### Running the tests
+**The header is the specification.** `Scene.h` explains what every one of those
+functions is for and why it exists, in far more detail than the `.cpp` does.
+Read the header first, then fill in the body.
+
+You never create or delete a file to make this work — but if you want to, you
+can. See below.
+
+---
+
+## You never have to touch CMake
+
+The build finds source files by looking, not by being told:
+
+- every `.cpp` under `engine/src/`, at any depth
+- every `.cpp` under `editor/src/` and `sandbox/src/`
+
+Add a file, rename one, move one into a new folder, delete one — the next build
+picks it up. There is no list to keep in step, on purpose: the thing being
+learned here is the engine, and stopping to maintain a build script teaches
+nothing about either.
+
+Two things worth knowing:
+
+- **CMake never fails, even with an empty `engine/src/`.** It says
+  `engine: no sources in src/ yet - building an empty library` and generates a
+  placeholder so the library still exists. Configuring is never the thing that
+  is broken.
+- **But the editor needs the engine to link.** Delete a shell file rather than
+  filling it in and the project still *compiles*; it fails at the **link**
+  step, naming exactly which functions are missing — `unresolved external
+  symbol ... eng::Scene::Load ...`. That is a linker error, not a build-script
+  error. Put the file back, or write the functions it named.
+
+So: keep the shell files and fill them in. They exist precisely so that the
+project always gets as far as running.
+
+---
+
+## The tests are your checklist
 
 ```bash
 ctest --preset debug
 ```
 
----
+Right now that fails, and the failures are the point:
 
-## What gets built
-
-| Target        | What it is                                                          |
-| ------------- | ------------------------------------------------------------------- |
-| `engine`      | The engine, as a SHARED library. Knows nothing about any game.       |
-| `editor`      | The development environment - Scene view, Game view, seven panels.   |
-| `sandbox`     | The game running on its own, with no editor.                         |
-| `tests`       | The unit tests.                                                      |
-
-**The project's scripts are not on that list, and that is the point.**
-Every `.cpp` and `.h` under `assets/` is compiled by the **editor**, while it
-is running, into a library that both programs load. Adding a script never
-rebuilds anything here. To build them without opening the editor:
-
-```bash
-build/debug/bin/editor --build-scripts
+```
+[doctest] test cases: 59 | 32 passed | 27 failed
 ```
 
----
-
-## Trying it out
-
-```bash
-build/debug/bin/Debug/editor
-```
-
-That is the one to start with. See [docs/editor-guide.md](docs/editor-guide.md).
+Each failing test is a piece of the engine that has not been written yet. Run
+the test file for whatever you are working on, make it pass, move on. When all
+59 pass, the engine is finished.
 
 ```bash
-build/debug/bin/Debug/sandbox
+build/debug/bin/tests --test-case="*Transform*"
 ```
-
-The game on its own. It opens the scene named in `config/engine.json` - an
-orbiting three-level hierarchy built entirely by the data file.
-
-| Command                       | What it does                                    |
-| ----------------------------- | ----------------------------------------------- |
-| `sandbox`                     | open the scene from `config/engine.json`        |
-| `sandbox --game`              | play the sample game                            |
-| `sandbox --autoplay`          | the same game, played automatically             |
-| `sandbox --scene <path>`      | open a different scene                          |
-| `sandbox --frames <N>`        | run N frames then exit                          |
-| `sandbox --help`              | the full list                                   |
-
-`--game` is **Collector**: move with WASD or the arrow keys and touch the ten
-red squares before the timer runs out. `--autoplay` finishes a round in about
-twelve seconds by pressing the same named actions the keyboard is bound to - so
-it exercises the real input path rather than going round it.
 
 ---
 
 ## Where everything is
 
-| Folder         | What lives there                                                  |
-| -------------- | ----------------------------------------------------------------- |
-| `engine/`      | The engine, built as a shared library.                            |
-| `editor/`      | The development environment. Panels live here.                    |
-| `sandbox/`     | The game. The only place game-shaped code belongs.                |
-| `assets/`      | Scenes, images **and your scripts**, in whatever folders suit the game. **Committed.** |
-| `tests/`       | Unit tests.                                                       |
-| `cmake/`       | Build system pieces.                                              |
-| `tools/`       | The fresh-clone check script.                                     |
-| `config/`      | `engine.json` is read at start-up; `engine.example.json` documents every setting. |
-| `docs/`        | The editor guide and the engine tour.                             |
-| `.build/`      | Where the editor compiles your scripts to. Generated; not committed. |
-
-There is no `scripts/` folder, and that is deliberate. Your behaviour scripts
-live in `assets/` next to the scenes and images they belong with — the editor
-compiles every `.cpp` and `.h` it finds anywhere under `assets/`, so a script
-works wherever you decide to put it.
-
----
-
-## Changing things without touching C++
-
-A surprising amount of this project is data rather than code.
-
-**The window size, the log level and the key bindings** are in
-`config/engine.json`. Change a value, save, run again.
-
-**Levels** are in `assets/scenes/*.json`. An entity is a name and a list of
-components:
-
-```json
-{
-  "name": "Player",
-  "components": [
-    { "type": "TransformComponent", "position": [0, 0] },
-    { "type": "SpriteComponent", "texture": "textures/checker_green.bmp" },
-    { "type": "AABBColliderComponent", "halfExtents": [16, 16],
-      "layer": "Player", "collidesWith": ["Pickup", "World"] }
-  ]
-}
-```
-
-Search the engine's source for `"Player"`, or for any position in any scene,
-and you will not find it. That is the point: everything about a particular game
-lives in data, and the engine only knows how to read it.
-
----
-
-## Writing your own behaviour
-
-**Assets → + Script** writes a new file from a template into whichever folder
-you are browsing. Drag the `.cpp` onto an entity to attach it.
-
-**Write only the hooks you want.** No `virtual`, no `override`, no empty stubs:
-
-```cpp
-class MyScript : public eng::ScriptBehaviour {
-public:
-    void OnUpdate(float dt) { Transform()->Translate({0, dt * 50}); }
-};
-ENGINE_REGISTER_SCRIPT(MyScript)   // without this it can never be found
-```
-
-That is the same convenience a C# engine gets from reflection, except the
-question "does this class have an OnUpdate?" is answered by the **compiler**
-while your script builds. There is no run-time lookup, and a script with no
-`OnUpdate` is never put in the update list at all — it costs nothing per frame.
-
-The hooks are `OnStart`, `OnUpdate(float)`, `OnDestroy`, and
-`OnCollisionEnter/Stay/Exit(EntityId)`. **They must be public**, because the
-engine calls them from outside your class. Getting a name or a signature wrong
-is a compile error that says what to write instead, and a script with no hooks
-at all is a compile error too — those checks exist because a misspelled hook
-would otherwise be a function nobody calls.
-
-Scripts are **compiled C++**, but the EDITOR compiles them: save a script,
-switch back to the editor window, and it rebuilds and reloads by itself. You
-never rebuild the editor. That does need a C++ compiler installed - see
-[docs/editor-guide.md](docs/editor-guide.md).
-
-`assets/scripts/Orbiter.cpp` is a worked example.
+| Folder | What lives there |
+| --- | --- |
+| `engine/include/` | The interface. Complete, and the best documentation in the project. |
+| `engine/src/` | The implementations. Mostly shells — this is your work. |
+| `editor/` | The development environment. Complete. |
+| `sandbox/` | The game running on its own. Complete. |
+| `tests/` | The checklist. |
+| `assets/` | Scenes, images **and your scripts**, in whatever folders suit the game. |
+| `config/` | `engine.json` is read at start-up; `engine.example.json` documents every setting. |
+| `docs/` | The editor guide and the engine tour. |
+| `.build/` | Where the editor compiles your scripts to. Generated; not committed. |
 
 ---
 
 ## Where to start reading
 
 [docs/engine-tour.md](docs/engine-tour.md) is a map of the whole engine with a
-"if you want to understand X, open Y" table.
+"if you want to understand X, open Y" table. [docs/editor-guide.md](docs/editor-guide.md)
+is the editor, panel by panel.
 
-If you would rather just start opening files, these three are the ones that
-explain the most:
+These three headers explain the most, and all three are complete:
 
-- `engine/include/engine/scene/Entity.h` - what a game object actually is, and
+- `engine/include/engine/scene/Entity.h` — what a game object actually is, and
   why it is a bag of components rather than a family tree of classes.
-- `engine/include/engine/core/GameClock.h` - why the game is simulated at a
+- `engine/include/engine/core/GameClock.h` — why the game is simulated at a
   fixed rate and drawn at a different one.
-- `engine/include/engine/scene/DeferredOps.h` - why creating and destroying
+- `engine/include/engine/scene/DeferredOps.h` — why creating and destroying
   things is queued, and what goes wrong when it is not.
 
 ---
 
-## Three conventions worth knowing before reading the code
+## Three conventions worth knowing before you write anything
 
-Each of these is written out in full at the top of the file that owns it,
-because each is the kind of decision that costs an afternoon when it only
-lives in somebody's head.
+Each is written out in full at the top of the file that owns it, because each
+is the kind of decision that costs an afternoon when it only lives in
+somebody's head.
 
-- **Matrices** - `engine/include/engine/math/Mat3.h`. Points are written as
-  rows, so "do A and then B" is written `A * B`, and the move part of a
-  transform lives in the bottom row.
-- **Overlap** - `engine/include/engine/math/Overlap.h`. **Touching counts as
-  overlapping**, everywhere, in every shape combination.
-- **Collision layers** - `engine/include/engine/physics/Collider.h`. Two
-  colliders are only tested when EACH one's list includes the other's layer, so
-  collision events always come in pairs.
+- **Matrices** — `math/Mat3.h`. Points are written as rows, so "do A and then
+  B" is written `A * B`, and the move part of a transform lives in the bottom
+  row.
+- **Overlap** — `math/Overlap.h`. **Touching counts as overlapping**,
+  everywhere, in every shape combination.
+- **Collision layers** — `physics/Collider.h`. Two colliders are only tested
+  when EACH one's list includes the other's layer, so collision events always
+  come in pairs.
 
 The world is **y-up**; the screen is y-down. The single place those are
 reconciled is `Camera::ViewMatrix`.

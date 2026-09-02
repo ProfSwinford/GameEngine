@@ -1,99 +1,65 @@
 # =============================================================================
 #  The engine library.
 #
-#  This builds a STATIC LIBRARY, not a program you can run. It knows nothing
+#  This builds a SHARED LIBRARY, not a program you can run. It knows nothing
 #  about any particular game: no entity names, no level layouts, no rules.
 #  The `sandbox` and `editor` targets are the programs, and both are built on
 #  top of this.
 #
-#  Every new .cpp file has to be added to ENGINE_SOURCES below or it simply
-#  will not be compiled. The headers are listed too, purely so they show up in
-#  the project tree in Visual Studio.
+#  ==========================================================================
+#  THERE IS NO LIST OF SOURCE FILES HERE, AND THAT IS DELIBERATE.
+#
+#  Every .cpp under src/ and every .h under include/ is picked up
+#  automatically, wherever it is and however deep. Add a file, delete a file,
+#  move a file into a new folder - none of it needs an edit to this script.
+#
+#  That matters for a course that builds the engine up over a term. The thing
+#  being learned is the engine, and stopping to maintain a build script every
+#  time a file appears teaches nothing about either. It also means a student
+#  whose build "does not see" their new file has a real problem to find rather
+#  than a line they forgot to add.
+#
+#  CONFIGURE_DEPENDS is what makes that true in practice: it tells CMake to
+#  re-check the folders on every build, so a newly created file is compiled by
+#  the next build rather than the next time somebody remembers to re-run CMake.
+#  It costs a directory scan per build, which is nothing next to a compile.
 # =============================================================================
- 
-set(ENGINE_SOURCES
-    src/Engine.cpp                    # start-up order and the frame loop
 
-    src/core/Config.cpp               # reading config/engine.json
-    src/core/GameClock.cpp            # the fixed timestep
-    src/core/Json.cpp                 # safe JSON readers
-    src/core/Log.cpp                  # the message log
-    src/core/LogBuffer.cpp            # the copy the Console window shows
-    src/core/Subsystem.cpp            # ordered start-up and shutdown
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
-    src/fs/FileSystem.cpp             # finding and reading files
+# The headers are gathered only so they appear in the project tree in Visual
+# Studio and other IDEs. Nothing compiles them directly.
+file(GLOB_RECURSE ENGINE_HEADERS CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
 
-    src/input/InputMap.cpp            # key presses -> named actions
-
-    src/math/Mat3.cpp
-    src/math/Overlap.cpp
-    src/math/Random.cpp
-    src/math/Transform2D.cpp
-
-    src/physics/Collider.cpp          # collision shapes and events
-
-    src/platform/EventPump.cpp        # reading input from the OS
-    src/platform/SdlHandles.cpp       # automatic clean-up for SDL objects
-    src/platform/Window.cpp           # the game window
-
-    src/render/Camera.cpp
-    src/render/Gizmos.cpp             # helper shapes drawn over the world
-    src/render/Renderer.cpp           # lines, rectangles, text and sprites
-
-    src/resource/ResourceManager.cpp  # loading images
-
-    src/scene/Component.cpp           # components, the factory, sprites
-    src/scene/DeferredOps.cpp         # safe create and destroy
-    src/scene/Entity.cpp
-    src/scene/Messaging.cpp           # entities talking to each other
-    src/scene/Scene.cpp               # loading and saving levels
-    src/scene/ScriptComponent.cpp     # your own behaviour classes
-    src/scene/SpinComponent.cpp       # a small worked example component
-    src/scene/SystemOrder.cpp         # what updates, in what order
-    src/scene/ScriptLibrary.cpp       # loading the project's compiled scripts
-
-    src/tools/GuiHooks.cpp            # lets the editor see input first
-)
-
-set(ENGINE_HEADERS
-    include/engine/Engine.h
-    include/engine/core/Config.h
-    include/engine/core/GameClock.h
-    include/engine/core/Json.h
-    include/engine/core/Log.h
-    include/engine/core/LogBuffer.h
-    include/engine/core/Subsystem.h
-    include/engine/fs/FileSystem.h
-    include/engine/input/InputMap.h
-    include/engine/math/Mat3.h
-    include/engine/math/Overlap.h
-    include/engine/math/Random.h
-    include/engine/math/Transform2D.h
-    include/engine/math/Vec2.h
-    include/engine/physics/Collider.h
-    include/engine/platform/EventPump.h
-    include/engine/platform/SdlHandles.h
-    include/engine/platform/Window.h
-    include/engine/render/Camera.h
-    include/engine/render/Gizmos.h
-    include/engine/render/Renderer.h
-    include/engine/render/Texture.h
-    include/engine/resource/ResourceManager.h
-    include/engine/scene/Component.h
-    include/engine/scene/DeferredOps.h
-    include/engine/scene/Entity.h
-    include/engine/scene/EntityId.h
-    include/engine/scene/Messaging.h
-    include/engine/scene/Scene.h
-    include/engine/scene/ScriptComponent.h
-    include/engine/scene/SpinComponent.h
-    include/engine/scene/SystemOrder.h
-    include/engine/scene/ScriptLibrary.h
-    include/engine/tools/GuiHooks.h
-)
+# ---------------------------------------------------------------------------
+#  A library needs at least one source file to exist at all.
+#
+#  An engine with nothing in src/ yet is a perfectly reasonable place to start
+#  from - it is, in fact, exactly where this branch begins - so rather than
+#  failing to configure, an empty placeholder is generated and compiled. The
+#  editor still builds and still runs; it simply cannot do very much yet.
+# ---------------------------------------------------------------------------
+if(NOT ENGINE_SOURCES)
+    set(ENGINE_EMPTY_PLACEHOLDER "${CMAKE_CURRENT_BINARY_DIR}/_empty_engine.cpp")
+    file(WRITE "${ENGINE_EMPTY_PLACEHOLDER}"
+         "// Generated by engine/CMakeLists.txt.\n"
+         "//\n"
+         "// There are no .cpp files in engine/src/ yet, and a library has to have\n"
+         "// at least one source file. Add a real one and this stops being used.\n")
+    set(ENGINE_SOURCES "${ENGINE_EMPTY_PLACEHOLDER}")
+    message(STATUS "engine: no sources in src/ yet - building an empty library")
+else()
+    list(LENGTH ENGINE_SOURCES ENGINE_SOURCE_COUNT)
+    message(STATUS "engine: ${ENGINE_SOURCE_COUNT} source file(s) found under src/")
+endif()
 
 add_library(engine SHARED ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 add_library(Engine2D::engine ALIAS engine)
+
+# Keeps the folder layout in the IDE's project tree instead of one flat list.
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 
 # ---------------------------------------------------------------------------
 #  WINDOWS_EXPORT_ALL_SYMBOLS
@@ -138,9 +104,9 @@ target_link_libraries(engine PRIVATE SDL3::SDL3)
 # folder along to everything that uses the engine.
 target_link_libraries(engine PUBLIC nlohmann_json::nlohmann_json)
 
-# Note what is NOT here any more: Dear ImGui. It used to be part of the engine,
-# and it now lives in the editor - see editor/src/EditorGui.h for why. The
-# engine's only remaining connection to a tool layer is three function pointers
-# in tools/GuiHooks.h.
+# Note what is NOT here: Dear ImGui. It used to be part of the engine, and it
+# now lives in the editor - see editor/src/EditorGui.h for why. The engine's
+# only remaining connection to a tool layer is three function pointers in
+# tools/GuiHooks.h.
 
 engine_set_warnings(engine)
