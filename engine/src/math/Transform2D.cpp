@@ -31,13 +31,10 @@ void Transform2D::AddChild(Transform2D* child) {
 }
 
 void Transform2D::RemoveChild(Transform2D* child) {
-    // std::find is the standard-library search over any container. It returns
-    // an iterator to the match, or end() when there is none - which is why the
-    // result has to be checked before erasing.
-    const auto it = std::find(m_children.begin(), m_children.end(), child);
-    if (it != m_children.end()) {
-        m_children.erase(it);
-    }
+    // std::erase removes every matching element from a container, and does
+    // nothing when there is no match - so there is no "did we find it?" step to
+    // get wrong. A child appears in this list once, so "every match" is one.
+    std::erase(m_children, child);
 }
 
 void Transform2D::SetParent(Transform2D* parent, bool keepWorldTransform) {

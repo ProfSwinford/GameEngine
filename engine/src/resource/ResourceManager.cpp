@@ -154,11 +154,11 @@ TextureRef ResourceManager::LoadTexture(std::string_view virtualPath) {
     // real shared_ptr if the object is still alive, or an empty one if the
     // last owner has already let go. Checking it is how the cache tells the
     // difference between "loaded" and "was loaded once".
-    if (const auto it = g_cache.find(key); it != g_cache.end()) {
-        if (TextureRef existing = it->second.lock()) {
+    if (g_cache.contains(key)) {
+        if (TextureRef existing = g_cache.at(key).lock()) {
             return existing;
         }
-        g_cache.erase(it);   // it was unloaded; forget the stale entry
+        g_cache.erase(key);   // it was unloaded; forget the stale entry
     }
 
     std::string error;

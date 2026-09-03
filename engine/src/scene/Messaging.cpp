@@ -17,10 +17,8 @@ namespace {
 struct Subscription {
     SubscriptionId id = 0;
     std::string    type;
-    EntityId       target{};    // null when this is a broadcast listener
     MessageHandler handler;
-    bool           alive     = true;
-    bool           broadcast = false;
+    bool           alive = true;
 };
 
 // A list of unique_ptrs rather than a list of Subscriptions by value, for one
@@ -53,11 +51,9 @@ void DeliverTo(const Subscription& subscription, const Message& message) {
     if (subscription.type != message.type) {
         return;
     }
-    // A targeted subscription only wants messages aimed at its own entity;
-    // a broadcast subscription takes them all.
-    if (!subscription.broadcast && subscription.target != message.target) {
-        return;
-    }
+    // Every subscription is by TYPE. A handler that only cares about one
+    // entity checks message.target itself - which is what ScriptSystem does,
+    // and is why the bus does not need a second kind of subscription.
     subscription.handler(message);
 }
 
@@ -75,27 +71,12 @@ bool TargetStillExists(const Message& message) {
 
 } // namespace
 
-SubscriptionId MessageBus::Subscribe(EntityId target, std::string_view type,
-                                     MessageHandler handler) {
-    auto subscription       = std::make_unique<Subscription>();
-    subscription->id        = g_nextId++;
-    subscription->type      = std::string(type);
-    subscription->target    = target;
-    subscription->handler   = std::move(handler);
-    subscription->broadcast = false;
-
-    const SubscriptionId id = subscription->id;
-    g_subscriptions.push_back(std::move(subscription));
-    return id;
-}
-
 SubscriptionId MessageBus::SubscribeBroadcast(std::string_view type,
                                               MessageHandler handler) {
-    auto subscription       = std::make_unique<Subscription>();
-    subscription->id        = g_nextId++;
-    subscription->type      = std::string(type);
-    subscription->handler   = std::move(handler);
-    subscription->broadcast = true;
+    auto subscription     = std::make_unique<Subscription>();
+    subscription->id      = g_nextId++;
+    subscription->type    = std::string(type);
+    subscription->handler = std::move(handler);
 
     const SubscriptionId id = subscription->id;
     g_subscriptions.push_back(std::move(subscription));
@@ -117,26 +98,8 @@ void MessageBus::Unsubscribe(SubscriptionId id) {
     }
 }
 
-void MessageBus::UnsubscribeAll(EntityId target) {
-    for (auto& subscription : g_subscriptions) {
-        if (subscription != nullptr && !subscription->broadcast &&
-            subscription->target == target) {
-            subscription->alive = false;
-        }
-    }
-    if (!g_dispatching) {
-        Compact();
-    }
-}
-
 void MessageBus::Send(const Message& message) {
     g_queue.push_back(message);
-}
-
-void MessageBus::Broadcast(const Message& message) {
-    Message copy = message;
-    copy.target  = EntityId{};   // no target, so every broadcast listener sees it
-    g_queue.push_back(copy);
 }
 
 void MessageBus::Dispatch() {
@@ -175,7 +138,5 @@ void MessageBus::Clear() {
     g_dispatching = false;
 }
 
-std::size_t MessageBus::QueuedCount()       { return g_queue.size(); }
-std::size_t MessageBus::SubscriptionCount() { return g_subscriptions.size(); }
 
 } // namespace eng

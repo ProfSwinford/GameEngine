@@ -95,11 +95,16 @@ Component* Entity::FindComponent(std::string_view typeName) {
     return nullptr;
 }
 
+// The same search again, for when you only have a const Entity. Written out
+// rather than casting the const away and calling the version above: six
+// obvious lines are worth more here than a clever one.
 const Component* Entity::FindComponent(std::string_view typeName) const {
-    // Calls the non-const version rather than duplicating the loop. The
-    // const_cast is safe here because the returned pointer is immediately
-    // handed back as a pointer-to-const, so nothing can modify anything.
-    return const_cast<Entity*>(this)->FindComponent(typeName);
+    for (const std::unique_ptr<Component>& component : m_components) {
+        if (component != nullptr && component->TypeName() == typeName) {
+            return component.get();
+        }
+    }
+    return nullptr;
 }
 
 bool Entity::RemoveComponent(std::string_view typeName) {
@@ -149,6 +154,11 @@ Transform2D& Entity::Transform() {
 }
 
 const Transform2D& Entity::Transform() const {
+    // This one genuinely needs the cast, and it is the only place in the engine
+    // that does. The version above CREATES the transform if it is missing, and
+    // creating something is a change - which a const function is not allowed to
+    // make. The alternative would be for this to return a pointer that can be
+    // null, and then every single use of Transform() would need a null check.
     return const_cast<Entity*>(this)->Transform();
 }
 

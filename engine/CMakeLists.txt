@@ -86,6 +86,7 @@ set(ENGINE_HEADERS
     include/engine/scene/Messaging.h
     include/engine/scene/Scene.h
     include/engine/scene/ScriptComponent.h
+    include/engine/scene/ScriptHooks.h
     include/engine/scene/SpinComponent.h
     include/engine/scene/SystemOrder.h
     include/engine/scene/ScriptLibrary.h

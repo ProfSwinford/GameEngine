@@ -85,30 +85,23 @@ inline constexpr const char* kCollisionExit  = "CollisionExit";
 
 class MessageBus {
 public:
-    // Listen for one kind of message aimed at one entity.
-    static SubscriptionId Subscribe(EntityId target, std::string_view type,
-                                    MessageHandler handler);
-
-    // Listen for one kind of message from anywhere. Used by the sample game's
-    // score keeper.
+    // Listen for one kind of message, wherever it came from and whoever it was
+    // aimed at. There is only one kind of subscription: a handler that cares
+    // about one particular entity compares message.target itself, which is
+    // exactly what the script system does.
     static SubscriptionId SubscribeBroadcast(std::string_view type,
                                              MessageHandler handler);
 
-    // Both are safe to call from inside a handler.
+    // Safe to call from inside a handler.
     static void Unsubscribe(SubscriptionId id);
-    static void UnsubscribeAll(EntityId target);
 
     // Queue a message. The handlers run at the delivery point, not here.
     static void Send(const Message& message);
-    static void Broadcast(const Message& message);
 
     // Delivers everything queued. Called once per simulation step, at stage 500.
     static void Dispatch();
 
     static void Clear();
-
-    static std::size_t QueuedCount();
-    static std::size_t SubscriptionCount();
 };
 
 } // namespace eng

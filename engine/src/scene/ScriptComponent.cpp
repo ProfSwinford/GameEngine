@@ -35,10 +35,7 @@ bool g_collisionsSubscribed = false;
 // out alphabetical without sorting - which is what the editor's "attach a
 // script" list wants. There are tens of scripts, not thousands, so the speed
 // difference does not matter.
-//
-// The std::less<> at the end is what allows looking a script up with a
-// std::string_view without first copying it into a std::string.
-using ScriptTable = std::map<std::string, ScriptRegistry::Entry, std::less<>>;
+using ScriptTable = std::map<std::string, ScriptRegistry::Entry>;
 
 ScriptTable& Table() {
     // A variable inside a function, not a global.
@@ -120,13 +117,17 @@ void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
         return;
     }
 
-    ScriptTable& table = Table();
-    if (const auto it = table.find(scriptName); it != table.end()) {
+    ScriptTable&      table = Table();
+    const std::string name(scriptName);
+
+    if (table.contains(name)) {
+        const Entry& already = table.at(name);
+
         // The same script, seen twice. This is normal and harmless: a script
         // written in a .h and included by two .cpp files registers once per
         // file that included it. Same name, same file, same class - the second
         // one has nothing to add.
-        if (it->second.sourceFile == sourceFile) {
+        if (already.sourceFile == sourceFile) {
             return;
         }
 
@@ -136,7 +137,7 @@ void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
         ENGINE_LOG_WARN(Channels::kScene,
                         "two different files both define a script called '{}' ('{}' and "
                         "'{}') - only the first can run, so rename one of them",
-                        scriptName, it->second.sourceFile, sourceFile);
+                        scriptName, already.sourceFile, sourceFile);
         return;
     }
 
@@ -144,16 +145,19 @@ void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
     entry.create     = create;
     entry.hooks      = hooks;
     entry.sourceFile = std::string(sourceFile);
-    table.emplace(std::string(scriptName), std::move(entry));
+    table[name]      = entry;
 }
 
 bool ScriptRegistry::IsRegistered(std::string_view scriptName) {
-    return Table().find(scriptName) != Table().end();
+    return Table().contains(std::string(scriptName));
 }
 
 const ScriptRegistry::Entry* ScriptRegistry::Find(std::string_view scriptName) {
-    const auto it = Table().find(scriptName);
-    return (it != Table().end()) ? &it->second : nullptr;
+    const std::string name(scriptName);
+    if (Table().contains(name)) {
+        return &Table().at(name);
+    }
+    return nullptr;
 }
 
 std::unique_ptr<ScriptBehaviour> ScriptRegistry::Create(std::string_view scriptName) {

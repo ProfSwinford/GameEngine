@@ -126,8 +126,12 @@ bool Scene::IsValid(EntityId id) const {
 }
 
 EntityId Scene::Find(std::string_view name) const {
-    const auto it = m_byName.find(std::string(name));
-    return (it != m_byName.end()) ? it->second : EntityId{};
+    const std::string key(name);
+    if (m_byName.contains(key)) {
+        return m_byName.at(key);
+    }
+    // A null id, which IsNull() reports as empty - see EntityId.h.
+    return EntityId{};
 }
 
 void Scene::ForEach(const std::function<void(Entity&)>& fn) {
@@ -330,10 +334,9 @@ Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraP
         Json entityJson    = Json::object();
         entityJson["name"] = entity.Name();
 
-        if (const Transform2D* parent = entity.Transform().Parent(); parent != nullptr) {
-            if (const auto it = transformNames.find(parent); it != transformNames.end()) {
-                entityJson["parent"] = it->second;
-            }
+        const Transform2D* parent = entity.Transform().Parent();
+        if (parent != nullptr && transformNames.contains(parent)) {
+            entityJson["parent"] = transformNames.at(parent);
         }
 
         Json components = Json::array();
@@ -578,20 +581,5 @@ EntityId Scene::DuplicateEntity(EntityId id, std::string& outError) {
 // ---------------------------------------------------------------------------
 //  Prefabs
 // ---------------------------------------------------------------------------
-
-bool Scene::HasPrefab(std::string_view name) const {
-    const Json& prefabs = Field(m_document, "prefabs");
-    return prefabs.is_object() && prefabs.contains(std::string(name));
-}
-
-EntityId Scene::InstantiatePrefab(std::string_view prefab, std::string_view name,
-                                  std::string& outError) {
-    const Json& prefabs = Field(m_document, "prefabs");
-    if (!prefabs.is_object() || !prefabs.contains(std::string(prefab))) {
-        outError = "this scene has no prefab called '" + std::string(prefab) + "'";
-        return EntityId{};
-    }
-    return CreateEntityFromJson(prefabs[std::string(prefab)], name, outError);
-}
 
 } // namespace eng
