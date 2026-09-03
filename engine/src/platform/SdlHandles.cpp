@@ -1,35 +1,31 @@
-// ============================================================================
-//  SdlHandles.cpp - the four clean-up functions declared in SdlHandles.h.
+// =============================================================================
+//  SdlHandles.cpp - a skeleton. Every function is here with the right signature
+//  and an empty body. SdlHandles.h is the specification; read it first.
 //
-//  This is the ONLY file in the engine's platform layer that includes the full
-//  SDL header, which is what keeps SDL out of every other file. Each function
-//  below simply calls the matching SDL_Destroy* function.
-//
-//  None of them checks for null first. That is not an oversight: SDL's destroy
-//  functions are documented to accept a null pointer and do nothing, so a
-//  window that failed to open still cleans up correctly.
-// ============================================================================
+//  This is the only file in the engine that may include SDL's headers for these
+//  four types, which is what keeps SDL out of the public interface.
+// =============================================================================
 
 #include <engine/platform/SdlHandles.h>
 
-#include <SDL3/SDL.h>
-
 namespace eng {
 
-void SdlWindowDeleter::operator()(SDL_Window* window) const noexcept {
-    SDL_DestroyWindow(window);
+// Destroys an SDL window. Called automatically when the WindowPtr holding it
+// goes out of scope, so there is no matching "close" call to remember.
+void SdlWindowDeleter::operator()(SDL_Window* /*window*/) const noexcept {
 }
 
-void SdlRendererDeleter::operator()(SDL_Renderer* renderer) const noexcept {
-    SDL_DestroyRenderer(renderer);
+// Destroys an SDL renderer, the same way and for the same reason.
+void SdlRendererDeleter::operator()(SDL_Renderer* /*renderer*/) const noexcept {
 }
 
-void SdlSurfaceDeleter::operator()(SDL_Surface* surface) const noexcept {
-    SDL_DestroySurface(surface);
+// Frees an SDL surface - the in-memory picture an image file is read into
+// before it is handed to the graphics card.
+void SdlSurfaceDeleter::operator()(SDL_Surface* /*surface*/) const noexcept {
 }
 
-void SdlTextureDeleter::operator()(SDL_Texture* texture) const noexcept {
-    SDL_DestroyTexture(texture);
+// Destroys an SDL texture - a picture that already lives on the graphics card.
+void SdlTextureDeleter::operator()(SDL_Texture* /*texture*/) const noexcept {
 }
 
 } // namespace eng

@@ -146,19 +146,6 @@ private:
 // ---------------------------------------------------------------------------
 class SpriteComponent;
 
-// One row of the render system's list.
-//
-// It holds a copy of just the four things drawing needs, rather than a pointer
-// back to the component, so the render loop reads one compact list instead of
-// jumping around memory chasing pointers to whole objects.
-struct SpriteRecord {
-    Transform2D*     transform = nullptr;
-    TextureRef       texture;
-    Color            tint{};
-    int              layer = 0;
-    SpriteComponent* owner = nullptr;   // used when removing an entry
-};
-
 class SpriteRenderSystem {
 public:
     static void Register(SpriteComponent& sprite);
@@ -201,17 +188,11 @@ public:
     void SetTexture(std::string_view virtualPath);
 
 private:
-    friend class SpriteRenderSystem;
-
     TextureRef  m_texture;         // shared; see render/Texture.h
     std::string m_texturePath;
     Color       m_tint  = Color::White();
     int         m_layer = 0;
     Vec2        m_pixelSize{0.0f, 0.0f};   // (0,0) means "use the image's size"
-
-    // Where this sprite's entry sits in the render system's list. -1 means it
-    // is not registered.
-    int m_recordIndex = -1;
 };
 
 } // namespace eng

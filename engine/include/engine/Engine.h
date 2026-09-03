@@ -8,19 +8,6 @@
 //  collision, draw some text - is reachable from here.
 //
 //  ==========================================================================
-//  ON THIS BRANCH, MOST OF WHAT THIS FILE INCLUDES IS A SHELL.
-//
-//  Every header below is complete and every function in it exists, so anything
-//  you write against this interface compiles today. What is missing is the
-//  implementations: open engine/src/scene/Scene.cpp, say, and you will find
-//  the real function signatures with empty bodies and a note about what each
-//  one is supposed to do.
-//
-//  That is deliberate. The interface is the part worth reading first, and it
-//  does not change as the course goes on - only the bodies underneath it fill
-//  in. See README.md for which parts are given and which are yours.
-//
-//  ==========================================================================
 //  THE SHAPE OF ONE FRAME, in the order it happens:
 //
 //    BeginFrame()    real time moves on; input is read; the clock works out

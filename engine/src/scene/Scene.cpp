@@ -1,126 +1,122 @@
 // =============================================================================
-//  Scene.cpp - A SHELL. The declarations are real; the bodies are yours.
+//  Scene.cpp - a skeleton. Every function is here with the right signature and
+//  an empty body. Scene.h is the specification; read it before filling one in.
 //
-//  Everything here compiles and links, so the editor builds and runs from day
-//  one. It just does not do this part yet: each function returns a harmless
-//  neutral value so nothing crashes and nothing pretends to have worked.
-//
-//  Fill these in as the course reaches them. Scene.h explains WHAT each
-//  function is for and WHY it exists - read it first.
-//
-//  This is the biggest single piece of the engine, and it is worth doing in
-//  the order the editor exercises it: CreateEntity and Get first, so the
-//  Hierarchy panel shows something; then Load, so a .json file becomes a
-//  world; then Save, which the Play button depends on.
+//  This is the largest file in the engine. Written in the order the editor
+//  exercises it - CreateEntity and Get first, then Load, then Save - each step
+//  makes another part of the editor start working.
 // =============================================================================
 
 #include <engine/scene/Scene.h>
 
 namespace eng {
-namespace {
 
-// The one scene everything else talks to. Kept here rather than as a member so
-// that Scene::Active() works before any scene has been built.
-Scene* g_active = nullptr;
-
-} // namespace
-
+// Builds an empty scene with no entities in it.
 Scene::Scene() = default;
 
-// TODO: unload before the slots go away, so every entity gets taken apart in
-// the right order rather than being dropped when the vector is destroyed.
-Scene::~Scene() {}
+// Unloads everything before the slots go away, so each entity is taken apart in
+// the right order rather than dropped when the list is destroyed.
+Scene::~Scene() {
+}
 
-Scene* Scene::Active() { return g_active; }
+// The scene everything else talks to. Kept outside any particular scene so that
+// asking works even before one has been built.
+Scene* Scene::Active() {
+    return nullptr;
+}
 
-void Scene::SetActive(Scene* scene) { g_active = scene; }
+// Sets which scene is the active one.
+void Scene::SetActive(Scene* /*scene*/) {
+}
 
-// ---------------------------------------------------------------------------
-//  Entities
-//
-//  TODO: the slot-and-generation scheme described in Scene.h. Destroying an
-//  entity bumps its slot's generation, which is what lets every EntityId still
-//  referring to it be RECOGNISED as out of date instead of quietly pointing at
-//  whatever moved into the slot afterwards.
-// ---------------------------------------------------------------------------
-EntityId Scene::CreateEntity(std::string_view /*name*/) { return EntityId{}; }
+// Creates an empty entity with a name and hands back its id. Destroying an
+// entity bumps its slot's generation, which is what lets an old id be
+// recognised as out of date rather than quietly pointing at whatever moved in.
+EntityId Scene::CreateEntity(std::string_view /*name*/) {
+    return EntityId{};
+}
 
-void Scene::DestroyEntityImmediate(EntityId /*id*/) {}
+// Destroys an entity right now. Game code should use DeferredOps::QueueDestroy
+// instead; this is what the queue eventually calls.
+void Scene::DestroyEntityImmediate(EntityId /*id*/) {
+}
 
-Entity* Scene::Get(EntityId /*id*/) { return nullptr; }
+// Looks an entity up by id, or nullptr when that id is out of date.
+Entity* Scene::Get(EntityId /*id*/) {
+    return nullptr;
+}
 
-bool Scene::IsValid(EntityId /*id*/) const { return false; }
+// Does this id still refer to a living entity?
+bool Scene::IsValid(EntityId /*id*/) const {
+    return false;
+}
 
-EntityId Scene::Find(std::string_view /*name*/) const { return EntityId{}; }
+// Finds an entity by name. Names are unique, which is what makes this possible.
+EntityId Scene::Find(std::string_view /*name*/) const {
+    return EntityId{};
+}
 
-void Scene::ForEach(const std::function<void(Entity&)>& /*fn*/) {}
+// Visits every living entity in turn - what the Hierarchy panel is built on.
+void Scene::ForEach(const std::function<void(Entity&)>& /*fn*/) {
+}
 
-// ---------------------------------------------------------------------------
-//  Loading and saving
-//
-//  TODO: a scene file is JSON - a name, a camera, and a list of entities, each
-//  of which is a name and a list of components. Nothing about any particular
-//  game belongs in this file; it only knows how to READ one.
-// ---------------------------------------------------------------------------
+// Builds one entity from a chunk of scene-file JSON: its name, then each
+// component built by the factory and handed its own settings.
 EntityId Scene::CreateEntityFromJson(const Json& /*node*/,
                                      std::string_view /*nameOverride*/,
-                                     std::string& outError) {
-    outError = "Scene::CreateEntityFromJson is not implemented yet";
+                                     std::string& /*outError*/) {
     return EntityId{};
 }
 
-void Scene::ResolveParents(const Json& /*entitiesArray*/) {}
+// Connects up the parent relationships, in a second pass. It has to be second,
+// because an entity can name a parent that appears later in the file.
+void Scene::ResolveParents(const Json& /*entitiesArray*/) {
+}
 
-bool Scene::BuildFromDocument(std::string& outError) {
-    outError = "Scene::BuildFromDocument is not implemented yet";
+// Turns an already-parsed scene document into entities. Shared by loading from
+// a file and restoring a Play-mode snapshot, so the two cannot drift apart.
+bool Scene::BuildFromDocument(std::string& /*outError*/) {
     return false;
 }
 
-bool Scene::Load(std::string_view /*virtualPath*/, std::string& outError) {
-    outError = "Scene::Load is not implemented yet - this is a shell of the engine";
+// Reads a scene file and replaces everything in this scene with what is in it.
+bool Scene::Load(std::string_view /*virtualPath*/, std::string& /*outError*/) {
     return false;
 }
 
-bool Scene::Save(std::string_view /*virtualPath*/, std::string& outError) {
-    outError = "Scene::Save is not implemented yet - this is a shell of the engine";
+// Writes this scene out as a file, entity by entity and component by component.
+bool Scene::Save(std::string_view /*virtualPath*/, std::string& /*outError*/) {
     return false;
 }
 
-// SaveToString and LoadFromString are the two halves of the editor's Play
-// button: pressing Play saves the scene to text, and Stop loads it back. They
-// deliberately share the same code path as Save and Load, so the snapshot is
-// exercised constantly instead of only when somebody saves a file.
-bool Scene::SaveToString(std::string& /*outText*/, std::string& outError) {
-    outError = "Scene::SaveToString is not implemented yet";
+// Writes the scene into a string instead of a file. This is what Play mode
+// snapshots, which is why saving has to work before Play can be safe.
+bool Scene::SaveToString(std::string& /*outText*/, std::string& /*outError*/) {
     return false;
 }
 
-bool Scene::LoadFromString(std::string_view /*text*/, std::string& outError) {
-    outError = "Scene::LoadFromString is not implemented yet";
+// Rebuilds the scene from a string - what Stop uses to put the snapshot back.
+bool Scene::LoadFromString(std::string_view /*text*/, std::string& /*outError*/) {
     return false;
 }
 
-void Scene::Unload() {}
-
-// ---------------------------------------------------------------------------
-//  Editing
-// ---------------------------------------------------------------------------
-std::string Scene::MakeUniqueName(std::string_view base) const {
-    return std::string(base);
+// Destroys every entity and empties the scene.
+void Scene::Unload() {
 }
 
-bool Scene::RenameEntity(EntityId /*id*/, std::string_view /*newName*/) { return false; }
-
-EntityId Scene::DuplicateEntity(EntityId /*id*/, std::string& outError) {
-    outError = "Scene::DuplicateEntity is not implemented yet";
-    return EntityId{};
+// Turns a wanted name into one nothing else is using, by adding a number.
+std::string Scene::MakeUniqueName(std::string_view /*base*/) const {
+    return {};
 }
 
-bool Scene::HasPrefab(std::string_view /*name*/) const { return false; }
+// Renames an entity, keeping the name table in step and refusing a name that is
+// already taken.
+bool Scene::RenameEntity(EntityId /*id*/, std::string_view /*newName*/) {
+    return false;
+}
 
-EntityId Scene::InstantiatePrefab(std::string_view /*prefab*/, std::string_view /*name*/,
-                                  std::string& outError) {
-    outError = "Scene::InstantiatePrefab is not implemented yet";
+// Copies an entity and everything on it, giving the copy a new unique name.
+EntityId Scene::DuplicateEntity(EntityId /*id*/, std::string& /*outError*/) {
     return EntityId{};
 }
 

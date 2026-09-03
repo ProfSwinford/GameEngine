@@ -1,68 +1,49 @@
 // =============================================================================
-//  ScriptLibrary.cpp - A SHELL. The declarations are real; the bodies are
-//  yours.
+//  ScriptLibrary.cpp - a skeleton. Every function is here with the right
+//  signature and an empty body. ScriptLibrary.h is the specification; read it
+//  first.
 //
-//  Everything here compiles and links, so the editor builds and runs from day
-//  one. It just does not do this part yet: each function returns a harmless
-//  neutral value so nothing crashes and nothing pretends to have worked.
-//
-//  Fill these in as the course reaches them. ScriptLibrary.h explains WHAT
-//  each function is for and WHY it exists - read it first.
-//
-//  THIS ONE HAS AN ORDER THAT IS NOT OPTIONAL. Reloading has to be:
-//
-//    1. destroy every live script object   (their code is inside the library)
-//    2. empty the registry                 (every entry points into it too)
-//    3. unload the library
-//    4. compile and load the new one
-//    5. rebind every ScriptComponent by name
-//
-//  Getting 1 and 2 after 3 is a crash, not untidiness - the destructors being
-//  called would no longer exist in the process.
+//  A reload has an order that is not optional: destroy every live script
+//  object, empty the registry, unload the library, load the new one, rebind by
+//  name. Doing the first two after the third calls destructors that no longer
+//  exist in the process.
 // =============================================================================
 
-#include <engine/core/Log.h>
-#include <engine/scene/ScriptComponent.h>
 #include <engine/scene/ScriptLibrary.h>
 
 namespace eng {
-namespace {
 
-std::string g_loadedPath;
-
-} // namespace
-
-// Given, because it is the ONE definition of where the compiled scripts live
-// and the editor is written to match it. Changing it here changes both.
+// Where the compiled scripts live. The one definition of the name, used by the
+// engine that loads the file and the editor that writes it.
 std::string ScriptLibrary::DefaultVirtualPath() {
-#if defined(_WIN32)
-    return ".build/userContent.dll";
-#else
-    return ".build/userContent.so";
-#endif
+    return {};
 }
 
-// TODO: load the compiled script library, which runs the file-scope
-// constructors inside it - and those are what ENGINE_REGISTER_SCRIPT creates.
-// By the time the load returns, every script inside has registered itself.
-//
-// SDL_LoadObject / SDL_UnloadObject are the cross-platform way to do this.
-bool ScriptLibrary::Load(std::string_view virtualPath, std::string& outError) {
-    outError.clear();
-    g_loadedPath.assign(virtualPath);
-    ENGINE_LOG_INFO(Channels::kScene,
-                    "ScriptLibrary::Load is a shell - '{}' was not actually loaded, so "
-                    "no scripts will run yet",
-                    virtualPath);
-    return true;
+// Loads the compiled script library. Loading it runs the file-scope objects
+// inside, and those are what ENGINE_REGISTER_SCRIPT creates - so by the time
+// this returns, every script inside has already added itself to the registry.
+bool ScriptLibrary::Load(std::string_view /*virtualPath*/, std::string& /*outError*/) {
+    return false;
 }
 
-void ScriptLibrary::Unload() { g_loadedPath.clear(); }
+// Unloads the library, after destroying everything that came out of it.
+void ScriptLibrary::Unload() {
+}
 
-bool ScriptLibrary::IsLoaded() { return false; }
+// Is a script library currently loaded?
+bool ScriptLibrary::IsLoaded() {
+    return false;
+}
 
-const std::string& ScriptLibrary::LoadedPath() { return g_loadedPath; }
+// Which file is loaded, for the log and the editor's status line.
+const std::string& ScriptLibrary::LoadedPath() {
+    static const std::string none;
+    return none;
+}
 
-std::size_t ScriptLibrary::ScriptCount() { return ScriptRegistry::Count(); }
+// How many scripts came out of it.
+std::size_t ScriptLibrary::ScriptCount() {
+    return 0;
+}
 
 } // namespace eng

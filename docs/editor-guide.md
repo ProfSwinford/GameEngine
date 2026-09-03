@@ -5,12 +5,11 @@ Unity's is, so if you have used that, most of this will already be familiar.
 
 > **On the Editor-Base branch, this guide describes where you are going, not
 > where you are.** The editor itself is complete and everything here is wired
-> up — but a panel can only show what the engine can tell it, and most of the
-> engine is still a shell. The Hierarchy stays empty until `Scene::Load` and
-> `Scene::CreateEntity` are written, the views stay blank until
-> `SpriteRenderSystem::Render` is, and Play cannot snapshot a scene until
-> `Scene::SaveToString` can. See the README for what is given and what is
-> yours.
+> up — but a panel can only show what the engine can tell it, and on this
+> branch the engine is empty: every function exists, none of them does anything
+> yet. The editor will not even open a window until `Window` and `Renderer` are
+> written. Read it as the specification for what you are building towards, and
+> see the README for the order to build it in.
 
 Run it with:
 

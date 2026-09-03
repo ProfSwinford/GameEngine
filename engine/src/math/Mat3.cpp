@@ -1,62 +1,80 @@
 // =============================================================================
-//  Mat3.cpp - A SHELL. The declarations are real; the bodies are yours to write.
-//
-//  Everything here compiles and links, so the editor builds and runs from day
-//  one. It just does not do this part yet: each function returns a harmless
-//  neutral value so nothing crashes and nothing lies about having worked.
-//
-//  Fill these in as the course reaches them. The header this file implements
-//  explains WHAT each function is for and WHY it exists - read it first.
+//  Mat3.cpp - a skeleton. Every function is here with the right signature and
+//  an empty body. Mat3.h is the specification; read it before filling one in.
 // =============================================================================
 
 #include <engine/math/Mat3.h>
 
 namespace eng {
 
-// Given for free, because every other matrix here is built by changing a copy
-// of this one - and a stub that returned a matrix full of zeros would collapse
-// every position in the world onto the origin.
+// The "do nothing" matrix. Every other matrix here is built by changing a copy
+// of this one, so it is worth writing first.
 Mat3 Mat3::Identity() {
-    Mat3 result;
-    result.m[0][0] = 1.0f;
-    result.m[1][1] = 1.0f;
-    result.m[2][2] = 1.0f;
-    return result;
+    return Mat3{};
 }
 
-// TODO: a matrix that moves a point by t. See Mat3.h - the move part lives in
-// the BOTTOM ROW, because points are written as rows in this engine.
-Mat3 Mat3::Translation(Vec2 /*t*/) { return Identity(); }
+// A matrix that moves a point by t. The move part lives in the BOTTOM ROW,
+// because points are written as rows in this engine.
+Mat3 Mat3::Translation(Vec2 /*t*/) {
+    return Mat3{};
+}
 
-// TODO: a matrix that turns a point anticlockwise about the origin.
-Mat3 Mat3::Rotation(float /*radians*/) { return Identity(); }
+// A matrix that turns a point anticlockwise about the origin.
+Mat3 Mat3::Rotation(float /*radians*/) {
+    return Mat3{};
+}
 
-// TODO: a matrix that resizes about the origin.
-Mat3 Mat3::Scaling(Vec2 /*s*/) { return Identity(); }
+// A matrix that resizes about the origin.
+Mat3 Mat3::Scaling(Vec2 /*s*/) {
+    return Mat3{};
+}
 
-// TODO: scale, then rotate, then move - in one matrix.
+// Scale, then rotate, then move - combined into one matrix. Every object's
+// world position goes through this every frame.
 Mat3 Mat3::FromTRS(Vec2 /*translation*/, float /*radians*/, Vec2 /*scale*/) {
-    return Identity();
+    return Mat3{};
 }
 
-// TODO: transform a POSITION (the move part applies).
-Vec2 Mat3::TransformPoint(Vec2 point) const { return point; }
+// Transforms a POSITION: the move part applies, so a point slides with the space.
+Vec2 Mat3::TransformPoint(Vec2 /*point*/) const {
+    return Vec2{};
+}
 
-// TODO: transform a DIRECTION (the move part does NOT apply).
-Vec2 Mat3::TransformVector(Vec2 direction) const { return direction; }
+// Transforms a DIRECTION: the move part does NOT apply, because sliding the
+// world sideways does not change which way something is facing.
+Vec2 Mat3::TransformVector(Vec2 /*direction*/) const {
+    return Vec2{};
+}
 
-// TODO: the matrix that undoes this one.
-Mat3 Mat3::Inverse() const { return Identity(); }
+// The matrix that undoes this one. Turning a mouse click back into a world
+// position is this, and nothing else.
+Mat3 Mat3::Inverse() const {
+    return Mat3{};
+}
 
-// TODO: pull the move / resize / turn back out of a finished matrix.
-Vec2  Mat3::GetTranslation() const { return Vec2{0.0f, 0.0f}; }
-Vec2  Mat3::GetScale() const       { return Vec2{1.0f, 1.0f}; }
-float Mat3::GetRotation() const    { return 0.0f; }
+// Pulls the move part back out of a finished matrix.
+Vec2 Mat3::GetTranslation() const {
+    return Vec2{};
+}
 
-// TODO: combine two transforms. "Do a, then b" is written a * b here.
-Mat3 operator*(const Mat3& /*a*/, const Mat3& /*b*/) { return Mat3::Identity(); }
+// Pulls the resize out of a finished matrix.
+Vec2 Mat3::GetScale() const {
+    return Vec2{};
+}
 
-// TODO: compare two matrices allowing for floating-point drift.
+// Pulls the turn out of a finished matrix, in radians.
+float Mat3::GetRotation() const {
+    return 0.0f;
+}
+
+// Combines two transforms. "Do a, then b" is written a * b, which is what the
+// row-vector convention buys.
+Mat3 operator*(const Mat3& /*a*/, const Mat3& /*b*/) {
+    return Mat3{};
+}
+
+// Compares two matrices allowing for the small errors decimal arithmetic makes,
+// because two matrices that should be equal rarely are exactly.
 bool ApproxEqual(const Mat3& /*a*/, const Mat3& /*b*/, float /*epsilon*/) {
     return false;
 }

@@ -1,42 +1,41 @@
 // =============================================================================
-//  DeferredOps.cpp - A SHELL. The declarations are real; the bodies are yours.
+//  DeferredOps.cpp - a skeleton. Every function is here with the right
+//  signature and an empty body. DeferredOps.h is the specification; read it
+//  first.
 //
-//  Everything here compiles and links, so the editor builds and runs from day
-//  one. It just does not do this part yet: each function returns a harmless
-//  neutral value so nothing crashes and nothing pretends to have worked.
-//
-//  Fill these in as the course reaches them. DeferredOps.h explains WHAT each
-//  function is for and WHY it exists - read it first.
+//  Nothing structural happens immediately. Destroying goes into a queue applied
+//  at ONE point in the frame, because removing an entity while a system is
+//  walking its list is not an error in C++ - it is a crash months later.
 // =============================================================================
 
 #include <engine/scene/DeferredOps.h>
 
 namespace eng {
 
-// TODO: creating and destroying entities has to be QUEUED and applied at ONE
-// known point in the frame - stage 600, after every system has run and after
-// messages have been delivered.
-//
-// DeferredOps.h explains the problem in full: a system spawning a bullet while
-// something is walking the entity list changes the very list being walked, and
-// in C++ that is not an error - it is a crash months later.
-void DeferredOps::QueueSpawn(const SpawnParams& /*params*/) {}
+// Asks for an entity to be destroyed at the end of the current step. Asking
+// twice is harmless, because game code does it constantly.
+void DeferredOps::QueueDestroy(EntityId /*id*/) {
+}
 
-void DeferredOps::QueueSpawn(SpawnBuilder /*builder*/) {}
+// Is this entity already on its way out? Systems that must not act on something
+// already dying check this - a destroyed thing should stop colliding at once.
+bool DeferredOps::IsPendingDestroy(EntityId /*id*/) {
+    return false;
+}
 
-void DeferredOps::QueueDestroy(EntityId /*id*/) {}
+// Applies everything queued, once. Anything queued while draining belongs to
+// the next frame - draining until empty risks never finishing, because
+// something that spawns a copy of itself is reasonable to write.
+void DeferredOps::Apply(Scene& /*scene*/) {
+}
 
-bool DeferredOps::IsPendingDestroy(EntityId /*id*/) { return false; }
+// Throws the queue away without applying it, used when a scene is unloaded.
+void DeferredOps::Clear() {
+}
 
-// TODO: drain both queues, ONCE. Anything spawned while draining belongs to
-// the next frame - draining until empty risks never finishing, because a
-// script that spawns a copy of itself is a reasonable thing to write.
-void DeferredOps::Apply(Scene& /*scene*/) {}
-
-void DeferredOps::Clear() {}
-
-std::size_t DeferredOps::PendingSpawnCount() { return 0; }
-
-std::size_t DeferredOps::PendingDestroyCount() { return 0; }
+// How many destroys are waiting.
+std::size_t DeferredOps::PendingDestroyCount() {
+    return 0;
+}
 
 } // namespace eng

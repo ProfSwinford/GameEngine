@@ -1,52 +1,40 @@
 // =============================================================================
-//  Messaging.cpp - A SHELL. The declarations are real; the bodies are yours.
+//  Messaging.cpp - a skeleton. Every function is here with the right signature
+//  and an empty body. Messaging.h is the specification; read it first.
 //
-//  Everything here compiles and links, so the editor builds and runs from day
-//  one. It just does not do this part yet: each function returns a harmless
-//  neutral value so nothing crashes and nothing pretends to have worked.
-//
-//  Fill these in as the course reaches them. Messaging.h explains WHAT each
-//  function is for and WHY it exists - read it first.
+//  A message is a NAMED EVENT with a little data attached. The sender does not
+//  know who is listening, which is what stops every pair of things in the game
+//  having to include each other.
 // =============================================================================
 
 #include <engine/scene/Messaging.h>
 
 namespace eng {
 
-// TODO: remember who is listening for what. A subscription id is handed back
-// so it can be cancelled later.
-SubscriptionId MessageBus::Subscribe(EntityId /*target*/, std::string_view /*type*/,
-                                     MessageHandler /*handler*/) {
-    return 0;
-}
-
+// Listens for one kind of message and hands back an id for cancelling it later.
+// A handler that only cares about one entity compares message.target itself.
 SubscriptionId MessageBus::SubscribeBroadcast(std::string_view /*type*/,
                                               MessageHandler /*handler*/) {
     return 0;
 }
 
-void MessageBus::Unsubscribe(SubscriptionId /*id*/) {}
+// Stops listening. Safe to call from inside a handler, which is what a handler
+// that destroys its own entity ends up doing.
+void MessageBus::Unsubscribe(SubscriptionId /*id*/) {
+}
 
-void MessageBus::UnsubscribeAll(EntityId /*target*/) {}
+// Queues a message. The handlers do not run here - they run at the delivery
+// point, so nothing is ever half-way through something else when they do.
+void MessageBus::Send(const Message& /*message*/) {
+}
 
-// TODO: QUEUE the message rather than delivering it. Immediate delivery can
-// loop - A tells B, which tells A - and it lands in the middle of whatever
-// system happened to be running. See the three rules in Messaging.h.
-void MessageBus::Send(const Message& /*message*/) {}
+// Delivers everything queued, once per simulation step. This is the only place
+// in the engine where a message handler runs.
+void MessageBus::Dispatch() {
+}
 
-void MessageBus::Broadcast(const Message& /*message*/) {}
-
-// TODO: the ONE point in the frame where every handler runs - stage 500.
-//
-// A message aimed at an entity that no longer exists is dropped quietly, not
-// reported: two bullets hitting the same enemy on one tick is ordinary, and an
-// error per occurrence would bury the Console exactly when you were reading it.
-void MessageBus::Dispatch() {}
-
-void MessageBus::Clear() {}
-
-std::size_t MessageBus::QueuedCount() { return 0; }
-
-std::size_t MessageBus::SubscriptionCount() { return 0; }
+// Throws away every queued message and every subscription.
+void MessageBus::Clear() {
+}
 
 } // namespace eng

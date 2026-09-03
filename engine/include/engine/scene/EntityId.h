@@ -28,8 +28,6 @@
 //  pointing at the first entity in the scene.
 // ============================================================================
 
-#include <compare>
-
 namespace eng {
 
 struct EntityId {
@@ -38,12 +36,29 @@ struct EntityId {
 
     bool IsNull() const { return index < 0; }
 
-    // `= default` asks the compiler to write the comparisons by comparing both
-    // members. The <=> ("spaceship") version gives <, <=, > and >= as well,
-    // which is what lets an EntityId be used as a key in a std::map - the
-    // collision system needs that to remember which pairs are touching.
-    friend auto operator<=>(const EntityId&, const EntityId&) = default;
-    friend bool operator==(const EntityId&, const EntityId&)  = default;
+    // Two ids refer to the same entity only when BOTH parts match. A matching
+    // index with a different generation means "the same slot, but the entity
+    // that used to be in it has gone" - which is the whole reason the
+    // generation is there.
+    friend bool operator==(const EntityId& a, const EntityId& b) {
+        return a.index == b.index && a.generation == b.generation;
+    }
+    friend bool operator!=(const EntityId& a, const EntityId& b) { return !(a == b); }
+
+    // Written out rather than left to the compiler, because "what does it mean
+    // for one id to be less than another?" has no meaning in the game - it is
+    // needed only so an EntityId can be a key in a std::set or std::map, which
+    // keep their contents in order. The collision system uses that to remember
+    // which pairs were touching last step.
+    //
+    // Compare the index first; only if those are equal does the generation
+    // decide. That is the same rule as alphabetical order on two-letter words.
+    friend bool operator<(const EntityId& a, const EntityId& b) {
+        if (a.index != b.index) {
+            return a.index < b.index;
+        }
+        return a.generation < b.generation;
+    }
 };
 
 } // namespace eng

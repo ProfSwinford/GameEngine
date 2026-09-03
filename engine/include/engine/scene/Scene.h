@@ -129,15 +129,6 @@ public:
     void        ForEach(const std::function<void(Entity&)>& fn);
     std::size_t EntityCount() const { return m_liveCount; }
 
-    // ---- prefabs ----------------------------------------------------------
-    //
-    // A prefab is a named entity template in the scene file's "prefabs"
-    // section - the same idea as a Unity prefab. Game code spawns copies of it
-    // by name without knowing anything about what is in it.
-    bool     HasPrefab(std::string_view name) const;
-    EntityId InstantiatePrefab(std::string_view prefab, std::string_view name,
-                               std::string& outError);
-
     // Builds one entity from a chunk of JSON in the scene-file entity shape.
     // Public because game code that generates its own entities from its own
     // data should not have to reimplement it.

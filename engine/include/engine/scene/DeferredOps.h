@@ -52,34 +52,18 @@
 #include <engine/math/Vec2.h>
 #include <engine/scene/EntityId.h>
 
-#include <functional>
-#include <string>
-
 namespace eng {
 
 class Scene;
 
 class DeferredOps {
 public:
-    // Everything needed to create one copy of a prefab.
-    struct SpawnParams {
-        std::string prefab;              // a name from the scene file's "prefabs"
-        std::string name;                // must be unique; a number is added if not
-        Vec2        position{0.0f, 0.0f};
-        float       rotation = 0.0f;
-        Vec2        scale{1.0f, 1.0f};
-    };
-
-    static void QueueSpawn(const SpawnParams& params);
-
-    // Queue a spawn built by your own function instead of from a prefab.
+    // Ask for an entity to be destroyed. It happens at stage 600, not now.
     //
-    // The function is called later, at the safe point, with the scene handed
-    // to it. This is what game code uses for entities that are not worth a
-    // prefab entry.
-    using SpawnBuilder = std::function<EntityId(Scene&)>;
-    static void QueueSpawn(SpawnBuilder builder);
-
+    // To CREATE an entity, call Scene::CreateEntity directly. Creating is safe
+    // at any time because it only ever appends; destroying is the dangerous
+    // half, because it removes entries from the very lists systems are
+    // walking, and that is what this queue exists to make safe.
     static void QueueDestroy(EntityId id);
 
     // True between QueueDestroy and the moment the queue is applied. Systems
@@ -92,7 +76,6 @@ public:
 
     static void Clear();
 
-    static std::size_t PendingSpawnCount();
     static std::size_t PendingDestroyCount();
 };
 
