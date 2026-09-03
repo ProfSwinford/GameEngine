@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <map>
-#include <numeric>
 
 namespace eng {
 namespace {
@@ -28,8 +27,15 @@ std::map<std::string, ComponentFactory::CreateFn>& FactoryTable() {
     return table;
 }
 
-// The list the render system actually walks. See SpriteRecord in Component.h.
-std::vector<SpriteRecord> g_sprites;
+// Every sprite currently attached to something, so the render system walks its
+// own short list rather than asking every entity in the scene whether it has a
+// picture.
+//
+// It holds POINTERS to the components, and copies nothing out of them. That is
+// what makes the whole thing simple: the tint, layer and texture are only ever
+// stored in one place, so there is no second copy that can drift out of step
+// with the first, and nothing here remembers where in this list it sits.
+std::vector<SpriteComponent*> g_sprites;
 
 } // namespace
 
@@ -184,28 +190,15 @@ void SpriteComponent::OnDetach() {
     m_texture.reset();
 }
 
-void SpriteComponent::SetTint(Color tint) {
-    m_tint = tint;
-    // The render system keeps its own copy, so it has to be updated too.
-    if (m_recordIndex >= 0 && m_recordIndex < static_cast<int>(g_sprites.size())) {
-        g_sprites[static_cast<std::size_t>(m_recordIndex)].tint = tint;
-    }
-}
+// The render system reads these straight off the component every frame, so
+// setting one is just setting it. There is nothing to keep in step.
+void SpriteComponent::SetTint(Color tint) { m_tint = tint; }
 
-void SpriteComponent::SetLayer(int layer) {
-    m_layer = layer;
-    if (m_recordIndex >= 0 && m_recordIndex < static_cast<int>(g_sprites.size())) {
-        g_sprites[static_cast<std::size_t>(m_recordIndex)].layer = layer;
-    }
-}
+void SpriteComponent::SetLayer(int layer) { m_layer = layer; }
 
 void SpriteComponent::SetTexture(std::string_view virtualPath) {
     m_texture = ResourceManager::LoadTexture(virtualPath);
     m_texturePath.assign(virtualPath);
-
-    if (m_recordIndex >= 0 && m_recordIndex < static_cast<int>(g_sprites.size())) {
-        g_sprites[static_cast<std::size_t>(m_recordIndex)].texture = m_texture;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,42 +206,13 @@ void SpriteComponent::SetTexture(std::string_view virtualPath) {
 // ---------------------------------------------------------------------------
 
 void SpriteRenderSystem::Register(SpriteComponent& sprite) {
-    SpriteRecord record;
-    record.transform = sprite.OwnerTransform();
-    record.texture   = sprite.GetTexture();
-    record.tint      = sprite.Tint();
-    record.layer     = sprite.Layer();
-    record.owner     = &sprite;
-
-    sprite.m_recordIndex = static_cast<int>(g_sprites.size());
-    g_sprites.push_back(std::move(record));
+    g_sprites.push_back(&sprite);
 }
 
 void SpriteRenderSystem::Unregister(SpriteComponent& sprite) {
-    const int index = sprite.m_recordIndex;
-    if (index < 0 || index >= static_cast<int>(g_sprites.size())) {
-        return;   // never registered, or already removed
-    }
-
-    // "Swap and pop": move the LAST entry into the hole and shorten the list.
-    // Removing from the middle of a vector the normal way shuffles everything
-    // after it along; this is one move regardless of size. The order of the
-    // list does not matter because the draw loop sorts by layer anyway.
-    const std::size_t slot = static_cast<std::size_t>(index);
-    const std::size_t last = g_sprites.size() - 1;
-    if (slot != last) {
-        g_sprites[slot] = std::move(g_sprites[last]);
-
-        // THE LINE THAT IS EASY TO FORGET. The entry that just moved belongs
-        // to some other sprite, and that sprite is still remembering its OLD
-        // position. Without this fix-up, the next removal takes out the wrong
-        // sprite - which shows up as a random unrelated sprite vanishing.
-        if (g_sprites[slot].owner != nullptr) {
-            g_sprites[slot].owner->m_recordIndex = static_cast<int>(slot);
-        }
-    }
-    g_sprites.pop_back();
-    sprite.m_recordIndex = -1;
+    // std::erase removes every matching entry and does nothing when there is
+    // none, so there is no "was it registered?" case to get wrong.
+    std::erase(g_sprites, &sprite);
 }
 
 void SpriteRenderSystem::Render(Camera& camera) {
@@ -256,23 +220,22 @@ void SpriteRenderSystem::Render(Camera& camera) {
         return;
     }
 
-    // Sprites have to be drawn back to front, but the records themselves must
-    // not be reordered - every sprite remembers where its own record is. So a
-    // list of POSITIONS is sorted instead, and the records stay put.
-    std::vector<std::size_t> order(g_sprites.size());
-
-    // std::iota fills a range with 0, 1, 2, 3... which is the starting order.
-    std::iota(order.begin(), order.end(), std::size_t{0});
-
+    // Sprites are drawn back to front, so the list is put in layer order.
+    //
+    // The list itself is sorted, in place. Nothing remembers where in it it
+    // sits, so moving entries around has no consequences anywhere else.
+    //
     // stable_sort rather than sort: two sprites on the same layer keep the
-    // order they were added in, so the picture does not flicker between frames.
-    std::stable_sort(order.begin(), order.end(), [](std::size_t a, std::size_t b) {
-        return g_sprites[a].layer < g_sprites[b].layer;
-    });
+    // order they were already in, so the picture does not flicker between
+    // frames when it is impossible to say which should be on top.
+    std::stable_sort(g_sprites.begin(), g_sprites.end(),
+                     [](const SpriteComponent* a, const SpriteComponent* b) {
+                         return a->Layer() < b->Layer();
+                     });
 
-    for (const std::size_t index : order) {
-        const SpriteRecord& record = g_sprites[index];
-        if (record.transform == nullptr || !record.texture) {
+    for (const SpriteComponent* sprite : g_sprites) {
+        Transform2D* transform = sprite->OwnerTransform();
+        if (transform == nullptr || !sprite->GetTexture()) {
             continue;   // no position, or no picture assigned yet
         }
 
@@ -280,15 +243,15 @@ void SpriteRenderSystem::Render(Camera& camera) {
         // everything else in the engine uses. There is deliberately no second
         // piece of code working out where a sprite goes, because two such
         // pieces would eventually disagree.
-        const Mat3  world    = record.transform->WorldMatrix();
+        const Mat3  world    = transform->WorldMatrix();
         const Vec2  centre   = camera.WorldToScreen(world.GetTranslation());
         const Vec2  scale    = world.GetScale();
         const float rotation = world.GetRotation();
 
-        Vec2 sizePixels = record.owner->PixelSize();
+        Vec2 sizePixels = sprite->PixelSize();
         if (sizePixels.x <= 0.0f || sizePixels.y <= 0.0f) {
-            sizePixels = Vec2{static_cast<float>(record.texture->width),
-                              static_cast<float>(record.texture->height)};
+            sizePixels = Vec2{static_cast<float>(sprite->GetTexture()->width),
+                              static_cast<float>(sprite->GetTexture()->height)};
         }
 
         const Vec2 onScreen{sizePixels.x * scale.x * camera.Zoom(),
@@ -297,8 +260,8 @@ void SpriteRenderSystem::Render(Camera& camera) {
         // SDL turns things clockwise and measures in degrees; the engine works
         // anticlockwise in radians. The camera's y flip already accounts for
         // the direction, so only the unit conversion is needed here.
-        Renderer::DrawSprite(record.texture, centre, onScreen, rotation * kRadToDeg,
-                             record.tint);
+        Renderer::DrawSprite(sprite->GetTexture(), centre, onScreen,
+                             rotation * kRadToDeg, sprite->Tint());
     }
 }
 
@@ -307,11 +270,6 @@ std::size_t SpriteRenderSystem::Count() {
 }
 
 void SpriteRenderSystem::Clear() {
-    for (SpriteRecord& record : g_sprites) {
-        if (record.owner != nullptr) {
-            record.owner->m_recordIndex = -1;
-        }
-    }
     g_sprites.clear();
 }
 
