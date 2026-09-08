@@ -1,6 +1,6 @@
 // ============================================================================
 //  Subsystem.cpp - starting and stopping the engine's pieces in order.
-//  See Subsystem.h. The order itself is in Engine.cpp.
+//  See Subsystem.h for why the order is written down rather than accidental.
 // ============================================================================
 
 #include <engine/core/Log.h>
@@ -8,26 +8,29 @@
 
 namespace eng {
 
-void SubsystemStack::Register(std::unique_ptr<Subsystem> subsystem) {
-    if (subsystem != nullptr) {
-        m_subsystems.push_back(std::move(subsystem));
-    }
+void SubsystemStack::Add(std::string name, Subsystem& subsystem) {
+    // Nothing is started here. The ADDRESS of the object is remembered, and
+    // its Init only runs later, from InitAll.
+    Entry entry;
+    entry.name   = std::move(name);
+    entry.system = &subsystem;
+    m_entries.push_back(std::move(entry));
 }
 
-bool SubsystemStack::InitAll() {
-    m_initialisedCount = 0;
+bool SubsystemStack::InitAll(const BootConfig& config) {
+    m_startedCount = 0;
 
-    for (std::size_t i = 0; i < m_subsystems.size(); ++i) {
-        Subsystem& subsystem = *m_subsystems[i];
+    for (std::size_t i = 0; i < m_entries.size(); ++i) {
+        const Entry& entry = m_entries[i];
 
-        if (subsystem.Init()) {
+        if (entry.system->Init(config)) {
             ENGINE_LOG_INFO(Channels::kCore, "  [{}/{}] {} started", i + 1,
-                            m_subsystems.size(), subsystem.Name());
-            ++m_initialisedCount;
+                            m_entries.size(), entry.name);
+            ++m_startedCount;
             continue;
         }
 
-        ENGINE_LOG_ERROR(Channels::kCore, "'{}' failed to start", subsystem.Name());
+        ENGINE_LOG_ERROR(Channels::kCore, "'{}' failed to start", entry.name);
 
         // Unwind exactly what came up, in exactly the reverse order.
         //
@@ -35,16 +38,16 @@ bool SubsystemStack::InitAll() {
         // down something that never started is how a tidy-up turns into a
         // second crash. The ones after it were never touched at all.
         //
-        // `for (std::size_t j = i; j-- > 0;)` is the standard way to count
-        // down through unsigned indices: it tests j, then decrements it, so
-        // the loop covers i-1 down to 0 and stops without ever going negative.
+        // `for (std::size_t j = i; j-- > 0;)` is the standard way to count down
+        // through unsigned indices: it tests j, then decrements it, so the loop
+        // covers i-1 down to 0 and stops without ever going negative.
         ENGINE_LOG_INFO(Channels::kCore, "shutting down the {} that did start",
-                        m_initialisedCount);
+                        m_startedCount);
         for (std::size_t j = i; j-- > 0;) {
-            ENGINE_LOG_INFO(Channels::kCore, "  {} stopped", m_subsystems[j]->Name());
-            m_subsystems[j]->Shutdown();
+            ENGINE_LOG_INFO(Channels::kCore, "  {} stopped", m_entries[j].name);
+            m_entries[j].system->Shutdown();
         }
-        m_initialisedCount = 0;
+        m_startedCount = 0;
         return false;
     }
 
@@ -53,20 +56,16 @@ bool SubsystemStack::InitAll() {
 
 void SubsystemStack::ShutdownAll() {
     // The exact reverse of the order they started, and only as far as starting
-    // actually got.
-    for (std::size_t i = m_initialisedCount; i-- > 0;) {
+    // actually got. The "shutting down" heading is logged by Engine::Shutdown,
+    // which is the only thing that knows whether this is a real shutdown or the
+    // tidy-up after a start-up that never completed.
+    for (std::size_t i = m_startedCount; i-- > 0;) {
         ENGINE_LOG_INFO(Channels::kCore, "  [{}/{}] {} stopped", i + 1,
-                        m_subsystems.size(), m_subsystems[i]->Name());
-        m_subsystems[i]->Shutdown();
+                        m_entries.size(), m_entries[i].name);
+        m_entries[i].system->Shutdown();
     }
-    m_initialisedCount = 0;
-}
 
-void SubsystemStack::ForEach(
-    const std::function<void(const Subsystem&, bool)>& fn) const {
-    for (std::size_t i = 0; i < m_subsystems.size(); ++i) {
-        fn(*m_subsystems[i], i < m_initialisedCount);
-    }
+    m_startedCount = 0;
 }
 
 } // namespace eng

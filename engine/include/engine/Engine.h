@@ -157,12 +157,83 @@ public:
 private:
     Engine() = default;
 
+    // Writes down the twelve subsystems and the order they start in. It only
+    // records them - nothing runs until Init calls SubsystemStack::InitAll.
     void RegisterBuiltinSubsystems(const Options& options);
+
+    // ------------------------------------------------------------------
+    //  FIVE SUBSYSTEMS THAT BELONG TO THE ENGINE ITSELF.
+    //
+    //  Most of the engine's pieces are Subsystem classes in their own right -
+    //  Log, FileSystem, Window, ResourceManager, Gizmos, MessageBus and
+    //  ScriptLibrary each start and stop themselves, in their own files.
+    //
+    //  These five cannot, because starting them is not one call on one class:
+    //  it is CONNECTING several pieces to each other, and that wiring is the
+    //  engine's job. They are written here, inside Engine, so that they can
+    //  reach the engine's own members; what each one does is in Engine.cpp.
+    // ------------------------------------------------------------------
+    class RendererSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+
+    class GuiSubsystem : public Subsystem {
+    public:
+        // The editor's two functions, taken from Options before start-up.
+        void Use(std::function<bool()> init, std::function<void()> shutdown);
+
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+
+    private:
+        std::function<bool()> m_init;
+        std::function<void()> m_shutdown;
+    };
+
+    class InputSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+
+    class SceneSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+
+    class CollisionSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+
+    // ------------------------------------------------------------------
+    //  THE TWELVE SUBSYSTEM OBJECTS, in the order they start.
+    //
+    //  Members rather than globals, so they are created and destroyed with the
+    //  engine and not in whatever order the linker felt like. Declared BEFORE
+    //  m_subsystems on purpose: members are destroyed in reverse order, so the
+    //  list of pointers is torn down before the objects it points at.
+    // ------------------------------------------------------------------
+    Log                m_log;
+    FileSystem         m_fileSystem;
+    Window             m_window;
+    RendererSubsystem  m_renderer;
+    GuiSubsystem       m_gui;
+    InputSubsystem     m_input;
+    ResourceManager    m_resources;
+    Gizmos             m_gizmos;
+    MessageBus         m_messaging;
+    ScriptLibrary      m_scripts;
+    SceneSubsystem     m_sceneSubsystem;
+    CollisionSubsystem m_collisionSubsystem;
 
     SubsystemStack          m_subsystems;
     BootConfig              m_config;
     Json                    m_configDocument = Json::object();
-    std::unique_ptr<Window> m_window;
     std::unique_ptr<Scene>  m_scene;
 
     std::unique_ptr<CollisionSystem> m_collisionSystem;

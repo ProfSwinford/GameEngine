@@ -23,199 +23,228 @@ Engine& Engine::Get() {
 }
 
 Window& Engine::GetWindow() {
-    return *m_window;
+    return m_window;
 }
 
-void Engine::RegisterBuiltinSubsystems(const Options& options) {
-    // =======================================================================
-    //  THE START-UP ORDER.
-    //
-    //  Registration order IS dependency order: each entry may assume
-    //  everything above it is already running. Shutting down happens in the
-    //  exact reverse.
-    // =======================================================================
+// ---------------------------------------------------------------------------
+//  THE SUBSYSTEMS THAT BELONG TO THE ENGINE ITSELF.
+//
+//  Most of the engine's pieces are Subsystem classes in their own right. Log,
+//  FileSystem, Window, ResourceManager, Gizmos, MessageBus and ScriptLibrary
+//  each have their own Init and Shutdown, written in their own files, next to
+//  the code they start. The engine keeps one object of each as a member and
+//  does nothing more than put them in order.
+//
+//  The five below are the ones that cannot do that, because starting them is
+//  not one call on one class - it is CONNECTING several pieces to each other.
+//  That wiring is the engine's job, so it lives here. They are still ordinary
+//  Subsystem classes, which is why the list at the bottom of this section
+//  reads the same way for all twelve.
+// ---------------------------------------------------------------------------
 
-    // 1. The log. First up and last down, because everything writes to it -
-    //    including everything else's own shutdown message.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Log",
-        [this] {
-            LogBuffer::SetCapacity(static_cast<std::size_t>(m_config.logBufferCapacity));
-            return Log::Init(m_config.logFile, m_config.logThreshold);
-        },
-        [] { Log::Shutdown(); }));
+// The renderer, plus the camera that has to be told how big the window is.
+//
+// Renderer::Init is HANDED the window rather than going looking for one. That
+// is what keeps the window out of the drawing code's list of things it depends
+// on, and it is why this wiring is here rather than inside Renderer.
+bool Engine::RendererSubsystem::Init(const BootConfig&) {
+    Engine& engine = Engine::Get();
 
-    // 2. The file system. Needs the log (it writes down where it found the
-    //    assets). Everything that reads a file needs it.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "FileSystem", [] { return FileSystem::Init(); },
-        [] { FileSystem::Shutdown(); }));
+    if (!Renderer::Init(engine.m_window)) {
+        return false;
+    }
+    engine.m_camera.SetViewportSize(Renderer::OutputSize());
+    return true;
+}
 
-    // 3. The window. Needs the log and the settings for its size.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Window",
-        [this] {
-            m_window = std::make_unique<Window>(m_config.windowTitle.c_str(),
-                                                m_config.windowWidth,
-                                                m_config.windowHeight);
-            return m_window->IsValid();
-        },
-        [this] { m_window.reset(); }));
+void Engine::RendererSubsystem::Shutdown() {
+    Renderer::Shutdown();
+}
 
-    // 4. The renderer. Needs the window it draws into.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Renderer",
-        [this] {
-            if (!Renderer::Init(*m_window)) {
-                return false;
-            }
-            m_camera.SetViewportSize(Renderer::OutputSize());
-            return true;
-        },
-        [] { Renderer::Shutdown(); }));
+// The editor's interface.
+//
+// The editor supplies its own two functions through Engine::Options and the
+// engine calls them without ever learning what they do. All the engine
+// provides is the correct moment: after the renderer exists, and before it is
+// destroyed. Getting that wrong is a crash at shutdown, which is why it is not
+// left to the editor to remember.
+//
+// The standalone game supplies nothing, and that difference is what proves the
+// engine ships without its tools attached.
+void Engine::GuiSubsystem::Use(std::function<bool()> init,
+                               std::function<void()> shutdown) {
+    m_init     = std::move(init);
+    m_shutdown = std::move(shutdown);
+}
 
-    // 5. The editor's interface. Needs the window and the renderer, and is
-    //    only registered when the editor supplied the two functions - the
-    //    standalone game never does, which is what proves the engine ships
-    //    without its tools.
-    //
-    //    Note that the engine calls these without knowing what they do. The
-    //    interface library lives entirely in the editor; all the engine
-    //    provides is the correct moment to start and stop it.
-    if (options.guiInit) {
-        m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-            "EditorGui", options.guiInit,
-            options.guiShutdown ? options.guiShutdown : [] {}));
+bool Engine::GuiSubsystem::Init(const BootConfig&) {
+    return m_init ? m_init() : true;
+}
+
+void Engine::GuiSubsystem::Shutdown() {
+    if (m_shutdown) {
+        m_shutdown();
+    }
+}
+
+// The controls.
+//
+// The key bindings are not in BootConfig. They are a whole section of the
+// settings file, read by InputMap itself, so the engine hands that section
+// over here rather than copying every binding into BootConfig first.
+bool Engine::InputSubsystem::Init(const BootConfig&) {
+    const Json& document = Engine::Get().m_configDocument;
+
+    std::string warnings;
+    if (document.contains("input")) {
+        InputMap::LoadBindings(document["input"], warnings);
+    } else {
+        ENGINE_LOG_WARN(Channels::kInput,
+                        "the settings file has no \"input\" section, so no controls "
+                        "are bound");
     }
 
-    // 6. Input. Needs the window (events come from it) and the editor GUI when
-    //    there is one, because it asks whether the GUI claimed a key press.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Input",
-        [this] {
-            std::string warnings;
-            if (m_configDocument.contains("input")) {
-                InputMap::LoadBindings(m_configDocument["input"], warnings);
-            } else {
-                ENGINE_LOG_WARN(Channels::kInput,
-                                "the settings file has no \"input\" section, so no "
-                                "controls are bound");
-            }
-            // The gameplay context sits at the bottom of the stack for the
-            // whole run; a menu pushes on top of it. See InputMap.h.
-            InputMap::PushContext("gameplay");
-            return true;
-        },
-        [] { InputMap::ClearBindings(); }));
-
-    // 7. Textures. Needs the file system (to read them) and the renderer (to
-    //    hand them to the graphics card).
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Resources", [] { return ResourceManager::Init(); },
-        [] { ResourceManager::Shutdown(); }));
-
-    // 8. Gizmos. Needs the renderer.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Gizmos",
-        [this] {
-            Gizmos::SetCircleSegments(m_config.gizmoCircleSegments);
-            return true;
-        },
-        [] { Gizmos::Clear(); }));
-
-    // 9. Messaging. Registered BEFORE collision, because the collision system
-    //    sends its events through it.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Messaging", [] { return true; }, [] { MessageBus::Clear(); }));
-
-    // 10. The project's compiled scripts.
-    //
-    //     Registered BEFORE the scene, which means it is torn down AFTER it -
-    //     and that order is not optional. Unloading the scene destroys every
-    //     entity, which destroys their script objects, and those objects live
-    //     in the compiled library. Unload the library first and the scene's
-    //     teardown would be calling destructors that no longer exist.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Scripts",
-        [] {
-            std::string error;
-            // A project with no scripts is fine and returns true. Only a
-            // library that exists and will not load is a failure.
-            return ScriptLibrary::Load(ScriptLibrary::DefaultVirtualPath(), error);
-        },
-        [] { ScriptLibrary::Unload(); }));
-
-    // 11. The scene. Needs textures (components load them as they attach),
-    //     messaging, and the scripts (so a ScriptComponent finds its behaviour
-    //     as the scene loads rather than a frame later).
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Scene",
-        [this] {
-            // Tell the factory which type names mean which classes.
-            ComponentFactory::RegisterBuiltins();
-            CollisionSystem::RegisterComponentTypes();
-            SpinSystem::RegisterComponentTypes();
-            ScriptSystem::RegisterComponentTypes();
-
-            m_spinSystem   = std::make_unique<SpinSystem>();
-            m_scriptSystem = std::make_unique<ScriptSystem>();
-            SystemScheduler::Register(m_spinSystem.get());
-            SystemScheduler::Register(m_scriptSystem.get());
-
-            m_scene = std::make_unique<Scene>();
-            Scene::SetActive(m_scene.get());
-            return true;
-        },
-        [this] {
-            if (m_scene != nullptr) {
-                m_scene->Unload();
-            }
-            if (m_spinSystem != nullptr) {
-                SystemScheduler::Unregister(m_spinSystem.get());
-                m_spinSystem.reset();
-            }
-            if (m_scriptSystem != nullptr) {
-                SystemScheduler::Unregister(m_scriptSystem.get());
-                m_scriptSystem.reset();
-            }
-            SpinSystem::Clear();
-            ScriptSystem::Clear();
-            SpriteRenderSystem::Clear();
-            Scene::SetActive(nullptr);
-            m_scene.reset();
-        }));
-
-    // 12. Collision. Needs messaging and the scene.
-    m_subsystems.Register(std::make_unique<LambdaSubsystem>(
-        "Collision",
-        [this] {
-            m_collisionSystem = std::make_unique<CollisionSystem>();
-            SystemScheduler::Register(m_collisionSystem.get());
-
-            // Scripts hear about collisions through the message bus, so this
-            // subscription belongs after collision exists.
-            ScriptSystem::SubscribeToCollisions();
-            return true;
-        },
-        [this] {
-            if (m_collisionSystem != nullptr) {
-                SystemScheduler::Unregister(m_collisionSystem.get());
-            }
-            CollisionSystem::Clear();
-            m_collisionSystem.reset();
-        }));
+    // The gameplay context sits at the bottom of the stack for the whole run;
+    // a menu pushes on top of it. See InputMap.h.
+    InputMap::PushContext("gameplay");
+    return true;
 }
 
+void Engine::InputSubsystem::Shutdown() {
+    InputMap::ClearBindings();
+}
+
+// The scene, and the systems that run on it.
+//
+// Needs textures (components load them as they attach), messaging, and the
+// scripts, so a ScriptComponent finds its behaviour as the scene loads rather
+// than a frame later.
+bool Engine::SceneSubsystem::Init(const BootConfig&) {
+    Engine& engine = Engine::Get();
+
+    // Tell the factory which type names mean which classes. Until this has
+    // run, nothing in a scene file means anything.
+    ComponentFactory::RegisterBuiltins();
+    CollisionSystem::RegisterComponentTypes();
+    SpinSystem::RegisterComponentTypes();
+    ScriptSystem::RegisterComponentTypes();
+
+    engine.m_spinSystem   = std::make_unique<SpinSystem>();
+    engine.m_scriptSystem = std::make_unique<ScriptSystem>();
+    SystemScheduler::Register(engine.m_spinSystem.get());
+    SystemScheduler::Register(engine.m_scriptSystem.get());
+
+    engine.m_scene = std::make_unique<Scene>();
+    Scene::SetActive(engine.m_scene.get());
+    return true;
+}
+
+void Engine::SceneSubsystem::Shutdown() {
+    Engine& engine = Engine::Get();
+
+    if (engine.m_scene != nullptr) {
+        engine.m_scene->Unload();
+    }
+    if (engine.m_spinSystem != nullptr) {
+        SystemScheduler::Unregister(engine.m_spinSystem.get());
+        engine.m_spinSystem.reset();
+    }
+    if (engine.m_scriptSystem != nullptr) {
+        SystemScheduler::Unregister(engine.m_scriptSystem.get());
+        engine.m_scriptSystem.reset();
+    }
+    SpinSystem::Clear();
+    ScriptSystem::Clear();
+    SpriteRenderSystem::Clear();
+    Scene::SetActive(nullptr);
+    engine.m_scene.reset();
+}
+
+// Collision. Needs messaging and the scene.
+bool Engine::CollisionSubsystem::Init(const BootConfig&) {
+    Engine& engine = Engine::Get();
+
+    engine.m_collisionSystem = std::make_unique<CollisionSystem>();
+    SystemScheduler::Register(engine.m_collisionSystem.get());
+
+    // Scripts hear about collisions through the message bus, so this
+    // subscription belongs after collision exists.
+    ScriptSystem::SubscribeToCollisions();
+    return true;
+}
+
+void Engine::CollisionSubsystem::Shutdown() {
+    Engine& engine = Engine::Get();
+
+    if (engine.m_collisionSystem != nullptr) {
+        SystemScheduler::Unregister(engine.m_collisionSystem.get());
+    }
+    CollisionSystem::Clear();
+    engine.m_collisionSystem.reset();
+}
+
+// ===========================================================================
+//  THE START-UP ORDER. This list is the most important thing in the engine.
+//
+//  Every line hands over one object and a name. Adding one does NOT start it -
+//  nothing runs until Init calls InitAll, further down this file.
+//
+//  The order they are added in IS the order they start in, and each one may
+//  assume everything above it is already running. Shutting down happens in the
+//  exact reverse, from the bottom of this list back up to the top.
+//
+//    Log         everything writes to it, including everything else's own
+//                shutdown message, so it is first up and last down
+//    FileSystem  turns "textures/player.bmp" into a real path
+//    Window      needs the settings for its size
+//    Renderer    needs the window it draws into
+//    EditorGui   after the renderer exists, and only when there is an editor
+//    Input       events come from the window
+//    Resources   needs the file system to read textures, and the renderer to
+//                hand them to the graphics card
+//    Gizmos      needs the renderer
+//    Messaging   nothing to start; it is in the list so that it is CLEARED
+//                before collision on the way down, and collision sends
+//                through it
+//    Scripts     BEFORE the scene, which means it is unloaded AFTER it.
+//                Unloading the scene destroys script objects that live in the
+//                script library; unload the library first and the scene's
+//                teardown would be calling destructors that no longer exist
+//    Scene       needs textures, messaging and the scripts
+//    Collision   needs messaging and the scene
+// ===========================================================================
+void Engine::RegisterBuiltinSubsystems(const Options& options) {
+    m_subsystems.Add("Log",        m_log);
+    m_subsystems.Add("FileSystem", m_fileSystem);
+    m_subsystems.Add("Window",     m_window);
+    m_subsystems.Add("Renderer",   m_renderer);
+
+    // Only when the editor supplied them. The standalone game never does.
+    if (options.guiInit) {
+        m_gui.Use(options.guiInit, options.guiShutdown);
+        m_subsystems.Add("EditorGui", m_gui);
+    }
+
+    m_subsystems.Add("Input",      m_input);
+    m_subsystems.Add("Resources",  m_resources);
+    m_subsystems.Add("Gizmos",     m_gizmos);
+    m_subsystems.Add("Messaging",  m_messaging);
+    m_subsystems.Add("Scripts",    m_scripts);
+    m_subsystems.Add("Scene",      m_sceneSubsystem);
+    m_subsystems.Add("Collision",  m_collisionSubsystem);
+}
 bool Engine::Init(const Options& options) {
 
     // Two things have to happen BEFORE the ordered start-up above: the
     // settings file has to be read (the log's level and the window's size come
     // from it), and the file system has to exist in order to read it.
     //
-    // FileSystem::Init is therefore called twice - once here, quietly, and
+    // The file system is therefore started twice - once here, quietly, and
     // once inside the ordered list where it writes to the log and takes part
-    // in the ordered shutdown. Calling it twice is harmless.
-    FileSystem::Init();
+    // in the ordered shutdown. Starting it twice is harmless, and it ignores
+    // the settings anyway, which is just as well: they have not been read yet
+    // and m_config is still all defaults on this line.
+    m_fileSystem.Init(m_config);
 
     std::string configError;
     if (!LoadBootConfig(options.configPath, m_config, m_configDocument, configError)) {
@@ -228,7 +257,7 @@ bool Engine::Init(const Options& options) {
 
     ENGINE_LOG_INFO(Channels::kCore, "starting {} subsystems in order",
                     m_subsystems.Count());
-    if (!m_subsystems.InitAll()) {
+    if (!m_subsystems.InitAll(m_config)) {
         // Everything that did start has already been shut down in reverse.
         return false;
     }

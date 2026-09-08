@@ -45,6 +45,17 @@ std::string ScriptLibrary::DefaultVirtualPath() {
 #endif
 }
 
+bool ScriptLibrary::Init(const BootConfig&) {
+    // A project with no scripts is fine and returns true. Only a library that
+    // exists and will not load is a failure.
+    std::string error;
+    return Load(DefaultVirtualPath(), error);
+}
+
+void ScriptLibrary::Shutdown() {
+    Unload();
+}
+
 bool ScriptLibrary::Load(std::string_view virtualPath, std::string& outError) {
     // Step 1 to 3 of the order in the header: get rid of the old one first.
     Unload();

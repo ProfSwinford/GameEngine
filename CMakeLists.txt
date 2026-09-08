@@ -13,7 +13,7 @@
 #                    is written out in engine/CMakeLists.txt.
 #      sandbox/      the game, running on its own.
 #      editor/       the development environment.
-#      tests/        the unit tests.
+#      tests/        the unit tests. 
 #
 #  ---------------------------------------------------------------------------
 #  NOTE WHAT CMAKE DOES NOT BUILD: the project's scripts.

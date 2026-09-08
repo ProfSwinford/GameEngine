@@ -56,7 +56,7 @@ bool LooksLikeRoot(const fs::path& directory) {
 
 } // namespace
 
-bool FileSystem::Init() {
+bool FileSystem::Init(const BootConfig&) {
     // An explicit override, checked FIRST.
     //
     // The upward search below assumes the program is running from inside the

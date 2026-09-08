@@ -30,17 +30,20 @@
 //  look at.
 // ============================================================================
 
+#include <engine/core/Subsystem.h>
+
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace eng {
 
-class FileSystem {
+class FileSystem : public Subsystem {
 public:
-    // Works out where the project's files are and remembers it.
-    static bool Init();
-    static void Shutdown();
+    // Works out where the project's files are and remembers it. Nothing in the
+    // settings affects that, so the config is accepted and ignored.
+    bool Init(const BootConfig& config) override;
+    void Shutdown() override;
 
     static const std::string& AssetRoot();
 

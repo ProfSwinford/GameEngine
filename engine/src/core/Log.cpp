@@ -12,6 +12,7 @@
 //  other .cpp can see or accidentally reuse them.
 // ============================================================================
 
+#include <engine/core/Config.h>
 #include <engine/core/Log.h>
 #include <engine/core/LogBuffer.h>
 
@@ -92,14 +93,17 @@ bool ParseLogLevel(std::string_view text, LogLevel& out) {
     return false;
 }
 
-bool Log::Init(std::string_view logFilePath, LogLevel threshold) {
+bool Log::Init(const BootConfig& config) {
+    // How many messages the editor's Console window keeps; see LogBuffer.h.
+    LogBuffer::SetCapacity(static_cast<std::size_t>(config.logBufferCapacity));
+
     g_start            = std::chrono::steady_clock::now();
     g_lastFlushSeconds = 0.0;
     g_pendingLines     = 0;
-    g_threshold        = threshold;
+    g_threshold        = config.logThreshold;
 
-    if (!logFilePath.empty()) {
-        const std::string path(logFilePath);
+    if (!config.logFile.empty()) {
+        const std::string path(config.logFile);
 
         // Create the folder the log file lives in if it is missing, so that a
         // freshly cloned copy of the project writes "logs/engine.log" without

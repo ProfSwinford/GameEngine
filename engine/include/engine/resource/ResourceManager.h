@@ -30,6 +30,7 @@
 //  Preview and every image editor can save a .bmp.
 // ============================================================================
 
+#include <engine/core/Subsystem.h>
 #include <engine/render/Texture.h>
 
 #include <string>
@@ -37,14 +38,16 @@
 
 namespace eng {
 
-class ResourceManager {
+class ResourceManager : public Subsystem {
 public:
-    static bool Init();
+    // Nothing in the settings affects the texture cache, so the config is
+    // accepted and ignored.
+    bool Init(const BootConfig& config) override;
 
     // Reports anything still loaded, then clears the cache. Textures still
     // being used by something at this point are named in the log, because that
     // almost always means a scene was not unloaded.
-    static void Shutdown();
+    void Shutdown() override;
 
     // Loads an image, or returns the already-loaded one.
     //

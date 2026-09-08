@@ -9,6 +9,7 @@
 //  allows the same list to be drawn into two different views in one frame.
 // ============================================================================
 
+#include <engine/core/Config.h>
 #include <engine/render/Camera.h>
 #include <engine/render/Gizmos.h>
 
@@ -293,6 +294,15 @@ bool Gizmos::IsCategoryEnabled(GizmoCategory category) {
         return true;
     }
     return g_categoryEnabled[slot];
+}
+
+bool Gizmos::Init(const BootConfig& config) {
+    SetCircleSegments(config.gizmoCircleSegments);
+    return true;
+}
+
+void Gizmos::Shutdown() {
+    Clear();
 }
 
 void Gizmos::SetCircleSegments(int segments) {

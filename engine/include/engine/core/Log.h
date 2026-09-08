@@ -44,6 +44,8 @@
 //  string first just to hand it over and have it thrown away.
 // ============================================================================
 
+#include <engine/core/Subsystem.h>
+
 #include <format>
 #include <string_view>
 
@@ -92,20 +94,23 @@ inline constexpr std::string_view kEditor   = "Editor";
 inline constexpr std::string_view kGame     = "Game";
 } // namespace Channels
 
-// The log itself. Every function is static because there is exactly one log
-// for the whole program and passing a pointer to it through every subsystem
-// would be noise.
-class Log {
+// The log itself, and the engine's first subsystem.
+//
+// Init and Shutdown are the two the engine's start-up list calls, so they are
+// ordinary member functions marked `override`. Everything else is static,
+// because there is exactly one log for the whole program and threading a
+// pointer to it through every subsystem would be noise.
+class Log : public Subsystem {
 public:
     // Opens the log file and starts the clock that timestamps each message.
-    // Pass an empty path for "terminal and Console window only", which is what
-    // the unit tests want.
-    static bool Init(std::string_view logFilePath, LogLevel threshold);
+    // An empty logFile setting means "terminal and Console window only", which
+    // is what the unit tests want.
+    bool Init(const BootConfig& config) override;
 
     // Flushes and closes the file. The log is started first and shut down last
     // of everything in the engine, so that a subsystem can still report a
     // problem while it is being torn down.
-    static void Shutdown();
+    void Shutdown() override;
 
     static bool IsInitialised();
 

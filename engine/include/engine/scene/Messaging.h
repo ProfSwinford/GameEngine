@@ -44,6 +44,7 @@
 //  ==========================================================================
 // ============================================================================
 
+#include <engine/core/Subsystem.h>
 #include <engine/scene/EntityId.h>
 
 #include <functional>
@@ -83,8 +84,14 @@ inline constexpr const char* kCollisionStay  = "CollisionStay";
 inline constexpr const char* kCollisionExit  = "CollisionExit";
 } // namespace MessageTypes
 
-class MessageBus {
+class MessageBus : public Subsystem {
 public:
+    // There is nothing to start. The bus is in the ordered list purely so that
+    // it is EMPTIED at the right moment on the way down - before collision,
+    // which sends through it.
+    bool Init(const BootConfig& config) override;
+    void Shutdown() override;
+
     // Listen for one kind of message, wherever it came from and whoever it was
     // aimed at. There is only one kind of subscription: a handler that cares
     // about one particular entity compares message.target itself, which is

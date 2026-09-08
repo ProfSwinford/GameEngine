@@ -41,6 +41,7 @@
 //  Neither can do the other's job, and there is no overlap between them.
 // ============================================================================
 
+#include <engine/core/Subsystem.h>
 #include <engine/math/Mat3.h>
 #include <engine/math/Overlap.h>
 #include <engine/math/Vec2.h>
@@ -69,8 +70,14 @@ enum class GizmoCategory {
 
 const char* ToString(GizmoCategory category);
 
-class Gizmos {
+class Gizmos : public Subsystem {
 public:
+    // Reads how round a drawn circle should look out of the settings.
+    bool Init(const BootConfig& config) override;
+
+    // Throws away anything still queued to be drawn.
+    void Shutdown() override;
+
     static void Line(Vec2 a, Vec2 b, Color color, float lifetimeSeconds = 0.0f,
                      GizmoSpace space = GizmoSpace::World,
                      GizmoCategory category = GizmoCategory::Default);

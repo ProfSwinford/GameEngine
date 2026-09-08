@@ -6,6 +6,7 @@
 //  machine: no display, an old graphics driver, a remote desktop session.
 // ============================================================================
 
+#include <engine/core/Config.h>
 #include <engine/core/Log.h>
 #include <engine/platform/Window.h>
 
@@ -13,8 +14,11 @@
 
 namespace eng {
 
-Window::Window(const char* title, int width, int height)
-    : m_title(title != nullptr ? title : "Engine2D") {
+bool Window::Init(const BootConfig& config) {
+    m_title = config.windowTitle.empty() ? "Engine2D" : config.windowTitle;
+
+    const int width  = config.windowWidth;
+    const int height = config.windowHeight;
 
     // Step 1: start SDL's video support.
     //
@@ -24,7 +28,7 @@ Window::Window(const char* title, int width, int height)
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         ENGINE_LOG_ERROR(Channels::kPlatform, "could not start SDL video: {}",
                          SDL_GetError());
-        return;   // both pointers stay null, so IsValid() will report false
+        return false;   // both pointers stay null
     }
     m_videoInitialised = true;
 
@@ -45,7 +49,7 @@ Window::Window(const char* title, int width, int height)
         // up - which is precisely what unique_ptr is for on an error path.
         m_window.reset(rawWindow);
         m_renderer.reset(rawRenderer);
-        return;
+        return false;
     }
 
     // reset() hands the raw pointer to the unique_ptr, which now owns it. From
@@ -63,9 +67,16 @@ Window::Window(const char* title, int width, int height)
 
     ENGINE_LOG_INFO(Channels::kPlatform, "window created: {}x{} \"{}\" (drawing with {})",
                     width, height, m_title, SDL_GetRendererName(m_renderer.get()));
+    return true;
 }
 
-Window::~Window() {
+void Window::Shutdown() {
+    // Nothing was ever opened, or it has already been closed. Shutdown has to
+    // survive being called twice, because the destructor calls it as well.
+    if (m_window == nullptr && m_renderer == nullptr && !m_videoInitialised) {
+        return;
+    }
+
     ENGINE_LOG_INFO(Channels::kPlatform, "window closed");
 
     // The member declaration order in Window.h would already do this in the
@@ -80,9 +91,13 @@ Window::~Window() {
     }
 
     // SDL_Quit() is deliberately NOT called here. Other parts of the engine
-    // also use SDL, and shutting the whole library down from this destructor
-    // would pull the floor out from under them. The engine calls SDL_Quit once
-    // at the very end of its own shutdown.
+    // also use SDL, and shutting the whole library down from here would pull
+    // the floor out from under them. The engine calls SDL_Quit once at the
+    // very end of its own shutdown.
+}
+
+Window::~Window() {
+    Shutdown();
 }
 
 bool Window::IsValid() const {

@@ -114,7 +114,7 @@ Texture::~Texture() {
     }
 }
 
-bool ResourceManager::Init() {
+bool ResourceManager::Init(const BootConfig&) {
     g_initialised = true;
     ENGINE_LOG_INFO(Channels::kResource, "resource manager ready");
     return true;

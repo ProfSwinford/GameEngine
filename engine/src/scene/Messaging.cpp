@@ -132,6 +132,14 @@ void MessageBus::Dispatch() {
     Compact();
 }
 
+bool MessageBus::Init(const BootConfig&) {
+    return true;
+}
+
+void MessageBus::Shutdown() {
+    Clear();
+}
+
 void MessageBus::Clear() {
     g_subscriptions.clear();
     g_queue.clear();
