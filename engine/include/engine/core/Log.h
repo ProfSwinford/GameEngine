@@ -43,7 +43,7 @@
 //  the cost of building its own text. A plain function would have to build the
 //  string first just to hand it over and have it thrown away.
 // ============================================================================
-
+#include <engine/core/Subsystem.h>
 #include <format>
 #include <string_view>
 
@@ -95,17 +95,17 @@ inline constexpr std::string_view kGame     = "Game";
 // The log itself. Every function is static because there is exactly one log
 // for the whole program and passing a pointer to it through every subsystem
 // would be noise.
-class Log {
+class Log : public Subsystem {
 public:
     // Opens the log file and starts the clock that timestamps each message.
     // Pass an empty path for "terminal and Console window only", which is what
     // the unit tests want.
-    static bool Init(std::string_view logFilePath, LogLevel threshold);
+    bool Init(const BootConfig& config) override;
 
     // Flushes and closes the file. The log is started first and shut down last
     // of everything in the engine, so that a subsystem can still report a
     // problem while it is being torn down.
-    static void Shutdown();
+    void Shutdown() override;
 
     static bool IsInitialised();
 

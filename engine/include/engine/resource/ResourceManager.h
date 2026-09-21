@@ -31,20 +31,21 @@
 // ============================================================================
 
 #include <engine/render/Texture.h>
+#include <engine/core/Subsystem.h>
 
 #include <string>
 #include <string_view>
 
 namespace eng {
 
-class ResourceManager {
+class ResourceManager : public Subsystem{
 public:
-    static bool Init();
+    bool Init(const BootConfig& config) override;
 
     // Reports anything still loaded, then clears the cache. Textures still
     // being used by something at this point are named in the log, because that
     // almost always means a scene was not unloaded.
-    static void Shutdown();
+    void Shutdown() override;
 
     // Loads an image, or returns the already-loaded one.
     //

@@ -88,7 +88,6 @@ public:
         std::function<bool()> guiInit;
         std::function<void()> guiShutdown;
     };
-
     // There is exactly one engine. Get() returns it.
     static Engine& Get();
 
@@ -158,11 +157,63 @@ private:
     Engine() = default;
 
     void RegisterBuiltinSubsystems(const Options& options);
+    
+    //#pragma region hide
+    class RendererSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+
+    class GuiSubsystem : public Subsystem { //Editor
+    public:
+        bool Init(const BootConfig& config) override;
+        void Use(std::function<bool()> init, std::function<void()> shutdown);
+        void Shutdown() override;
+    
+    private:
+        std::function<bool()> m_init;
+        std::function<void()> m_shutdown;
+    };
+
+    class InputSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+    class SceneSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+    class CollisionSubsystem : public Subsystem {
+    public:
+        bool Init(const BootConfig& config) override;
+        void Shutdown() override;
+    };
+    //#pragma endregion
+
+    //static Engine instance;
+
+    Log m_log;
+    FileSystem m_fileSystem;
+    Window m_window;
+    RendererSubsystem m_renderer;
+    GuiSubsystem m_gui; // Editor
+
+    //InputSubsystem m_input;
+    //ResourceManager m_resources;
+    //Gizmos m_gizmos;
+    //MessageBus m_messaging;
+    //ScriptLibrary m_scripts;
+    //SceneSubsystem m_sceneSubsystem;
+    //CollisionSubsystem m_collisionSubsystem;
+
+
 
     SubsystemStack          m_subsystems;
     BootConfig              m_config;
     Json                    m_configDocument = Json::object();
-    std::unique_ptr<Window> m_window;
     std::unique_ptr<Scene>  m_scene;
 
     std::unique_ptr<CollisionSystem> m_collisionSystem;

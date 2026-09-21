@@ -48,11 +48,16 @@
 
 #include <string>
 #include <string_view>
+#include <engine/core/Subsystem.h>
 
 namespace eng {
 
-class ScriptLibrary {
+class ScriptLibrary : public Subsystem{
 public:
+
+    bool Init(const BootConfig& config) override;
+    void Shutdown() override;
+
     // The file name the editor builds and this loads, for the platform being
     // run on - ".build/userContent.dll" on Windows, ".so" on Linux,
     // ".dylib" on macOS. A virtual path, so it resolves the same way anywhere.

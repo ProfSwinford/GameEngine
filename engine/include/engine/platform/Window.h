@@ -22,25 +22,22 @@
 // ============================================================================
 
 #include <engine/platform/SdlHandles.h>
+#include <engine/core/Subsystem.h>
 
 #include <string>
 
 namespace eng {
 
-class Window {
+class Window : public Subsystem {
 public:
-    // Opens a window of the given size with the given title.
-    //
-    // If anything fails - no display attached, a driver problem - the object
-    // is left INVALID rather than half-built, an explanation is written to the
-    // log, and IsValid() returns false. No exception is thrown: a display that
-    // will not open is a problem with the machine, not a bug in the code, and
-    // the caller should be able to react to it and exit tidily.
-    Window(const char* title, int width, int height);
+    Window() = default; // This
+
+    bool Init(const BootConfig& config) override;
+    void Shutdown() override;
 
     // Closes the renderer first and then the window, in that order. A window
     // destroyed out from under its own renderer is a crash.
-    ~Window();
+    ~Window() override;
 
     Window(const Window&)            = delete;
     Window& operator=(const Window&) = delete;
@@ -84,7 +81,7 @@ private:
     RendererPtr m_renderer;
 
     bool        m_videoInitialised = false;
-    std::string m_title;
+    std::string m_title = "Orion Engine";
 };
 
 } // namespace eng

@@ -24,12 +24,12 @@
 //  everything registered before it is already running.
 // ============================================================================
 
-#include <functional>
-#include <memory>
 #include <string>
 #include <vector>
 
 namespace eng {
+
+struct BootConfig;
 
 // One startable, stoppable piece of the engine.
 class Subsystem {
@@ -42,10 +42,9 @@ public:
     // to start is usually a problem with the machine - no display, a missing
     // file, no sound device - and the engine has to be able to respond to that
     // and exit tidily rather than simply dying.
-    virtual bool Init() = 0;
+    virtual bool Init(const BootConfig& config) = 0;
 
     virtual void Shutdown() = 0;
-    virtual const char* Name() const = 0;
 };
 
 // A Subsystem built from two functions, for the many cases where starting up
@@ -55,27 +54,12 @@ public:
 //
 // std::function is the standard "any callable thing" type, so the two
 // arguments can be plain functions or lambdas.
-class LambdaSubsystem final : public Subsystem {
-public:
-    LambdaSubsystem(std::string name, std::function<bool()> init,
-                    std::function<void()> shutdown)
-        : m_name(std::move(name)), m_init(std::move(init)),
-          m_shutdown(std::move(shutdown)) {}
 
-    bool Init() override { return m_init ? m_init() : true; }
-    void Shutdown() override { if (m_shutdown) { m_shutdown(); } }
-    const char* Name() const override { return m_name.c_str(); }
-
-private:
-    std::string           m_name;
-    std::function<bool()> m_init;
-    std::function<void()> m_shutdown;
-};
 
 // The list of subsystems, in the order they start.
 class SubsystemStack {
 public:
-    void Register(std::unique_ptr<Subsystem> subsystem);
+    void Add(std::string name, Subsystem& subsystem);
 
     // Starts everything in registration order, writing each one to the log.
     //
@@ -84,20 +68,22 @@ public:
     // shutting down something that never started is how a tidy-up crashes),
     // the ones after it are never touched, and this returns false so the
     // program can print a message and exit.
-    bool InitAll();
+    bool InitAll(const BootConfig& config);
 
     // Shuts everything down in the exact reverse of the order it started.
     // Safe to call after a failed InitAll - that already unwound itself.
     void ShutdownAll();
 
-    std::size_t Count() const { return m_subsystems.size(); }
-
-    // Lists what is registered and whether it is currently running.
-    void ForEach(const std::function<void(const Subsystem&, bool running)>& fn) const;
+    std::size_t Count() const { return m_entries.size(); }
 
 private:
-    std::vector<std::unique_ptr<Subsystem>> m_subsystems;
-    std::size_t                             m_initialisedCount = 0;
+    struct Entry {
+        std::string name;
+        Subsystem* system = nullptr;
+    };
+
+    std::vector<Entry> m_entries;
+    std::size_t        m_startedCount = 0;
 };
 
 } // namespace eng

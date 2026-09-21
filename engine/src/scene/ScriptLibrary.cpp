@@ -12,8 +12,12 @@
 #include <engine/scene/ScriptLibrary.h>
 
 namespace eng {
-
-// Where the compiled scripts live. The one definition of the name, used by the
+bool ScriptLibrary::Init(const BootConfig& config) {
+    return false;
+}
+void ScriptLibrary::Shutdown() {
+}
+    // Where the compiled scripts live. The one definition of the name, used by the
 // engine that loads the file and the editor that writes it.
 std::string ScriptLibrary::DefaultVirtualPath() {
     return {};

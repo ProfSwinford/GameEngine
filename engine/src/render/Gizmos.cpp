@@ -11,6 +11,13 @@
 
 namespace eng {
 
+bool Gizmos::Init(const BootConfig& config) {
+    return false;
+}
+
+void Gizmos::Shutdown() {
+}
+
 // Turns a category into a readable name, for the editor's Gizmos menu.
 const char* ToString(GizmoCategory /*category*/) {
     return "Default";

@@ -45,6 +45,7 @@
 #include <engine/math/Overlap.h>
 #include <engine/math/Vec2.h>
 #include <engine/render/Renderer.h>
+#include <engine/core/Subsystem.h>
 
 namespace eng {
 
@@ -69,8 +70,11 @@ enum class GizmoCategory {
 
 const char* ToString(GizmoCategory category);
 
-class Gizmos {
+class Gizmos : public Subsystem {
 public:
+    bool Init(const BootConfig& config) override;
+    void Shutdown() override;
+
     static void Line(Vec2 a, Vec2 b, Color color, float lifetimeSeconds = 0.0f,
                      GizmoSpace space = GizmoSpace::World,
                      GizmoCategory category = GizmoCategory::Default);

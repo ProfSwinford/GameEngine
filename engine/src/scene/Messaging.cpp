@@ -11,6 +11,14 @@
 
 namespace eng {
 
+bool MessageBus::Init(const BootConfig& config) {
+    return false;
+}
+
+void MessageBus::Shutdown() {
+}
+
+
 // Listens for one kind of message and hands back an id for cancelling it later.
 // A handler that only cares about one entity compares message.target itself.
 SubscriptionId MessageBus::SubscribeBroadcast(std::string_view /*type*/,
