@@ -72,7 +72,7 @@ public:
     static void SetGameInputFocus(bool focused);
     static bool HasGameInputFocus();
 
-    static bool IsInitialised();
+    static bool Isinitialized();
 };
 
 } // namespace editor

@@ -151,7 +151,7 @@ public:
     void ExitPlayMode();
     bool IsInPlayMode() const { return m_inPlayMode; }
 
-    bool IsInitialised() const { return m_initialised; }
+    bool Isinitialized() const { return m_initialized; }
 
 private:
     Engine() = default;
@@ -226,7 +226,7 @@ private:
 
     double m_lastFrameTicks = 0.0;
     int    m_stepsThisFrame = 0;
-    bool   m_initialised    = false;
+    bool   m_initialized    = false;
     bool   m_quitRequested  = false;
     bool   m_inPlayMode     = false;
 

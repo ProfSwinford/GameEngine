@@ -127,7 +127,9 @@ public:
     EntityId Find(std::string_view name) const;
 
     void        ForEach(const std::function<void(Entity&)>& fn);
-    std::size_t EntityCount() const { return m_liveCount; }
+    std::size_t EntityCount() const {
+        return 0; /* m_liveCount;*/
+    }
 
     // Builds one entity from a chunk of JSON in the scene-file entity shape.
     // Public because game code that generates its own entities from its own

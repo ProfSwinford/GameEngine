@@ -80,7 +80,7 @@ private:
     WindowPtr   m_window;
     RendererPtr m_renderer;
 
-    bool        m_videoInitialised = false;
+    bool        m_videoinitialized = false;
     std::string m_title = "Orion Engine";
 };
 

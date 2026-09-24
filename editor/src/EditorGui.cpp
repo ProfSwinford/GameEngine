@@ -21,7 +21,7 @@
 namespace editor {
 namespace {
 
-bool          g_initialised = false;
+bool          g_initialized = false;
 SDL_Renderer* g_renderer    = nullptr;
 bool          g_gameFocus   = false;
 bool          g_layoutBuilt = false;
@@ -33,14 +33,14 @@ bool          g_layoutBuilt = false;
 // ---------------------------------------------------------------------------
 
 bool HookProcessEvent(const void* platformEvent) {
-    if (!g_initialised || platformEvent == nullptr) {
+    if (!g_initialized || platformEvent == nullptr) {
         return false;
     }
     return ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(platformEvent));
 }
 
 bool HookWantsKeyboard() {
-    if (!g_initialised) {
+    if (!g_initialized) {
         return false;
     }
     // While the Game view has focus the editor gives up the keyboard entirely,
@@ -52,13 +52,13 @@ bool HookWantsKeyboard() {
 }
 
 bool HookWantsMouse() {
-    return g_initialised && ImGui::GetIO().WantCaptureMouse;
+    return g_initialized && ImGui::GetIO().WantCaptureMouse;
 }
 
 } // namespace
 
 bool EditorGui::Init(eng::Window& window) {
-    if (g_initialised) {
+    if (g_initialized) {
         return true;
     }
     if (!window.IsValid()) {
@@ -102,7 +102,7 @@ bool EditorGui::Init(eng::Window& window) {
     }
 
     g_renderer    = sdlRenderer;
-    g_initialised = true;
+    g_initialized = true;
 
     // Hand the engine its three function pointers. From here on, every input
     // event goes past ImGui before it reaches the game.
@@ -118,7 +118,7 @@ bool EditorGui::Init(eng::Window& window) {
 }
 
 void EditorGui::Shutdown() {
-    if (!g_initialised) {
+    if (!g_initialized) {
         return;
     }
 
@@ -132,14 +132,14 @@ void EditorGui::Shutdown() {
     ImGui::DestroyContext();
 
     g_renderer    = nullptr;
-    g_initialised = false;
+    g_initialized = false;
     ENGINE_LOG_INFO(eng::Channels::kEditor, "editor interface shut down");
 }
 
-bool EditorGui::IsInitialised() { return g_initialised; }
+bool EditorGui::Isinitialized() { return g_initialized; }
 
 void EditorGui::BeginFrame() {
-    if (!g_initialised) {
+    if (!g_initialized) {
         return;
     }
     ImGui_ImplSDLRenderer3_NewFrame();
@@ -148,7 +148,7 @@ void EditorGui::BeginFrame() {
 }
 
 void EditorGui::EndFrame() {
-    if (!g_initialised) {
+    if (!g_initialized) {
         return;
     }
     ImGui::Render();
@@ -156,7 +156,7 @@ void EditorGui::EndFrame() {
 }
 
 void EditorGui::SetGameInputFocus(bool focused) {
-    if (!g_initialised || focused == g_gameFocus) {
+    if (!g_initialized || focused == g_gameFocus) {
         return;
     }
     g_gameFocus = focused;
@@ -176,7 +176,7 @@ void EditorGui::SetGameInputFocus(bool focused) {
 bool EditorGui::HasGameInputFocus() { return g_gameFocus; }
 
 void EditorGui::BeginDockspace() {
-    if (!g_initialised) {
+    if (!g_initialized) {
         return;
     }
 
@@ -280,7 +280,7 @@ void EditorGui::BeginDockspace() {
 }
 
 void EditorGui::EndDockspace() {
-    if (!g_initialised) {
+    if (!g_initialized) {
         return;
     }
     ImGui::End();

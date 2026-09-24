@@ -109,7 +109,7 @@ void Log::Shutdown() {
 
 // Has the log been opened yet? Anything that might run before start-up asks
 // this first.
-bool Log::IsInitialised() { return g_initialized; }
+bool Log::Isinitialized() { return g_initialized; }
 
 // Sets the lowest level that gets recorded. Anything below it is dropped.
 void Log::SetThreshold(LogLevel level) { g_threshold = level; }
@@ -136,7 +136,7 @@ void Log::Write(std::string_view channel, LogLevel level, std::string_view messa
     LogBuffer::Append(record); //The Editor's console window output
 
     //[1.234][Warning][Resource] | could not load textures
-    const std::string line = std::format("[{:9.3f}] [{:>7}] [{:<12}] | {}",
+    const std::string line = std::format("\n[{:9.3f}] [{:>7}] [{:<12}] | {}",
                                         record.timeSeconds, ToString(level),
                                         record.channel, record.message);
 

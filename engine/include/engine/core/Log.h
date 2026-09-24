@@ -107,7 +107,7 @@ public:
     // problem while it is being torn down.
     void Shutdown() override;
 
-    static bool IsInitialised();
+    static bool Isinitialized();
 
     // Writes one message. The macros below call this; you normally should not.
     static void Write(std::string_view channel, LogLevel level,

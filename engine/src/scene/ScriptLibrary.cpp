@@ -20,7 +20,12 @@ void ScriptLibrary::Shutdown() {
     // Where the compiled scripts live. The one definition of the name, used by the
 // engine that loads the file and the editor that writes it.
 std::string ScriptLibrary::DefaultVirtualPath() {
-    return {};
+
+#if defined(_WIN32)
+    return ".build/userContent.dll";
+#else
+    return ".build/userContent.so";
+#endif
 }
 
 // Loads the compiled script library. Loading it runs the file-scope objects

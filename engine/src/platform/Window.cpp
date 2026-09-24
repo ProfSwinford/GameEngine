@@ -17,7 +17,7 @@ bool Window::Init(const BootConfig& config) {
         return false;
     }
 
-    m_videoInitialised = true;
+    m_videoinitialized = true;
 
     SDL_Window* rawWindow = nullptr;
     SDL_Renderer* rawRenderer = nullptr;
@@ -43,16 +43,16 @@ bool Window::Init(const BootConfig& config) {
 }
 
 void Window::Shutdown() {
-    if (m_window == nullptr && m_renderer == nullptr && !m_videoInitialised) {
+    if (m_window == nullptr && m_renderer == nullptr && !m_videoinitialized) {
         return;
     }
 
     m_renderer.reset();
     m_window.reset();
 
-    if (m_videoInitialised) {
+    if (m_videoinitialized) {
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
-        m_videoInitialised = false;
+        m_videoinitialized = false;
     }
 
     ENGINE_LOG_INFO(Channels::kPlatform, "window closed");
