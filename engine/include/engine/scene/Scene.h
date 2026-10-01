@@ -128,7 +128,7 @@ public:
 
     void        ForEach(const std::function<void(Entity&)>& fn);
     std::size_t EntityCount() const {
-        return 0; /* m_liveCount;*/
+        return m_liveCount;
     }
 
     // Builds one entity from a chunk of JSON in the scene-file entity shape.

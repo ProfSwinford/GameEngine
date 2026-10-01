@@ -5,6 +5,8 @@
 
 #include <engine/render/Camera.h>
 
+#include <algorithm>
+
 namespace eng {
 
 // Sets how close the camera is. A zoom of zero or less would divide by zero

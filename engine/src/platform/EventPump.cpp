@@ -176,12 +176,30 @@ const char* EventPump::KeyName(int code) {
 
 // The reverse: turns a name from the settings file into a key code. Returns a
 // negative number when the name is not a key.
-int EventPump::KeyCodeFromName(const char* /*name*/) {
-    return -1;
+int EventPump::KeyCodeFromName(const char* name) {
+    if (name == nullptr) {
+        return -1;
+    }
+    const SDL_Scancode code = SDL_GetScancodeFromName(name);
+    return (code == SDL_SCANCODE_UNKNOWN) ? -1 : static_cast<int>(code);
 }
 
 // The same, for mouse buttons: Left, Right or Middle.
-int EventPump::MouseButtonFromName(const char* /*name*/) {
+int EventPump::MouseButtonFromName(const char* name) {
+    if (name == nullptr) {
+        return -1;
+    }
+    // SDL_strcasecmp compares ignoring capitalisation, so "left" and "Left"
+    // both work in a config file.
+    if (SDL_strcasecmp(name, "Left") == 0) {
+        return SDL_BUTTON_LEFT;
+    }
+    if (SDL_strcasecmp(name, "Right") == 0) {
+        return SDL_BUTTON_RIGHT;
+    }
+    if (SDL_strcasecmp(name, "Middle") == 0) {
+        return SDL_BUTTON_MIDDLE;
+    }
     return -1;
 }
 

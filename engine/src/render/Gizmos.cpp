@@ -7,7 +7,14 @@
 //  argument is for, and it is why this is a queue and not a set of draw calls.
 // =============================================================================
 
+#include <engine/core/Config.h>
+#include <engine/render/Camera.h>
 #include <engine/render/Gizmos.h>
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
 
 namespace eng {
 

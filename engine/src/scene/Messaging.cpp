@@ -7,7 +7,14 @@
 //  having to include each other.
 // =============================================================================
 
+#include <engine/core/Log.h>
 #include <engine/scene/Messaging.h>
+#include <engine/scene/Scene.h>
+
+#include <algorithm>
+#include <deque>
+#include <memory>
+#include <vector>
 
 namespace eng {
 

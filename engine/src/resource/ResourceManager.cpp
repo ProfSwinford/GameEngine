@@ -4,7 +4,16 @@
 //  before filling one in.
 // =============================================================================
 
+#include <engine/core/Log.h>
+#include <engine/fs/FileSystem.h>
+#include <engine/platform/SdlHandles.h>
+#include <engine/render/Renderer.h>
 #include <engine/resource/ResourceManager.h>
+
+#include <SDL3/SDL.h>
+
+#include <unordered_map>
+#include <vector>
 
 namespace eng {
 

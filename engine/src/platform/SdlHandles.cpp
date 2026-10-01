@@ -8,24 +8,30 @@
 
 #include <engine/platform/SdlHandles.h>
 
+#include <SDL3/SDL.h>
+
 namespace eng {
 
 // Destroys an SDL window. Called automatically when the WindowPtr holding it
 // goes out of scope, so there is no matching "close" call to remember.
-void SdlWindowDeleter::operator()(SDL_Window* /*window*/) const noexcept {
+void SdlWindowDeleter::operator()(SDL_Window* window) const noexcept {
+    SDL_DestroyWindow(window);
 }
 
 // Destroys an SDL renderer, the same way and for the same reason.
-void SdlRendererDeleter::operator()(SDL_Renderer* /*renderer*/) const noexcept {
+void SdlRendererDeleter::operator()(SDL_Renderer* renderer) const noexcept {
+    SDL_DestroyRenderer(renderer);
 }
 
 // Frees an SDL surface - the in-memory picture an image file is read into
 // before it is handed to the graphics card.
-void SdlSurfaceDeleter::operator()(SDL_Surface* /*surface*/) const noexcept {
+void SdlSurfaceDeleter::operator()(SDL_Surface* surface) const noexcept {
+    SDL_DestroySurface(surface);
 }
 
 // Destroys an SDL texture - a picture that already lives on the graphics card.
-void SdlTextureDeleter::operator()(SDL_Texture* /*texture*/) const noexcept {
+void SdlTextureDeleter::operator()(SDL_Texture* texture) const noexcept {
+    SDL_DestroyTexture(texture);
 }
 
 } // namespace eng
