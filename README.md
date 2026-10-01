@@ -206,11 +206,11 @@ never rebuild the editor. That does need a C++ compiler installed - see
 If you would rather just start opening files, these three are the ones that
 explain the most:
 
-- `engine/include/engine/scene/Entity.h` - what a game object actually is, and
+- `engine/src/engine/modules/Entities.h` - what a game object actually is, and
   why it is a bag of components rather than a family tree of classes.
-- `engine/include/engine/core/GameClock.h` - why the game is simulated at a
+- `engine/src/engine/modules/Time.h` - why the game is simulated at a
   fixed rate and drawn at a different one.
-- `engine/include/engine/scene/DeferredOps.h` - why creating and destroying
+- `engine/src/engine/modules/Entities.h` - why creating and destroying
   things is queued, and what goes wrong when it is not.
 
 ---
@@ -221,12 +221,12 @@ Each of these is written out in full at the top of the file that owns it,
 because each is the kind of decision that costs an afternoon when it only
 lives in somebody's head.
 
-- **Matrices** - `engine/include/engine/math/Mat3.h`. Points are written as
+- **Matrices** - `engine/src/engine/modules/Math.h`. Points are written as
   rows, so "do A and then B" is written `A * B`, and the move part of a
   transform lives in the bottom row.
-- **Overlap** - `engine/include/engine/math/Overlap.h`. **Touching counts as
+- **Overlap** - `engine/src/engine/modules/Math.h`. **Touching counts as
   overlapping**, everywhere, in every shape combination.
-- **Collision layers** - `engine/include/engine/physics/Collider.h`. Two
+- **Collision layers** - `engine/src/engine/modules/Physics.h`. Two
   colliders are only tested when EACH one's list includes the other's layer, so
   collision events always come in pairs.
 

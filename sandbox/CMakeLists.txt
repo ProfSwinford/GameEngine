@@ -19,7 +19,7 @@ target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 #
 # The project's scripts are deliberately NOT linked here. They are LOADED at
 # run time from .build/, exactly as the editor loads them - see
-# engine/include/engine/scene/ScriptLibrary.h. One mechanism, used by both
+# engine/src/engine/modules/Scripting.h. One mechanism, used by both
 # programs, so a script cannot work in one and not the other.
 target_link_libraries(sandbox PRIVATE Engine2D::engine)
 

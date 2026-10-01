@@ -59,11 +59,11 @@
 //  entity has been destroyed, so check before using one.
 // =============================================================================
 
-//#include <engine/core/Log.h>
-//#include <engine/math/Transform2D.h>
-//#include <engine/scene/Entity.h>
-//#include <engine/scene/Scene.h>
-//#include <engine/scene/ScriptComponent.h>
+//#include <engine/modules/Diagnostics.h>
+//#include <engine/modules/Math.h>
+//#include <engine/modules/Entities.h>
+//#include <engine/modules/Scene.h>
+//#include <engine/modules/Scripting.h>
 
 #include <engine/Engine.h>
 namespace {

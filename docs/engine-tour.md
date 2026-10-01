@@ -34,7 +34,7 @@ Inside `Simulate()`, systems run in a written-down order:
 900  Gizmos
 ```
 
-`engine/include/engine/scene/SystemOrder.h` explains why that order and not
+`engine/src/engine/modules/Components.h` explains why that order and not
 another one.
 
 ---
@@ -129,7 +129,7 @@ The consequences are worth spelling out:
   one would give the scripts their own private copy of every piece of engine
   state
 
-See `engine/include/engine/scene/ScriptLibrary.h` for how loading works and
+See `engine/src/engine/modules/Scripting.h` for how loading works and
 `editor/src/ScriptBuild.h` for how the compiling works.
 
 The engine links SDL **privately**, which means the game cannot reach SDL

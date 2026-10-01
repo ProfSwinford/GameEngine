@@ -68,7 +68,7 @@ target_link_libraries(editor PRIVATE
 #  ScriptBuild.cpp.
 # ---------------------------------------------------------------------------
 target_compile_definitions(editor PRIVATE
-    ENGINE_SCRIPT_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/engine/include"
+    ENGINE_SCRIPT_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/engine/src"
     ENGINE_SCRIPT_JSON_INCLUDE_DIR="$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>"
     ENGINE_SCRIPT_IMPORT_LIB="$<TARGET_LINKER_FILE:engine>"
     ENGINE_SCRIPT_IS_DEBUG=$<IF:$<CONFIG:Debug>,1,0>)

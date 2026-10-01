@@ -153,7 +153,7 @@ simulation step in the Inspector while its collider is outlined in the Scene
 view. There is no faster way to work out why a collision is not firing.
 
 The speed slider changes how fast game time passes. It does **not** change the
-size of a simulation step - see `engine/include/engine/core/GameClock.h`.
+size of a simulation step - see `engine/src/engine/modules/Time.h`.
 
 When you press Play, the Game view takes the keyboard and shows a green border
 to say so. Clicking any other panel gives it back, so you can keep using the
@@ -174,7 +174,7 @@ Two things worth knowing:
 - **Destroy is deferred.** An entity disappears at the end of the current
   simulation step rather than the instant you click, because the editor obeys
   the same rules as the engine. See
-  `engine/include/engine/scene/DeferredOps.h`.
+  `engine/src/engine/modules/Entities.h`.
 - **There is no undo.** Save before you experiment.
 
 Things the editor deliberately does not do: no rotate or scale handles (move

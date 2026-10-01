@@ -17,7 +17,7 @@
 //  WHAT THE ENGINE STILL NEEDS FROM IT
 //  One thing: first look at input, so that a text box with focus can swallow a
 //  key press before the game sees it. That is arranged through three function
-//  pointers the engine offers - see engine/tools/GuiHooks.h - which Init()
+//  pointers the engine offers - see engine/modules/Platform.h - which Init()
 //  fills in below.
 //
 //  WHAT DEAR IMGUI IS

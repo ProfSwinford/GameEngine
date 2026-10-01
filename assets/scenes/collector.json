@@ -1,6 +1,6 @@
 {
   "_comment": "The sample game. All ten collectibles are placed BY THIS FILE, not by C++. Adding an eleventh needs no code change at all: sandbox/src/CollectorGame.cpp counts the colliders on the Pickup layer rather than assuming a number.",
-  "_layers": "Player, Pickup and World are collision layer names. Two colliders are only tested against each other when EACH one's collidesWith list includes the other's layer - see engine/include/engine/physics/Collider.h.",
+  "_layers": "Player, Pickup and World are collision layer names. Two colliders are only tested against each other when EACH one's collidesWith list includes the other's layer - see engine/src/engine/modules/Physics.h.",
   "name": "Collector",
   "camera": {
     "position": [

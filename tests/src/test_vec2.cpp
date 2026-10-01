@@ -8,7 +8,7 @@
 // ============================================================================
 
 #include <doctest/doctest.h>
-#include <engine/math/Vec2.h>
+#include <engine/modules/Math.h>
 
 using namespace eng;
 

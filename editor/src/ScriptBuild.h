@@ -14,7 +14,7 @@
 //  writes a small build script, runs it, and loads the result. Every .cpp in
 //  the project's assets/ folder - at any depth - is compiled together into ONE
 //  library, .build/userContent.dll, which the engine loads at run time -
-//  see engine/include/engine/scene/ScriptLibrary.h.
+//  see engine/src/engine/modules/Scripting.h.
 //
 //  ==========================================================================
 //  WHEN IT HAPPENS

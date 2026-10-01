@@ -12,9 +12,9 @@
 #include "EditorApp.h"
 #include "ScriptBuild.h"
 
-#include <engine/core/Config.h>
-#include <engine/core/Log.h>
-#include <engine/fs/FileSystem.h>
+#include <engine/modules/Settings.h>
+#include <engine/modules/Diagnostics.h>
+#include <engine/modules/Files.h>
 
 #include <cstdio>
 #include <cstring>

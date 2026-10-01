@@ -9,88 +9,60 @@
 #  Every new .cpp file has to be added to ENGINE_SOURCES below or it simply
 #  will not be compiled. The headers are listed too, purely so they show up in
 #  the project tree in Visual Studio.
+#
+#  WHY THE FOLDER IS src/engine/ AND NOT JUST src/
+#  Each module is two files - Math.h next to Math.cpp - and they are kept in
+#  one folder so that reading a module means opening two files side by side
+#  rather than hunting through two parallel trees.
+#
+#  The inner `engine/` exists for one reason: `src/` is what goes on the
+#  compiler's include path, so a path written as
+#      #include <engine/modules/Math.h>
+#  finds src/engine/modules/Math.h. That prefix is what keeps the engine's
+#  headers from colliding with anybody else's.
 # =============================================================================
  
 set(ENGINE_SOURCES
-    src/Engine.cpp                    # start-up order and the frame loop
+    src/engine/Engine.cpp                    # start-up order and the frame loop 
 
-    src/core/Config.cpp               # reading config/engine.json
-    src/core/GameClock.cpp            # the fixed timestep
-    src/core/Json.cpp                 # safe JSON readers
-    src/core/Log.cpp                  # the message log
-    src/core/LogBuffer.cpp            # the copy the Console window shows
-    src/core/Subsystem.cpp            # ordered start-up and shutdown
-
-    src/fs/FileSystem.cpp             # finding and reading files
-
-    src/input/InputMap.cpp            # key presses -> named actions
-
-    src/math/Mat3.cpp
-    src/math/Overlap.cpp
-    src/math/Random.cpp
-    src/math/Transform2D.cpp
-
-    src/physics/Collider.cpp          # collision shapes and events
-
-    src/platform/EventPump.cpp        # reading input from the OS
-    src/platform/SdlHandles.cpp       # automatic clean-up for SDL objects
-    src/platform/Window.cpp           # the game window
-
-    src/render/Camera.cpp
-    src/render/Gizmos.cpp             # helper shapes drawn over the world
-    src/render/Renderer.cpp           # lines, rectangles, text and sprites
-
-    src/resource/ResourceManager.cpp  # loading images
-
-    src/scene/Component.cpp           # components, the factory, sprites
-    src/scene/DeferredOps.cpp         # safe create and destroy
-    src/scene/Entity.cpp
-    src/scene/Messaging.cpp           # entities talking to each other
-    src/scene/Scene.cpp               # loading and saving levels
-    src/scene/ScriptComponent.cpp     # your own behaviour classes
-    src/scene/SpinComponent.cpp       # a small worked example component
-    src/scene/SystemOrder.cpp         # what updates, in what order
-    src/scene/ScriptLibrary.cpp       # loading the project's compiled scripts
-
-    src/tools/GuiHooks.cpp            # lets the editor see input first
+    src/engine/modules/Subsystem.cpp         # ordered start-up and shutdown
+    src/engine/modules/Diagnostics.cpp       # the message log, and the Console's copy
+    src/engine/modules/Settings.cpp          # reading JSON, and config/engine.json
+    src/engine/modules/Files.cpp             # finding and reading files
+    src/engine/modules/Time.cpp              # the fixed timestep
+    src/engine/modules/Math.cpp              # vectors, matrices, transforms, overlap
+    src/engine/modules/Platform.cpp          # the window, and the events the OS sends
+    src/engine/modules/Input.cpp             # key presses -> named actions
+    src/engine/modules/Rendering.cpp         # textures, the camera, drawing, gizmos
+    src/engine/modules/Physics.cpp           # collision shapes and events
+    src/engine/modules/Assets.cpp            # loading images
+    src/engine/modules/Entities.cpp          # entities, and safe create and destroy
+    src/engine/modules/Scene.cpp             # loading and saving levels
+    src/engine/modules/Components.cpp        # components, the factory, system order
+    src/engine/modules/Scripting.cpp         # your own behaviour classes
+    src/engine/modules/Messaging.cpp         # entities talking to each other
 )
 
 set(ENGINE_HEADERS
-    include/engine/Engine.h
-    include/engine/core/Config.h
-    include/engine/core/GameClock.h
-    include/engine/core/Json.h
-    include/engine/core/Log.h
-    include/engine/core/LogBuffer.h
-    include/engine/core/Subsystem.h
-    include/engine/fs/FileSystem.h
-    include/engine/input/InputMap.h
-    include/engine/math/Mat3.h
-    include/engine/math/Overlap.h
-    include/engine/math/Random.h
-    include/engine/math/Transform2D.h
-    include/engine/math/Vec2.h
-    include/engine/physics/Collider.h
-    include/engine/platform/EventPump.h
-    include/engine/platform/SdlHandles.h
-    include/engine/platform/Window.h
-    include/engine/render/Camera.h
-    include/engine/render/Gizmos.h
-    include/engine/render/Renderer.h
-    include/engine/render/Texture.h
-    include/engine/resource/ResourceManager.h
-    include/engine/scene/Component.h
-    include/engine/scene/DeferredOps.h
-    include/engine/scene/Entity.h
-    include/engine/scene/EntityId.h
-    include/engine/scene/Messaging.h
-    include/engine/scene/Scene.h
-    include/engine/scene/ScriptComponent.h
-    include/engine/scene/ScriptHooks.h
-    include/engine/scene/SpinComponent.h
-    include/engine/scene/SystemOrder.h
-    include/engine/scene/ScriptLibrary.h
-    include/engine/tools/GuiHooks.h
+    src/engine/Engine.h           # the one header a game includes
+
+    src/engine/modules/Assets.h
+    src/engine/modules/Components.h
+    src/engine/modules/Diagnostics.h
+    src/engine/modules/Entities.h
+    src/engine/modules/Files.h
+    src/engine/modules/Input.h
+    src/engine/modules/Math.h
+    src/engine/modules/Messaging.h
+    src/engine/modules/Physics.h
+    src/engine/modules/Platform.h
+    src/engine/modules/Rendering.h
+    src/engine/modules/Scene.h
+    src/engine/modules/ScriptHooks.h
+    src/engine/modules/Scripting.h
+    src/engine/modules/Settings.h
+    src/engine/modules/Subsystem.h
+    src/engine/modules/Time.h
 )
 
 add_library(engine SHARED ${ENGINE_SOURCES} ${ENGINE_HEADERS})
@@ -113,10 +85,13 @@ add_library(Engine2D::engine ALIAS engine)
 # ---------------------------------------------------------------------------
 set_target_properties(engine PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
-# PUBLIC means "anything that links the engine also gets this include folder",
-# which is what lets the game, the editor and a project's scripts all write
+# PUBLIC means "anything that links the engine also gets this folder on its
+# include path", which is what lets the game, the editor and a project's
+# scripts all write
 #     #include <engine/Engine.h>
-target_include_directories(engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# The .cpp files sitting in the same folders are simply never included by
+# anybody, so having them there costs nothing.
+target_include_directories(engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------
 #  SDL is linked PRIVATE, and that is a deliberate boundary rather than a

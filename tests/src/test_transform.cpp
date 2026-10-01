@@ -8,8 +8,8 @@
 // ============================================================================
 
 #include <doctest/doctest.h>
-#include <engine/render/Camera.h>
-#include <engine/math/Transform2D.h>
+#include <engine/modules/Rendering.h>
+#include <engine/modules/Math.h>
 
 using namespace eng;
 

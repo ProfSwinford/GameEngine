@@ -7,9 +7,8 @@
 
 #include "EditorGui.h"
 
-#include <engine/core/Log.h>
-#include <engine/platform/Window.h>
-#include <engine/tools/GuiHooks.h>
+#include <engine/modules/Diagnostics.h>
+#include <engine/modules/Platform.h>
 
 #include <SDL3/SDL.h>
 

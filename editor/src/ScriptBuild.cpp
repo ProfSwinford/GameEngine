@@ -34,10 +34,9 @@
 
 #include "ScriptBuild.h"
 
-#include <engine/core/Log.h>
-#include <engine/fs/FileSystem.h>
-#include <engine/scene/ScriptComponent.h>
-#include <engine/scene/ScriptLibrary.h>
+#include <engine/modules/Diagnostics.h>
+#include <engine/modules/Files.h>
+#include <engine/modules/Scripting.h>
 
 // SDL is used for one thing: asking where the editor's own executable is, so a
 // released copy can find the headers it ships beside itself. The editor

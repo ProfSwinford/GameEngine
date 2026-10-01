@@ -4,7 +4,7 @@
 
 #include "panels/ConsolePanel.h"
 
-#include <engine/core/Log.h>
+#include <engine/modules/Diagnostics.h>
 
 #include <imgui.h>
 

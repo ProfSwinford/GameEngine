@@ -36,7 +36,7 @@
 
 #include "Panel.h"
 
-#include <engine/core/LogBuffer.h>
+#include <engine/modules/Diagnostics.h>
 
 #include <map>
 #include <string>

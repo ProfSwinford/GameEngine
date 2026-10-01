@@ -33,7 +33,7 @@
 
 #include "Panel.h"
 
-#include <engine/scene/Entity.h>
+#include <engine/modules/Entities.h>
 
 namespace editor {
 
