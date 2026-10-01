@@ -84,8 +84,8 @@ bool LoadBootConfig(std::string_view virtualPath, BootConfig& outConfig,
         ReadInt(tunables, "logBufferCapacity", outConfig.logBufferCapacity, "tunables");
     outConfig.gizmoCircleSegments =
         ReadInt(tunables, "gizmoCircleSegments", outConfig.gizmoCircleSegments, "tunables");
-    outConfig.fixedTimestepSeconds = ReadFloat(tunables, "fixedTimestepSeconds",
-                                               outConfig.fixedTimestepSeconds, "tunables");
+    outConfig.fixedTimestepSeconds = 
+        ReadFloat(tunables, "fixedTimestepSeconds", outConfig.fixedTimestepSeconds, "tunables");
     outConfig.maxStepsPerFrame =
         ReadInt(tunables, "maxStepsPerFrame", outConfig.maxStepsPerFrame, "tunables");
 

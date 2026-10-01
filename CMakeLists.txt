@@ -30,7 +30,7 @@
 #  date, and a deleted script went on running. One builder, one output.
 #
 #  To build the scripts without opening the editor:  editor --build-scripts
-# =============================================================================
+# ============================================================================= 
 cmake_minimum_required(VERSION 3.28)
 
 project(Engine2D

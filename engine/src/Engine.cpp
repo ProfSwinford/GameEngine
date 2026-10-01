@@ -74,7 +74,7 @@ void Engine::RendererSubsystem::Shutdown() {
 void Engine::GuiSubsystem::Use(std::function<bool()> init,
                                std::function<void()> shutdown) {
     m_init     = std::move(init);
-    m_shutdown = std::move(shutdown);
+    m_shutdown = std::move(shutdown); 
 }
 
 bool Engine::GuiSubsystem::Init(const BootConfig&) {
@@ -219,7 +219,7 @@ void Engine::RegisterBuiltinSubsystems(const Options& options) {
     m_subsystems.Add("Window",     m_window);
     m_subsystems.Add("Renderer",   m_renderer);
 
-    // Only when the editor supplied them. The standalone game never does.
+    // Only when the editor supplied them.
     if (options.guiInit) {
         m_gui.Use(options.guiInit, options.guiShutdown);
         m_subsystems.Add("EditorGui", m_gui);

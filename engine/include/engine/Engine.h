@@ -218,6 +218,7 @@ private:
     //  m_subsystems on purpose: members are destroyed in reverse order, so the
     //  list of pointers is torn down before the objects it points at.
     // ------------------------------------------------------------------
+
     Log                m_log;
     FileSystem         m_fileSystem;
     Window             m_window;
