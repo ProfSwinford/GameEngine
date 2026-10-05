@@ -9,62 +9,111 @@
 //  same shape, larger.
 // =============================================================================
 
+#include <engine/core/Log.h>
+#include <engine/math/Transform2D.h>
 #include <engine/scene/SpinComponent.h>
 
+#include <algorithm>
+
 namespace eng {
+namespace {
 
-// A safety net for a component that was built but never attached, which happens
-// when a scene fails to load part-way through.
+// Every spinning component currently attached to something. The system walks
+// this list rather than every entity in the scene asking "are you a spinner?".
+std::vector<SpinComponent*> g_spins;
+
+} // namespace
+
 SpinComponent::~SpinComponent() {
+    // A safety net. OnDetach is where the removal normally happens; this
+    // catches the case of a component that was built but never attached, which
+    // happens when loading a scene fails partway through.
+    SpinSystem::Unregister(*this);
 }
 
-// Reads the turning rate from the scene file, in either radians or degrees per
-// second. Giving both is an authoring mistake and is reported rather than
-// quietly resolved.
-bool SpinComponent::Deserialize(const Json& /*node*/, std::string& /*outError*/) {
-    return false;
+bool SpinComponent::Deserialize(const Json& node, std::string& outError) {
+    const bool hasRadians = HasKey(node, "radiansPerSecond");
+    const bool hasDegrees = HasKey(node, "degreesPerSecond");
+
+    if (hasRadians && hasDegrees) {
+        // Reported rather than quietly picking one. A scene file saying two
+        // different things about the same value is an authoring mistake, and
+        // only the author can say which they meant.
+        outError = "SpinComponent gives both radiansPerSecond and degreesPerSecond; "
+                   "using radiansPerSecond and ignoring the other";
+        m_radiansPerSecond = ReadFloat(node, "radiansPerSecond", 0.0f, kTypeName);
+        return false;
+    }
+
+    if (hasRadians) {
+        m_radiansPerSecond = ReadFloat(node, "radiansPerSecond", 0.0f, kTypeName);
+    } else if (hasDegrees) {
+        // kDegToRad comes from Vec2.h and is just pi/180.
+        m_radiansPerSecond = ReadFloat(node, "degreesPerSecond", 0.0f, kTypeName) * kDegToRad;
+    } else {
+        outError = "SpinComponent needs either radiansPerSecond or degreesPerSecond";
+        return false;
+    }
+
+    return true;
 }
 
-// Writes the turning rate back out, always in radians.
-bool SpinComponent::Serialize(Json& /*out*/) const {
-    return false;
+bool SpinComponent::Serialize(Json& out) const {
+    // Always written in radians, which is the field Deserialize prefers when
+    // both are present. A file authored in degrees therefore comes back in
+    // radians after a save - a small loss of the original wording, and the
+    // reason radiansPerSecond is documented as the main one.
+    out["radiansPerSecond"] = m_radiansPerSecond;
+    return true;
 }
 
-// Adds this component to the spin system's list.
 void SpinComponent::OnAttach() {
+    SpinSystem::Register(*this);
 }
 
-// Takes it back out. Doing this in the destructor instead would mean
-// unregistering an object that is already half torn down.
 void SpinComponent::OnDetach() {
+    SpinSystem::Unregister(*this);
 }
 
-// Adds a component to the list the system walks.
-void SpinSystem::Register(SpinComponent& /*spin*/) {
+void SpinSystem::Register(SpinComponent& spin) {
+    g_spins.push_back(&spin);
 }
 
-// Takes a component back out of that list.
-void SpinSystem::Unregister(SpinComponent& /*spin*/) {
+void SpinSystem::Unregister(SpinComponent& spin) {
+    std::erase(g_spins, &spin);
 }
 
-// Empties the list, used when a scene is unloaded.
 void SpinSystem::Clear() {
+    g_spins.clear();
 }
-
-// How many spinning components exist.
 std::size_t SpinSystem::Count() {
-    return 0;
+    return g_spins.size();
 }
 
-// Turns every registered component by its own rate. Multiply by deltaSeconds
-// rather than assuming a frame rate - that is the whole reason the step is
-// handed in rather than looked up.
-void SpinSystem::Update(float /*deltaSeconds*/) {
+void SpinSystem::Update(float deltaSeconds) {
+    // Walked by index with the size re-read, because in principle a spin could
+    // be attached from inside another system's update.
+    for (std::size_t i = 0; i < g_spins.size(); ++i) {
+        SpinComponent* spin = g_spins[i];
+        if (spin == nullptr) {
+            continue;
+        }
+        Transform2D* transform = spin->OwnerTransform();
+        if (transform == nullptr) {
+            continue;
+        }
+
+        // deltaSeconds is the FIXED step, handed down by the scheduler. Asking
+        // a clock for the elapsed time here instead is what would make the
+        // simulation behave differently at different frame rates.
+        transform->Rotate(spin->RadiansPerSecond() * deltaSeconds);
+    }
 }
 
-// Tells the component factory that "SpinComponent" means this class, so a scene
-// file can ask for one.
 void SpinSystem::RegisterComponentTypes() {
+    ComponentFactory::Register(SpinComponent::kTypeName, []() -> std::unique_ptr<Component> {
+        return std::make_unique<SpinComponent>();
+    });
 }
 
 } // namespace eng

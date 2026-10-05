@@ -49,11 +49,10 @@ bool SubsystemStack::InitAll(const BootConfig& config) {
 // Stops every started subsystem in the exact reverse of the order it was
 // started in.
 void SubsystemStack::ShutdownAll() {
-    for (std::size_t i = m_startedCount; i > 0; i--) {
-        m_entries[i].system->Shutdown();
+    for (std::size_t i = m_startedCount; i-- > 0;) {
 
-        ENGINE_LOG_INFO(Channels::kCore, "[{}/{}] {} stopped", i + 1, m_entries.size(),
-                        m_entries[i].name);
+        m_entries[i].system->Shutdown();
+        ENGINE_LOG_INFO(Channels::kCore, "[{}/{}] {} stopped", i + 1, m_entries.size(), m_entries[i].name);
     }
 
     m_startedCount = 0;
