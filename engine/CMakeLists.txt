@@ -104,9 +104,14 @@ target_link_libraries(engine PRIVATE SDL3::SDL3)
 # folder along to everything that uses the engine.
 target_link_libraries(engine PUBLIC nlohmann_json::nlohmann_json)
 
+
 # Note what is NOT here: Dear ImGui. It used to be part of the engine, and it
 # now lives in the editor - see editor/src/EditorGui.h for why. The engine's
 # only remaining connection to a tool layer is three function pointers in
 # tools/GuiHooks.h.
+
+add_library(stb_image INTERFACE)
+target_include_directories(stb_image SYSTEM INTERFACE ${stb_SOURCE_DIR})
+target_link_libraries(engine PUBLIC stb_image)
 
 engine_set_warnings(engine)

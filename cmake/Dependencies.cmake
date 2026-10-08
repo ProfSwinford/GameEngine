@@ -90,3 +90,12 @@ FetchContent_MakeAvailable(nlohmann_json)
 if(ENGINE_WITH_IMGUI)
     include(cmake/imgui.cmake)
 endif()
+
+FetchContent_Declare(stb
+    GIT_REPOSITORY  https://github.com/nothings/stb.git
+    GIT_TAG         master
+SYSTEM)
+
+FetchContent_MakeAvailable(stb)
+
+

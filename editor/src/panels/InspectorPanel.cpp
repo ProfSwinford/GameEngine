@@ -369,8 +369,11 @@ void InspectorPanel::Draw() {
 
     ImGui::SameLine(ImGui::GetWindowWidth() - 90.0f);
     if (ImGui::Button("Destroy")) {
-        // Answer 3: through the deferred queue, like everything else.
+        /// Answer 3: through the deferred queue, like everything else.
+        ///
         eng::DeferredOps::QueueDestroy(entity->Id());
+        ///
+        ///
     }
 
     ImGui::Separator();

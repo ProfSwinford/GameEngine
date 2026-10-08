@@ -39,6 +39,7 @@ void DeferredOps::QueueDestroy(EntityId id) {
     if (!g_pendingDestroy.insert(id).second) {
         return;
     }
+
     g_destroys.push_back(id);
 }
 
@@ -58,7 +59,9 @@ void DeferredOps::Apply(Scene& scene) {
         // Checked again: something else may have destroyed it between the
         // queueing and now. Being able to ask that question at all is exactly
         // what the generation number in EntityId is for.
+
         if (scene.IsValid(id)) {
+
             scene.DestroyEntityImmediate(id);
         }
     }
