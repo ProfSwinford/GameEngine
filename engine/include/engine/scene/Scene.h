@@ -13,7 +13,7 @@
 //            "name": "Player",
 //            "components": [
 //              { "type": "TransformComponent", "position": [0, 0] },
-//              { "type": "SpriteComponent", "texture": "textures/player.bmp" }
+//              { "type": "SpriteComponent", "texture": "textures/player.png" }
 //            ]
 //          }
 //        ]

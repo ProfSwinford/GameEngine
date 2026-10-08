@@ -28,6 +28,10 @@
 
 #include <SDL3/SDL.h>
 
+// Declarations only. The decoder itself is compiled once, in StbImage.cpp.
+#define STBI_NO_STDIO
+#include <stb_image.h>
+
 #include <unordered_map>
 #include <vector>
 
@@ -53,36 +57,64 @@ TextureRef CreateTextureFromFile(std::string_view virtualPath, std::string& outE
         return nullptr;
     }
 
-    // SDL_IOFromConstMem wraps the bytes we already have in memory so SDL can
-    // read from them as if they were a file. Reading the file ourselves and
-    // then handing over the bytes - rather than giving SDL the filename - is
-    // what keeps every path in the engine going through FileSystem::Resolve.
-    SDL_IOStream* stream = SDL_IOFromConstMem(bytes.data(), bytes.size());
-    if (stream == nullptr) {
-        outError = SDL_GetError();
-        return nullptr;
-    }
-
-    // The `true` is SDL's "close the stream for me" flag, so the stream is
-    // cleaned up whether the load succeeds or fails. SurfacePtr is the
-    // unique_ptr from SdlHandles.h, which frees the surface on the way out of
-    // this function no matter which branch is taken.
-    SurfacePtr surface(SDL_LoadBMP_IO(stream, true));
-    if (surface == nullptr) {
-        outError = SDL_GetError();
+    // stb_image turns those bytes into pixels. It is handed the bytes the
+    // engine already read rather than a filename, which is what keeps every
+    // path in the engine going through FileSystem::Resolve.
+    //
+    // The last argument is the number of channels to produce, and asking for 4
+    // is the whole reason this is simple: whatever the file actually holds -
+    // greyscale, 24-bit colour, a palette - stb converts it to red, green,
+    // blue, alpha, one byte each. An image with no transparency of its own
+    // comes back fully opaque, so there is only ever one pixel layout to deal
+    // with below.
+    int width          = 0;
+    int height         = 0;
+    int channelsInFile = 0;
+    unsigned char* pixels =
+        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &width,
+                              &height, &channelsInFile, 4);
+    if (pixels == nullptr) {
+        // stbi_failure_reason is stb's equivalent of SDL_GetError: a short
+        // sentence about the last thing that went wrong.
+        outError = stbi_failure_reason() != nullptr ? stbi_failure_reason()
+                                                    : "the image could not be decoded";
         return nullptr;
     }
 
     auto* renderer = static_cast<SDL_Renderer*>(Renderer::NativeRendererHandle());
     if (renderer == nullptr) {
+        stbi_image_free(pixels);
         outError = "there is no renderer yet, so textures cannot be created";
         return nullptr;
     }
 
-    // A "surface" is pixels in ordinary memory; a "texture" is pixels the
-    // graphics card can draw quickly. This is the step across.
-    SDL_Texture* native = SDL_CreateTextureFromSurface(renderer, surface.get());
+    // Pixels in ordinary memory have to be copied to where the graphics card
+    // can draw them quickly. That is these two calls: make a texture of the
+    // right size and format, then fill it in.
+    //
+    // SDL_PIXELFORMAT_RGBA32 is SDL's name for "one byte each of red, green,
+    // blue and alpha, in the order this machine expects" - exactly what stb was
+    // asked for above.
+    SDL_Texture* native = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                            SDL_TEXTUREACCESS_STATIC, width, height);
     if (native == nullptr) {
+        stbi_image_free(pixels);
+        outError = SDL_GetError();
+        return nullptr;
+    }
+
+    // The pitch is how many bytes one row of the image takes: four per pixel.
+    const bool uploaded = SDL_UpdateTexture(native, nullptr, pixels, width * 4);
+
+    // The pixels have been copied into the texture, so stb's buffer is finished
+    // with. Freed HERE, before anything can return, because it was allocated by
+    // stb rather than owned by a unique_ptr like the rest of the engine's SDL
+    // objects - this is the one place in the engine with a raw allocation to
+    // keep track of.
+    stbi_image_free(pixels);
+
+    if (!uploaded) {
+        SDL_DestroyTexture(native);
         outError = SDL_GetError();
         return nullptr;
     }
@@ -96,8 +128,8 @@ TextureRef CreateTextureFromFile(std::string_view virtualPath, std::string& outE
     // one allocation. It is the preferred way to create a shared_ptr.
     TextureRef texture = std::make_shared<Texture>();
     texture->path   = std::string(virtualPath);
-    texture->width  = surface->w;
-    texture->height = surface->h;
+    texture->width  = width;
+    texture->height = height;
     texture->native = native;
     return texture;
 }

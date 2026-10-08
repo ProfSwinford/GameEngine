@@ -14,7 +14,7 @@ namespace editor {
 namespace {
 
 // "does this filename end with this extension?", ignoring capitals - so
-// PLAYER.BMP and player.bmp are both recognised as images.
+// PLAYER.PNG and player.png are both recognised as images.
 bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
     if (suffix.size() > text.size()) {
         return false;
@@ -41,7 +41,8 @@ AssetKind ClassifyAsset(std::string_view virtualPath) {
         EndsWithNoCase(virtualPath, ".hpp")) {
         return AssetKind::Script;
     }
-    if (EndsWithNoCase(virtualPath, ".bmp")) {
+    if (EndsWithNoCase(virtualPath, ".png") || EndsWithNoCase(virtualPath, ".bmp") ||
+        EndsWithNoCase(virtualPath, ".jpg") || EndsWithNoCase(virtualPath, ".jpeg")) {
         return AssetKind::Texture;
     }
     if (EndsWithNoCase(virtualPath, ".json") && virtualPath.starts_with("scenes/")) {

@@ -41,6 +41,7 @@ set(ENGINE_SOURCES
     src/render/Renderer.cpp           # lines, rectangles, text and sprites
 
     src/resource/ResourceManager.cpp  # loading images
+    src/resource/StbImage.cpp         # compiles the .png/.jpg decoder, once
 
     src/scene/Component.cpp           # components, the factory, sprites
     src/scene/DeferredOps.cpp         # safe create and destroy
@@ -128,6 +129,11 @@ target_include_directories(engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 #  see platform/SdlHandles.h for how that is arranged.
 # ---------------------------------------------------------------------------
 target_link_libraries(engine PRIVATE SDL3::SDL3)
+
+# The image decoder. PRIVATE because no public engine header mentions stb: a
+# game asks for "textures/player.png" and gets a TextureRef, and which decoder
+# produced it is the engine's business. See src/resource/StbImage.cpp.
+target_link_libraries(engine PRIVATE stb_image)
 
 # nlohmann/json IS part of the public interface: core/Json.h includes it, and
 # every component's Deserialize takes a Json. That is a deliberate choice -

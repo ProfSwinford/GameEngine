@@ -167,7 +167,7 @@ public:
     const char* TypeName() const override { return kTypeName; }
 
     // Scene file fields:
-    //   "texture": "textures/player.bmp"   (required)
+    //   "texture": "textures/player.png"   (required)
     //   "tint":    [r, g, b, a]            0-255 each; defaults to white
     //   "layer":   0                       higher numbers draw on top
     //   "size":    [w, h]                  in pixels; omit to use the image's own

@@ -156,6 +156,12 @@ components:
 }
 ```
 
+A sprite's `texture` can be a **`.png`**, a `.bmp` or a `.jpg`. Use `.png` unless
+you have a reason not to: it is the only one of the three that stores
+transparency, so it is what you need for a sprite that is not a plain
+rectangle. Drop the file anywhere under `assets/` and name it the short way, as
+above.
+
 Search the engine's source for `"Player"`, or for any position in any scene,
 and you will not find it. That is the point: everything about a particular game
 lives in data, and the engine only knows how to read it.

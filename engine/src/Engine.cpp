@@ -450,6 +450,24 @@ void Engine::Simulate() {
 
         m_clock.OnStepConsumed();
     }
+
+    // AND ONCE MORE, OUTSIDE THE LOOP.
+    //
+    // Everything above happens only if the clock asked for at least one step,
+    // and a PAUSED clock asks for none - which is exactly what the editor sits
+    // in while you are editing. Without this line, anything queued while
+    // paused is never applied: the editor's Destroy button marks an entity for
+    // destruction and nothing ever acts on it, so the button appears to do
+    // nothing until Play is pressed.
+    //
+    // This is the right place for it. The queue exists so that entities are
+    // only taken apart when nothing is halfway through walking the list of
+    // them, and the end of Simulate is such a moment whether any steps ran or
+    // not. Draining an empty queue costs nothing, so there is nothing to ask
+    // first.
+    if (m_scene != nullptr) {
+        DeferredOps::Apply(*m_scene);
+    }
 }
 
 void Engine::RenderWorld(Camera& camera, bool includeGizmos) {

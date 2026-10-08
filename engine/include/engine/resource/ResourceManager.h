@@ -24,10 +24,18 @@
 //  gives the same answer. It stores WEAK references - see the .cpp - so being
 //  in the cache does not by itself keep a texture loaded.
 //
-//  IMAGE FORMAT: .bmp ONLY
-//  BMP is the one format SDL can read without any extra library. PNG or JPEG
-//  would mean adding a dependency, and this course does not need one. Paint,
-//  Preview and every image editor can save a .bmp.
+//  IMAGE FORMATS: .png, .bmp and .jpg
+//  .png is the one to use. It is what every image editor saves by default, it
+//  compresses properly, and it is the only one of the three that stores
+//  TRANSPARENCY - which is what you want for a sprite that is not a rectangle.
+//
+//  SDL itself can only read .bmp, so the decoding is done by stb_image: one
+//  public-domain header file, no library to build and no extra .dll beside a
+//  finished game. See src/resource/StbImage.cpp.
+//
+//  Whatever the file holds - 24-bit colour, a palette, greyscale - it arrives
+//  here as red, green, blue and alpha, one byte each. A format with no
+//  transparency of its own simply comes out fully opaque.
 // ============================================================================
 
 #include <engine/core/Subsystem.h>

@@ -124,7 +124,7 @@ bool SpriteComponent::Deserialize(const Json& node, std::string& outError) {
     m_texturePath = ReadString(node, "texture", "", kTypeName);
     if (m_texturePath.empty()) {
         outError = "SpriteComponent's \"texture\" must be text, e.g. "
-                   "\"textures/player.bmp\"";
+                   "\"textures/player.png\"";
         return false;
     }
 

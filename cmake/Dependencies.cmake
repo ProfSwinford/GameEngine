@@ -84,6 +84,37 @@ FetchContent_Declare(nlohmann_json
 
 FetchContent_MakeAvailable(nlohmann_json)
 
+# --- stb_image ---------------------------------------------------------------
+#  Decodes .png (and .jpg, .tga and more) into plain pixels.
+#
+#  WHY THIS IS HERE AT ALL
+#  SDL ships exactly one image decoder, for .bmp, and nothing else. Reading a
+#  .png needs a decoder from somewhere, and there are two usual answers:
+#  SDL_image, or this.
+#
+#  stb_image is one public-domain header file. No library is built, no .dll is
+#  produced, and nothing extra has to ship beside a finished game - which is why
+#  it is preferred here over SDL_image, which would add SDL3_image.dll to every
+#  copy of every game.
+#
+#  There are no releases to pin to - stb is developed on its default branch - so
+#  the commit below is pinned by hash. Change it deliberately, never casually.
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20
+    # No GIT_SHALLOW here: a shallow clone can only ask for a branch or a tag,
+    # not an arbitrary commit, so pinning by hash and shallow are incompatible.
+    SYSTEM)
+
+FetchContent_MakeAvailable(stb)
+
+#  stb has no CMakeLists.txt of its own - it is just a folder of headers - so
+#  there is no target to link and one has to be made here. An INTERFACE library
+#  is a target with nothing to compile: it exists only to carry the include
+#  path to whoever links it.
+add_library(stb_image INTERFACE)
+target_include_directories(stb_image SYSTEM INTERFACE ${stb_SOURCE_DIR})
+
 # --- Dear ImGui --------------------------------------------------------------
 #  The library the entire editor interface is drawn with. Only fetched when the
 #  editor is being built - see cmake/imgui.cmake.
