@@ -11,7 +11,6 @@
 #include <engine/platform/Window.h>
 
 #include <SDL3/SDL.h>
-#include <stb_image.h>
 
 #include <algorithm>
 

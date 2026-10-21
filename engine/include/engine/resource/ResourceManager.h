@@ -24,10 +24,9 @@
 //  gives the same answer. It stores WEAK references - see the .cpp - so being
 //  in the cache does not by itself keep a texture loaded.
 //
-//  IMAGE FORMAT: .bmp ONLY
-//  BMP is the one format SDL can read without any extra library. PNG or JPEG
-//  would mean adding a dependency, and this course does not need one. Paint,
-//  Preview and every image editor can save a .bmp.
+//  IMAGE FORMAT: (png)
+//  png is the one format SDL can read without any extra library. Paint,
+//  Preview and every image editor can save a .png.
 // ============================================================================
 
 #include <engine/render/Texture.h>

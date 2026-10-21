@@ -41,7 +41,8 @@ AssetKind ClassifyAsset(std::string_view virtualPath) {
         EndsWithNoCase(virtualPath, ".hpp")) {
         return AssetKind::Script;
     }
-    if (EndsWithNoCase(virtualPath, ".bmp")) {
+    if (EndsWithNoCase(virtualPath, ".png") || EndsWithNoCase(virtualPath, ".bmp") ||
+        EndsWithNoCase(virtualPath, ".jpg") || EndsWithNoCase(virtualPath, ".jpeg")) {
         return AssetKind::Texture;
     }
     if (EndsWithNoCase(virtualPath, ".json") && virtualPath.starts_with("scenes/")) {

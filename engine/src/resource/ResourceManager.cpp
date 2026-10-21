@@ -11,6 +11,9 @@
 
 #include <SDL3/SDL.h>
 
+#define STBI_NO_STDIO
+#include <stb_image.h>
+
 #include <unordered_map>
 #include <vector>
 
@@ -35,37 +38,40 @@ TextureRef CreateTextureFromFile(std::string_view virtualPath, std::string& outE
     if (!FileSystem::ReadFile(virtualPath, bytes, outError)) {
         return nullptr;
     }
+    
+    int width, height, channelsInFile = 0;
+    unsigned char* pixels = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &width, &height, &channelsInFile, 4);
 
-    // SDL_IOFromConstMem wraps the bytes we already have in memory so SDL can
-    // read from them as if they were a file. Reading the file ourselves and
-    // then handing over the bytes - rather than giving SDL the filename - is
-    // what keeps every path in the engine going through FileSystem::Resolve.
-    SDL_IOStream* stream = SDL_IOFromConstMem(bytes.data(), bytes.size());
-    if (stream == nullptr) {
-        outError = SDL_GetError();
-        return nullptr;
-    }
-
-    // The `true` is SDL's "close the stream for me" flag, so the stream is
-    // cleaned up whether the load succeeds or fails. SurfacePtr is the
-    // unique_ptr from SdlHandles.h, which frees the surface on the way out of
-    // this function no matter which branch is taken.
-    SurfacePtr surface(SDL_LoadBMP_IO(stream, true));
-    if (surface == nullptr) {
-        outError = SDL_GetError();
+    if (pixels == nullptr) {
+        outError = stbi_failure_reason() != nullptr ? stbi_failure_reason()
+                                                    : "the image could not be decoded";
         return nullptr;
     }
 
     auto* renderer = static_cast<SDL_Renderer*>(Renderer::NativeRendererHandle());
     if (renderer == nullptr) {
+        stbi_image_free(pixels);
         outError = "there is no renderer yet, so textures cannot be created";
         return nullptr;
     }
 
     // A "surface" is pixels in ordinary memory; a "texture" is pixels the
     // graphics card can draw quickly. This is the step across.
-    SDL_Texture* native = SDL_CreateTextureFromSurface(renderer, surface.get());
+    SDL_Texture* native = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                            SDL_TEXTUREACCESS_STATIC, width, height);
     if (native == nullptr) {
+        stbi_image_free(pixels);
+        outError = SDL_GetError();
+        return nullptr;
+    }
+
+    const bool uploaded = SDL_UpdateTexture(native, nullptr, pixels, width * 4);
+
+    stbi_image_free(pixels);
+
+    if (!uploaded) {
+    
+        SDL_DestroyTexture(native);
         outError = SDL_GetError();
         return nullptr;
     }
@@ -79,8 +85,8 @@ TextureRef CreateTextureFromFile(std::string_view virtualPath, std::string& outE
     // one allocation. It is the preferred way to create a shared_ptr.
     TextureRef texture = std::make_shared<Texture>();
     texture->path = std::string(virtualPath);
-    texture->width = surface->w;
-    texture->height = surface->h;
+    texture->width = width;
+    texture->height = height;
     texture->native = native;
     return texture;
 }
