@@ -64,6 +64,26 @@ void GamePanel::Draw() {
         ImGui::SetWindowFocus();
     }
 
+    // ---- where the pointer is, as the GAME sees it ------------------------
+    //
+    // The game is drawn into a picture inside this panel, so a mouse
+    // position in window coordinates means nothing to it: the panel can be
+    // anywhere, docked or floating. Subtracting this picture's own corner is
+    // the whole translation, and doing it HERE is what keeps the engine from
+    // needing to know that panels exist at all. See UISystem::SetPointer.
+    //
+    // Only while hovered AND in play mode. A button that lit up because the
+    // mouse passed over a paused Game view would be reacting to something
+    // that is not running.
+    const ImGuiIO& io       = ImGui::GetIO();
+    const bool     overView = ImGui::IsItemHovered();
+    const bool     live     = overView && eng::Engine::Get().IsInPlayMode();
+
+    eng::UISystem::SetPointer(
+        eng::Vec2{io.MousePos.x - origin.x, io.MousePos.y - origin.y},
+        eng::Vec2{size.x, size.y},
+        live && ImGui::IsMouseDown(ImGuiMouseButton_Left), live);
+
     // FOCUS is what routes the keyboard, and it is deliberately focus rather
     // than merely hovering: hovering would mean the player stopped responding
     // every time the mouse strayed over the Hierarchy.

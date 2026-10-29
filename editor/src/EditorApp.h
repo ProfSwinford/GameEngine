@@ -150,6 +150,12 @@ private:
     // background tab, so its own Draw is not running. See GamePanel.h.
     void FocusGameViewIfRequested();
 
+    // The same arrangement for the Tile Palette, which the Assets panel asks
+    // to show when a .otile is double-clicked or created. Same reason it
+    // cannot be done from the panel itself: it is usually a background tab,
+    // and a background tab does not Draw.
+    void RevealTilePaletteIfRequested();
+
     // Called when the editor window regains focus - the user alt-tabbed away,
     // edited a script in their text editor, and came back. If anything in
     // any script under assets/ has changed, it is rebuilt and reloaded before
@@ -168,6 +174,7 @@ private:
     // these two are named here.
     class ScenePanel* m_scenePanel = nullptr;
     class GamePanel*  m_gamePanel  = nullptr;
+    class TilePalettePanel* m_tilePalettePanel = nullptr;
 
     char m_saveAsPath[256] = {};
     bool m_openSaveAsPopup = false;

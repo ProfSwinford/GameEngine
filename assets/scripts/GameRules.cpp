@@ -27,9 +27,9 @@
 //  moving part - but you would have measured first.
 //
 //  -----------------------------------------------------------------------------
-//  WHY THE TIMER USES deltaSeconds AND NEVER READS A CLOCK
+//  WHY THE TIMER USES THE FIXED STEP AND NEVER READS A WALL CLOCK
 //
-//  deltaSeconds is the FIXED simulation step, handed in by the scheduler. A
+//  Time::FixedDeltaTime() is the FIXED simulation step. A
 //  function that asked the clock what time it was would make the countdown
 //  depend on the frame rate, which is the whole thing this engine's fixed step
 //  exists to avoid. Sixty seconds here is sixty seconds on every machine, and
@@ -55,7 +55,7 @@ namespace {
 // an eleventh pickup to the scene file needs no code change at all, which is
 // the whole point of the component model.
 bool IsPickup(eng::Entity& entity) {
-    const auto* collider = entity.Find<eng::AABBColliderComponent>();
+    auto* collider = eng::FindCollider(entity);
     return collider != nullptr && collider->Layer() == "Pickup";
 }
 
@@ -78,7 +78,7 @@ public:
         }
     }
 
-    void OnUpdate(float deltaSeconds) {
+    void OnFixedUpdate() {
         // The score, derived rather than remembered. Anything already queued
         // for destruction counts as collected, so the number on screen changes
         // on the step you touched it rather than the step after.
@@ -86,7 +86,7 @@ public:
         const int collected = m_totalPickups - remaining;
 
         if (m_phase == Phase::Playing) {
-            m_secondsLeft -= deltaSeconds;
+            m_secondsLeft -= eng::Time::FixedDeltaTime();
 
             if (collected >= m_totalPickups && m_totalPickups > 0) {
                 m_phase        = Phase::Won;
@@ -108,16 +108,16 @@ public:
             // same frame as the final collision reads as a glitch rather than
             // as a result.
             //
-            // The countdown uses deltaSeconds for the same reason the round
+            // The countdown uses the fixed step for the same reason the round
             // timer does: it is the fixed step, so the pause is the same
             // length on every machine.
-            m_untilWinScene -= deltaSeconds;
+            m_untilWinScene -= eng::Time::FixedDeltaTime();
             if (m_untilWinScene <= 0.0f) {
                 RequestWinScene();
             }
         }
 
-        DrawHud(collected);
+        UpdateHud(collected);
     }
 
 private:
@@ -132,7 +132,7 @@ private:
     //
     //    * LoadScene happens at once. Loading unloads the current scene,
     //      which destroys every entity, which destroys every component -
-    //      INCLUDING THIS SCRIPT, whose OnUpdate is part way through running.
+    //      INCLUDING THIS SCRIPT, whose OnFixedUpdate is part way through it.
     //      The call would return into an object that has been freed, and the
     //      next line to read a member reads deleted memory. It usually seems
     //      to work, which is what makes it dangerous.
@@ -148,7 +148,7 @@ private:
     // -------------------------------------------------------------------------
     void RequestWinScene() {
         if (m_requested) {
-            return;   // asked already; OnUpdate keeps running until the swap
+            return;   // asked already; this keeps running until the swap
         }
         m_requested = true;
 
@@ -170,28 +170,67 @@ private:
         return count;
     }
 
-    void DrawHud(int collected) const {
-        // SCREEN space, so the score and the timer stay put when the camera
-        // moves. GizmoSpace::World would have them slide off the side.
+    // -------------------------------------------------------------------------
+    //  THE HUD IS MADE OF UI OBJECTS, not of gizmos.
+    //
+    //  It used to be three Gizmos::Text calls, and it worked right up until
+    //  the Game view started asking for the world WITHOUT gizmos - which it
+    //  has to, because gizmos are the grid, the origin arrows and the
+    //  collider outlines, and none of that ships with a game. The score went
+    //  with them and the HUD vanished from the only view that shows what a
+    //  player actually sees.
+    //
+    //  So the score, the timer and the banner are entities in the scene file
+    //  now, each with a UIRect and a UIText. This script finds them by name
+    //  and sets their text. The LAYOUT is data you can drag around in the
+    //  Inspector; only the WORDS are code. See engine/include/engine/scene/UI.h.
+    // -------------------------------------------------------------------------
+    eng::UITextComponent* FindLabel(const char* entityName) const {
+        eng::Scene* scene = GetScene();
+        if (scene == nullptr) {
+            return nullptr;
+        }
+        eng::Entity* entity = scene->Get(scene->Find(entityName));
+        return entity != nullptr ? entity->Find<eng::UITextComponent>() : nullptr;
+    }
+
+    void UpdateHud(int collected) {
         char line[96];
 
-        std::snprintf(line, sizeof(line), "COLLECTED  %d / %d", collected,
-                      m_totalPickups);
-        eng::Gizmos::Text(eng::Vec2{16.0f, 16.0f}, line, eng::Color::White(), 0.0f,
-                          eng::GizmoSpace::Screen);
+        if (eng::UITextComponent* score = FindLabel("HudScore")) {
+            std::snprintf(line, sizeof(line), "COLLECTED  %d / %d", collected,
+                          m_totalPickups);
+            score->text = line;
+        }
 
-        std::snprintf(line, sizeof(line), "TIME       %5.1f",
-                      static_cast<double>(m_secondsLeft));
-        eng::Gizmos::Text(eng::Vec2{16.0f, 34.0f}, line,
-                          m_secondsLeft < 10.0f ? eng::Color::Red() : eng::Color::White(),
-                          0.0f, eng::GizmoSpace::Screen);
+        if (eng::UITextComponent* timer = FindLabel("HudTimer")) {
+            std::snprintf(line, sizeof(line), "TIME       %5.1f",
+                          static_cast<double>(m_secondsLeft));
+            timer->text = line;
 
-        if (m_phase == Phase::Won) {
-            eng::Gizmos::Text(eng::Vec2{16.0f, 64.0f}, "YOU WIN", eng::Color::Green(),
-                              0.0f, eng::GizmoSpace::Screen);
-        } else if (m_phase == Phase::Lost) {
-            eng::Gizmos::Text(eng::Vec2{16.0f, 64.0f}, "OUT OF TIME", eng::Color::Red(),
-                              0.0f, eng::GizmoSpace::Screen);
+            // The last ten seconds in red. Setting a colour on the component
+            // rather than passing one to a draw call is the difference
+            // between an object you can inspect and a call you cannot.
+            timer->color = (m_secondsLeft < 10.0f) ? eng::Color{235, 90, 80, 255}
+                                                   : eng::Color{235, 238, 245, 255};
+        }
+
+        // The banner is HIDDEN in the scene file and switched on here, which
+        // is why there is no "if won, draw" branch around a draw call.
+        if (eng::UITextComponent* banner = FindLabel("HudBanner")) {
+            eng::Entity* owner = banner->Owner();
+            auto*        rect  = owner != nullptr ? owner->Find<eng::UIRectComponent>()
+                                                  : nullptr;
+            if (rect != nullptr) {
+                rect->visible = (m_phase != Phase::Playing);
+            }
+            if (m_phase == Phase::Won) {
+                banner->text  = "YOU WIN";
+                banner->color = eng::Color{120, 230, 140, 255};
+            } else if (m_phase == Phase::Lost) {
+                banner->text  = "OUT OF TIME";
+                banner->color = eng::Color{235, 90, 80, 255};
+            }
         }
     }
 

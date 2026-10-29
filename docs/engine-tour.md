@@ -52,6 +52,7 @@ another one.
 | `resource/`   | loading images, and sharing them between entities                    |
 | `scene/`      | entities, components, levels, scripts, messaging                    |
 | `physics/`    | collision shapes and collision events                               |
+| `tilemap/`    | the auto-tiling algorithm, the grid, and making it solid            |
 | `tools/`      | the three function pointers that let a tool see input first          |
 
 ---
@@ -66,10 +67,14 @@ another one.
 | how to write your own component                  | `scene/Component.h`, then `SpinComponent.h`|
 | how a level file becomes a world                 | `scene/Scene.h`                            |
 | how to write your own behaviour                  | `scene/ScriptComponent.h`                  |
+| how a script puts its own variables on screen     | `scene/ScriptFields.h`                     |
 | how scripts are compiled and loaded              | `scene/ScriptLibrary.h`                    |
 | why deleting things is queued                    | `scene/DeferredOps.h`                      |
 | how entities tell each other things              | `scene/Messaging.h`                        |
 | how collision layers work                        | `physics/Collider.h`                       |
+| how one tile sheet becomes 47 tiles              | `tilemap/AutoTile.h`                       |
+| how a map stores cells it has no edges for       | `tilemap/Tilemap.h`                        |
+| why a flat floor should be one collider          | `tilemap/TilemapCollider.h`                |
 | why parenting makes things orbit                 | `math/Transform2D.h`                       |
 | what a matrix is doing in a 2D game              | `math/Mat3.h`                              |
 | how clicking on something works                  | `render/Camera.h`                          |

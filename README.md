@@ -159,7 +159,7 @@ components:
   "components": [
     { "type": "TransformComponent", "position": [0, 0] },
     { "type": "SpriteComponent", "texture": "textures/checker_green.bmp" },
-    { "type": "AABBColliderComponent", "halfExtents": [16, 16],
+    { "type": "BoxColliderComponent", "halfExtents": [16, 16],
       "layer": "Player", "collidesWith": ["Pickup", "World"] }
   ]
 }
@@ -187,31 +187,298 @@ you are browsing. Drag the `.cpp` onto an entity to attach it.
 ```cpp
 class MyScript : public eng::ScriptBehaviour {
 public:
-    void OnUpdate(float dt) { Transform()->Translate({0, dt * 50}); }
+    void OnFixedUpdate() {
+        Transform()->Translate({0, eng::Time::DeltaTime() * 50});
+    }
 };
 ENGINE_REGISTER_SCRIPT(MyScript)   // without this it can never be found
 ```
 
 That is the same convenience a C# engine gets from reflection, except the
-question "does this class have an OnUpdate?" is answered by the **compiler**
-while your script builds. There is no run-time lookup, and a script with no
-`OnUpdate` is never put in the update list at all — it costs nothing per frame.
+question "does this class have an OnFixedUpdate?" is answered by the
+**compiler** while your script builds. There is no run-time lookup, and a
+script with no update is never put in an update list at all — it costs nothing
+per frame.
 
-The hooks are `OnStart`, `OnUpdate(float)`, `OnDestroy`, and
-`OnCollisionEnter/Stay/Exit(EntityId)`. **They must be public**, because the
+**There are two updates, and they run at different rates.** `OnFixedUpdate()`
+runs every fixed simulation step — a steady 60 a second on every machine — and
+is where movement, physics and anything timed belongs. `OnUpdate()` runs once
+per *drawn* frame, which is however fast the machine happens to be, and is for
+things tied to the screen rather than to the world. Putting movement in
+`OnUpdate` is the mistake the split exists to make visible.
+
+Neither takes an argument. Ask [`eng::Time`](engine/include/engine/core/Time.h),
+which has Unity's names and returns the right delta for whichever hook you are
+in:
+
+```cpp
+Time::DeltaTime()           // the fixed step inside OnFixedUpdate, the frame
+                            // time everywhere else — and scaled, so it is 0
+                            // while the game is paused
+Time::FixedDeltaTime()      // the simulation step, wherever you ask
+Time::UnscaledDeltaTime()   // real frame time; ignores pause and slow motion,
+                            // which is what a pause menu needs to animate
+```
+
+The hooks are `OnStart`, `OnUpdate`, `OnFixedUpdate`, `OnDestroy`,
+`OnCollisionEnter/Stay/Exit`, `OnTriggerEnter/Stay/Exit` and `OnExpose`.
+**They must be public**, because the
 engine calls them from outside your class. Getting a name or a signature wrong
 is a compile error that says what to write instead, and a script with no hooks
 at all is a compile error too — those checks exist because a misspelled hook
 would otherwise be a function nobody calls.
+
+**A script can put its own variables in the Inspector**, editable while the
+game runs and saved on each entity separately — so one script can drive two
+entities that behave differently:
+
+```cpp
+class Orbiter : public eng::ScriptBehaviour {
+public:
+    float radius = 90.0f;
+    float speed  = 1.2f;
+
+    void OnExpose(eng::ScriptFields& fields) {
+        fields.Var("radius", radius, "how far out it orbits");
+        fields.Range("speed", speed, 0.0f, 10.0f);   // a slider instead
+    }
+
+    void OnFixedUpdate() { /* read them here, so a change takes effect now */ }
+};
+```
+
+`float`, `int`, `bool`, `std::string`, `eng::Vec2` and `eng::Color`. This one
+is written out rather than found by the compiler, and that is not an
+inconsistency: `requires` can ask whether a *named* member exists, and no C++
+construct can ask what members exist at all.
+
+**Only the values you change are saved.** Leave a variable alone and it is
+absent from the scene file and takes whatever the code says — so editing that
+default line still reaches every entity that never disagreed with it, which is
+what somebody changing a default is actually asking for. The Inspector marks
+the overridden ones and offers to put the default back. And what the *game*
+does to a variable is never written to the level: a health counting down is
+run-time state, not a saved setting.
 
 Scripts are **compiled C++**, but the EDITOR compiles them: save a script,
 switch back to the editor window, and it rebuilds and reloads by itself. You
 never rebuild the editor. That does need a C++ compiler installed - see
 [docs/editor-guide.md](docs/editor-guide.md).
 
-`assets/scripts/Orbiter.cpp` is a worked example.
+`assets/scripts/Orbiter.cpp` is a worked example, and
+[`engine/include/engine/scene/ScriptFields.h`](engine/include/engine/scene/ScriptFields.h)
+explains the trade-offs above.
 
 ---
+
+## Physics
+
+Five collider shapes, and every one of them is rotated, scaled and parented
+properly by its entity's transform:
+
+| | |
+| --- | --- |
+| `BoxColliderComponent` | a rectangle, with an optional `edgeRadius` to round the corners |
+| `CircleColliderComponent` | a centre and a radius |
+| `CapsuleColliderComponent` | a rectangle with round ends — what a character usually wants, because a box catches on every seam in the floor |
+| `PolygonColliderComponent` | up to 8 points, convex |
+| `EdgeColliderComponent` | a chain of segments — ground with no underside to clip through |
+
+Internally they all become the same thing: a **`ConvexShape`**, which is up to
+eight points plus a radius. A circle is one point with a radius, a capsule is
+two, a box is four with none. That is why there is one collision routine rather
+than a table of box-versus-circle, circle-versus-capsule special cases growing
+as the square of the shape count — and why adding a sixth shape costs a
+converter rather than five new intersection tests.
+
+**A collider says what shape something is. A `Rigidbody2DComponent` says it has
+mass and may be moved.** Those are separate for the same reason they are in
+Unity: a wall needs a shape and must never move.
+
+```json
+{ "type": "Rigidbody2DComponent", "bodyType": "Dynamic",
+  "mass": 1.0, "gravityScale": 1.0, "freezeRotation": true }
+```
+
+| body type | |
+| --- | --- |
+| `Dynamic` | gravity and forces move it; collisions push it about |
+| `Kinematic` | moves only when told to, and pushes dynamic things out of the way without being pushed back — a lift, a platform, usually a character |
+| `Static` | never moves; the same as having no rigidbody, said out loud |
+
+**Without a rigidbody on at least one side, nothing is pushed.** Two solid
+colliders still report the contact — knowing two static things overlap is
+useful while building a level — but neither moves, because neither has anything
+that could be moved. That is Unity's rule, and it is almost always the answer
+to "my player walks through walls".
+
+### Triggers and solids are different events
+
+```
+either side is a trigger   ->  OnTriggerEnter / Stay / Exit
+neither side is a trigger  ->  OnCollisionEnter / Stay / Exit
+```
+
+A script with `OnCollisionEnter` on a trigger collider is **never called** —
+the hook is real and correctly spelled, just not the one being sent. Because
+that is silent, the engine reports it in the Console the first time it happens,
+naming the entity and the hook to use instead.
+
+A collision hook may take either the other entity or the whole contact:
+
+```cpp
+void OnCollisionEnter(eng::EntityId other) { }                  // simple
+void OnCollisionEnter(const eng::Collision2D& hit) {            // full
+    if (hit.normal.y > 0.7f) { m_onGround = true; }             // came from below
+    PlayThud(hit.relativeVelocity.Length());                    // how hard
+}
+```
+
+`hit.normal` always points **from the other collider toward the receiver**, so
+both sides of a collision read correctly in their own handler.
+
+### Asking the world questions
+
+Collision events tell you what touched you. `Physics2D` is the other direction
+— what is over there, before you reach it, which is how anything responsive is
+written:
+
+```cpp
+// Is there ground under my feet?
+eng::QueryFilter filter;
+filter.ignore = OwnerId();                     // don't find myself
+const auto hit = eng::Physics2D::Raycast(position, {0, -1}, 40.0f, filter);
+if (hit) { m_onGround = true; }
+
+// What is in blast range?
+eng::ColliderComponent* caught[16];
+const int n = eng::Physics2D::OverlapCircle(position, 120.0f, caught, 16);
+```
+
+`Raycast`, `RaycastAll`, `OverlapPoint`, `OverlapCircle`, `OverlapBox`,
+`OverlapCapsule`, `OverlapShape`, `CircleCast`, `BoxCast` and `Distance`. Every
+one takes a `QueryFilter` for the layer, whether triggers count, and an entity
+to ignore. A disabled collider is invisible to all of them.
+
+`CircleCast` is **exact rather than stepped**, and the reason is the shared
+shape representation: sliding a circle of radius r into something stops exactly
+where a thin ray hits that same shape grown outward by r, and growing a
+`ConvexShape` is adding one number to it.
+
+Gravity and the solver live in `config/engine.json`. Note the units — Unity's
+`-9.81` is metres per second squared, and a 2D game works in **pixels**, so
+this project uses `-981`:
+
+```json
+"physics": { "gravity": [0.0, -981.0], "solverIterations": 4 }
+```
+
+---
+
+## Tilemaps
+
+Drawing a wall out of tiles normally means drawing forty-seven of them: a
+straight run, the two ends, four outside corners, four inside corners, a lone
+block, a cross junction, and so on down the list. This engine produces all
+forty-seven from **five**, using the scheme and the sheet format of
+[Fang Auto Tile](https://github.com/ruccho/FangAutoTile) — which in turn is the
+WOLF RPG Editor format, so art drawn for either works here unchanged.
+
+A sheet is **one tile wide and five tiles tall**:
+
+| Band | What it holds |
+| ---- | ------------- |
+| 1    | outside corner — convex, nothing beside it |
+| 2    | vertical edge — a left or right wall |
+| 3    | horizontal edge — a top or bottom edge |
+| 4    | inside corner — concave, tucked in |
+| 5    | fill — solid interior |
+
+The trick is that **a tile is drawn as four quarters, not one picture**. Asking
+"which of 47 pictures is this?" needs 47 pictures; asking "which of 5 is this
+*quarter*?" four times needs 5. It works because a corner of a tile can only
+see three of the eight neighbours — the two beside it and the one diagonally
+past it — and those eight arrangements collapse into those five shapes.
+
+Nothing is baked. Fang generates a 47-tile texture up front because Unity's
+tilemap wants one finished sprite per tile; this engine draws from a source
+rectangle anyway, so the quarter to draw is four numbers into the sheet you
+already loaded.
+
+**`+ Tile` in the Assets panel writes one for you** - select a sheet, press it,
+and the dialog validates the image with the loader's own code before writing
+anything. Double-click a `.otile` to edit it in the Tile Palette, which can
+also draw all 47 shapes the sheet produces so a mistake in the art is visible
+at once.
+
+Underneath it is a text file, and the smallest useful one is a single line:
+
+```json
+{ "sheet": "textures/tiles/grass.png" }
+```
+
+because the tile size and frame count are **measured from the image** — a sheet
+is five tiles tall by definition. Stating them again would be a second
+description of a fact the file already carries.
+
+```json
+{
+  "sheet": "textures/tiles/stone.png",
+  "collision": "Grid",
+  "frameMode": "Animation",
+  "animationMinSpeed": 3.0,
+  "animationMaxSpeed": 5.0,
+  "connectsTo": ["tiles/dirt.otile"]
+}
+```
+
+- **Extra frames go sideways**, for `Animation` or `Random`. Each cell gets its
+  own speed and starting point, so a lake ripples instead of pulsing in unison;
+  `Random` picks from the cell's coordinates, so it is the same every run.
+- **`connectsTo` is one-way**, as in Fang. Grass connecting to dirt rounds
+  itself off against it; dirt still ends cleanly where it meets grass. Name
+  each other in both files for a mutual join.
+- **A connector tile** (`"connector": true`) is invisible but counts as present
+  to everything around it. A line of them along the edge of a map makes the
+  ground run off the screen instead of growing a finished border, and a line
+  down the facing edges of two maps hides the seam between them.
+
+### Painting
+
+Open the **Tile Palette**, choose a tile and a tool, and paint in the Scene
+view. Paint, Erase, Rectangle, Fill and Pick; left-drag paints and right-drag
+erases, middle-drag still pans. The default tool is Select, so the Scene view
+behaves exactly as it always did until you choose otherwise — and the current
+tool is shown over the view, because a mode you cannot see is a mode you forget
+you are in. **There is no undo yet.**
+
+### Making it solid
+
+Add a `TilemapColliderComponent` beside the `TilemapComponent`, and cells whose
+tile says `"collision": "Grid"` become solid. It watches the map and rebuilds
+itself when you paint, so a wall you draw is a wall.
+
+The solid cells are **merged into as few rectangles as will cover them** —
+typically ten to a hundred to one, and the Inspector shows the ratio. That is
+not only about the broad phase: where two boxes meet there is an edge, and a
+body sliding along a floor can catch on it. A flat floor merged into one box
+has no joins to catch on.
+
+```
+assets/tiles/stone.otile          a solid material
+assets/tiles/water.otile          four animated frames, walked through
+assets/tiles/connector.otile      invisible, joins everything
+assets/scenes/tilemap.oscene      a level to walk around with WASD and Space
+```
+
+### What is not here
+
+Fang's slopes, its texture packer, its sub-channels (normal and emission maps)
+and its override tiles. The packer and sub-channels exist because Unity bakes a
+texture and this engine does not; slopes need a collider traced per tile, which
+is the one shape that cannot be merged with its neighbours. Per-tile collision
+shapes are not here either — a cell is solid over its whole square or not at
+all.
 
 ## Where to start reading
 
@@ -239,7 +506,9 @@ lives in somebody's head.
 - **Matrices** - `engine/include/engine/math/Mat3.h`. Points are written as
   rows, so "do A and then B" is written `A * B`, and the move part of a
   transform lives in the bottom row.
-- **Overlap** - `engine/include/engine/math/Overlap.h`. **Touching counts as
+- **Overlap** - `engine/include/engine/math/Overlap.h`. Every shape becomes one
+  `ConvexShape` - points plus a radius - so there is one collision routine
+  rather than a table of pairings. **Touching counts as
   overlapping**, everywhere, in every shape combination.
 - **Collision layers** - `engine/include/engine/physics/Collider.h`. Two
   colliders are only tested when EACH one's list includes the other's layer, so

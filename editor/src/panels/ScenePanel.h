@@ -73,9 +73,27 @@ private:
 
     void UpdateGizmo(const ImVec2& imageOrigin);   // input  - runs BEFORE picking
     void DrawGizmo(const ImVec2& imageOrigin);     // output - runs after
-    void HandlePicking(const ImVec2& imageOrigin);
+    void HandlePicking(const ImVec2& imageOrigin, bool painting);
     void DrawOverlay();
     void FrameSelection();
+
+    // Tile painting, when the Tile Palette has a brush chosen. Returns true
+    // when it has taken the mouse, in which case picking and the right-drag
+    // pan stand down - otherwise a stroke would also select whatever was
+    // underneath it, and right-drag could not erase.
+    //
+    // Runs BEFORE the handles and before picking, for the same reason
+    // UpdateGizmo does: whoever decides first is whoever gets the click.
+    bool HandleTilePainting(const ImVec2& imageOrigin);
+
+    // The grid and the brush outline, drawn in screen space over the picture
+    // so they stay one pixel wide however far the view is zoomed out.
+    void DrawTileOverlay(const ImVec2& imageOrigin);
+
+    // Where a cell's four corners land on screen, through the map's transform
+    // and then the camera. Used by both of the above.
+    void CellCornersOnScreen(const ImVec2& imageOrigin, const eng::TilemapComponent& map,
+                             int x, int y, ImVec2 out[4]) const;
 
     // The box used for clicking on an entity and for framing it.
     static eng::AABB EntityWorldBounds(eng::Entity& entity);
@@ -97,6 +115,12 @@ private:
 
     GizmoAxis m_dragAxis = GizmoAxis::None;
     eng::Vec2 m_dragGrabOffset{};
+
+    // The cell under the cursor, and whether there is one. Worked out while
+    // handling input and reused when drawing the brush outline, so the
+    // outline cannot end up a frame behind the thing it is outlining.
+    eng::TileCoord m_hoveredCell{};
+    bool           m_hasHoveredCell = false;
 };
 
 } // namespace editor

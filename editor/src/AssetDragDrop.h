@@ -36,12 +36,39 @@ namespace editor {
 inline constexpr const char* kPayloadTexture = "ASSET_TEXTURE";
 inline constexpr const char* kPayloadScene   = "ASSET_SCENE";
 inline constexpr const char* kPayloadScript  = "ASSET_SCRIPT";
+inline constexpr const char* kPayloadFont    = "ASSET_FONT";
+inline constexpr const char* kPayloadTile    = "ASSET_TILE";
+
+// Everything else the Assets panel can pick up: a FOLDER, and any file whose
+// kind nothing here recognises. Neither of those means anything to an entity,
+// so no panel outside the Assets browser accepts this id - but both can be
+// moved to a different folder, and something that cannot be picked up cannot
+// be reorganised.
+inline constexpr const char* kPayloadAssetItem = "ASSET_ITEM";
+
+// Every id a tile in the Assets panel can carry.
+//
+// A drag source sets exactly ONE payload, so a tile holding an image carries
+// ASSET_TEXTURE and nothing else. A target that cares WHAT is being dragged
+// therefore names the single id it wants - the Inspector's Font field takes
+// ASSET_FONT and nothing else. A target that only cares WHERE the drag lands,
+// which is what a folder is, has to offer all of them. Listing them in one
+// place is what stops the two ends drifting apart as kinds are added.
+inline constexpr const char* kAllAssetPayloads[] = {
+    kPayloadTexture, kPayloadScene, kPayloadScript, kPayloadFont, kPayloadTile,
+    kPayloadAssetItem,
+};
 
 enum class AssetKind {
     Unknown,
     Texture,
     Scene,
     Script,
+    Font,
+
+    // A .otile: one tile material, naming the five-band sheet it draws from.
+    // See engine/include/engine/tilemap/TileAsset.h.
+    Tile,
 };
 
 // Works out what kind of file this is, from its EXTENSION and its folder -
@@ -50,8 +77,12 @@ enum class AssetKind {
 // is would make it the slowest thing in the editor.
 AssetKind ClassifyAsset(std::string_view virtualPath);
 
-// The ImGui drag id for a kind, or nullptr for a kind that cannot be dragged.
-// One switch statement, so adding a new kind is one edit rather than three.
+// The ImGui drag id for a kind. One switch statement, so adding a new kind is
+// one edit rather than three.
+//
+// NEVER NULL. A kind nothing recognises gets kPayloadAssetItem rather than
+// nothing at all, because every file in the panel has to be draggable to be
+// movable - and a .json or a .txt is as much a part of the project as a .png.
 const char* PayloadIdFor(AssetKind kind);
 
 // "enemies/PlayerController.cpp" -> "PlayerController".

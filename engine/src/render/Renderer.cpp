@@ -232,6 +232,106 @@ void Renderer::DrawText(Vec2 topLeft, const char* text, Color color) {
     }
 }
 
+TextureRef Renderer::CreateTextureFromPixels(const unsigned char* rgba, int width,
+                                             int height, bool smooth,
+                                             std::string& outError) {
+    if (g_renderer == nullptr || rgba == nullptr || width <= 0 || height <= 0) {
+        outError = "there is nothing to make a texture from";
+        return nullptr;
+    }
+
+    SDL_Texture* native = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_RGBA32,
+                                            SDL_TEXTUREACCESS_STATIC, width, height);
+    if (native == nullptr) {
+        outError = SDL_GetError();
+        return nullptr;
+    }
+
+    // The pitch is how many bytes one row takes: four per pixel.
+    if (!SDL_UpdateTexture(native, nullptr, rgba, width * 4)) {
+        SDL_DestroyTexture(native);
+        outError = SDL_GetError();
+        return nullptr;
+    }
+
+    // SMOOTH for text, NEAREST for pixel art. A letter's edge is a curve that
+    // was approximated into coverage values, and drawing those without
+    // filtering throws away the very information that makes it look like a
+    // curve. The sprite loader makes the opposite choice for the opposite
+    // reason - see ResourceManager.cpp.
+    SDL_SetTextureScaleMode(native, smooth ? SDL_SCALEMODE_LINEAR
+                                           : SDL_SCALEMODE_NEAREST);
+
+    // Text is drawn by tinting a white atlas, which needs the alpha to
+    // actually blend rather than overwrite.
+    SDL_SetTextureBlendMode(native, SDL_BLENDMODE_BLEND);
+
+    TextureRef texture = std::make_shared<Texture>();
+    texture->width  = width;
+    texture->height = height;
+    texture->native = native;
+    outError.clear();
+    return texture;
+}
+
+void Renderer::DrawTextFont(const FontRef& font, Vec2 topLeft, std::string_view text,
+                            Color color) {
+    // No font, or one whose file would not load: fall back to the built-in
+    // 8x8. Ugly beats invisible - see the note in Renderer.h.
+    if (!font || font->isFallback || !font->atlas || font->atlas->native == nullptr) {
+        // ONE CALL PER LINE. SDL_RenderDebugText draws a single line and
+        // does nothing useful with a newline inside it, so handing it the
+        // whole string put every line on top of the first - which is what
+        // "multi-line text shows on one line" was. The baked path below
+        // always handled this; only the fallback did not, and the fallback
+        // is what every label uses until a .ttf is assigned.
+        float y = topLeft.y;
+        ForEachLine(text, [&](std::string_view line) {
+            const std::string copy(line);
+            DrawText(Vec2{topLeft.x, y}, copy.c_str(), color);
+            y += TextLineHeight();
+        });
+        return;
+    }
+
+    auto* sdlTexture = static_cast<SDL_Texture*>(font->atlas->native);
+    SDL_SetTextureColorMod(sdlTexture, color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(sdlTexture, color.a);
+
+    // The pen starts on the BASELINE of the first line. topLeft is the top of
+    // that line, so the ascent is added to get down to it.
+    float penX = topLeft.x;
+    float penY = topLeft.y + font->ascent;
+
+    for (const char raw : text) {
+        if (raw == '\n') {
+            penX = topLeft.x;
+            penY += font->LineHeight();
+            continue;
+        }
+
+        const int code = static_cast<unsigned char>(raw);
+        if (code < kFirstGlyph || code > kLastGlyph) {
+            continue;   // outside the baked range; drawn as nothing
+        }
+
+        const Glyph& g = font->glyphs[static_cast<std::size_t>(code - kFirstGlyph)];
+
+        // A space has an advance but no ink, so there is nothing to copy.
+        if (g.sw > 0.0f && g.sh > 0.0f) {
+            const SDL_FRect src{g.sx, g.sy, g.sw, g.sh};
+            const SDL_FRect dst{penX + g.offset.x, penY + g.offset.y, g.sw, g.sh};
+            SDL_RenderTexture(g_renderer, sdlTexture, &src, &dst);
+        }
+        penX += g.advance;
+    }
+
+    // Put the atlas back to untinted, or the next caller inherits this
+    // colour - the same discipline the sprite renderer follows.
+    SDL_SetTextureColorMod(sdlTexture, 255, 255, 255);
+    SDL_SetTextureAlphaMod(sdlTexture, 255);
+}
+
 // ---------------------------------------------------------------------------
 //  Sprites
 // ---------------------------------------------------------------------------

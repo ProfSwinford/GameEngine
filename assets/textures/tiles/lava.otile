@@ -1,0 +1,9 @@
+{
+  "_comment": "A tile material. The sheet is ONE TILE WIDE and FIVE TILES TALL: outer corner / vertical edge / horizontal edge / inner corner / fill, top to bottom. Extra frames go sideways. tileSize and frames are measured from the image.",
+  "collision": "None",
+  "connectsTo": [
+    "tiles/stone.otile"
+  ],
+  "frameMode": "Random",
+  "sheet": "textures/tiles/lava.png"
+}

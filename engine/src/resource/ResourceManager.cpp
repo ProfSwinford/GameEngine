@@ -211,6 +211,74 @@ TextureRef ResourceManager::LoadTexture(std::string_view virtualPath) {
     return texture;
 }
 
+// ---------------------------------------------------------------------------
+//  Fonts
+// ---------------------------------------------------------------------------
+//
+//  The same weak-reference cache as textures, with one difference: the key is
+//  the path AND the size. See the note in ResourceManager.h.
+// ---------------------------------------------------------------------------
+
+FontRef BakeFont(std::string_view virtualPath, float pixelHeight, std::string& outError);
+
+namespace {
+std::unordered_map<std::string, std::weak_ptr<Font>> g_fontCache;
+
+std::string FontKey(std::string_view path, float pixelHeight) {
+    // Rounded to a whole pixel, because that is the only resolution an atlas
+    // has: asking for 15.9 and asking for 16 must not bake two atlases that
+    // are indistinguishable on screen.
+    return std::string(path) + "@" + std::to_string(static_cast<int>(pixelHeight + 0.5f));
+}
+} // namespace
+
+FontRef ResourceManager::LoadFont(std::string_view virtualPath, float pixelHeight) {
+    if (pixelHeight < 1.0f) {
+        pixelHeight = 1.0f;
+    }
+    const std::string key = FontKey(virtualPath, pixelHeight);
+
+    if (g_fontCache.contains(key)) {
+        if (FontRef existing = g_fontCache.at(key).lock()) {
+            return existing;
+        }
+        g_fontCache.erase(key);
+    }
+
+    std::string error;
+    FontRef     font = BakeFont(virtualPath, pixelHeight, error);
+
+    if (font->isFallback && !virtualPath.empty()) {
+        // AT ERROR, because the project's log threshold discards warnings and
+        // "my text is the wrong shape" is otherwise unexplainable.
+        //
+        // AN EMPTY PATH IS NOT A FAILURE and says nothing. "No font assigned"
+        // is the documented default - it means the built-in one - so every
+        // label in a scene would otherwise report an error for working
+        // exactly as intended, which is how a log becomes something people
+        // stop reading.
+        ENGINE_LOG_ERROR(Channels::kResource,
+                         "could not use the font '{}': {} - falling back to the "
+                         "built-in one", virtualPath, error);
+    } else if (!font->isFallback) {
+        ENGINE_LOG_INFO(Channels::kResource, "baked font '{}' at {}px ({}x{} atlas)",
+                        virtualPath, static_cast<int>(pixelHeight),
+                        font->atlas ? font->atlas->width : 0,
+                        font->atlas ? font->atlas->height : 0);
+    }
+
+    g_fontCache[key] = font;
+    return font;
+}
+
+FontRef ResourceManager::DefaultFont(float pixelHeight) {
+    // An empty path never resolves to a file, so this is a fallback font -
+    // which draws through the built-in 8x8. That is the point: a UI object
+    // with no font assigned still shows its text, and assigning a .ttf is an
+    // improvement rather than a requirement.
+    return LoadFont("", pixelHeight);
+}
+
 TextureRef ResourceManager::MissingTexture() {
     if (g_missing || g_loadingMissing) {
         return g_missing;

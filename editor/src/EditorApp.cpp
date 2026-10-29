@@ -23,6 +23,7 @@
 #include "panels/HierarchyPanel.h"
 #include "panels/InspectorPanel.h"
 #include "panels/ScenePanel.h"
+#include "panels/TilePalettePanel.h"
 
 #include <imgui.h>
 
@@ -153,6 +154,9 @@ bool EditorApp::Init() {
     AddPanel(std::make_unique<HierarchyPanel>());      // every entity
     AddPanel(std::make_unique<InspectorPanel>());      // the selected entity
     AddPanel(std::make_unique<AssetBrowserPanel>());   // files on disk
+    auto tiles         = std::make_unique<TilePalettePanel>();
+    m_tilePalettePanel = tiles.get();
+    AddPanel(std::move(tiles));                        // tiles, and the brush
     AddPanel(std::make_unique<BuildPanel>());          // what ships, and in what order
     AddPanel(std::make_unique<ConsolePanel>());        // the log
 
@@ -467,6 +471,24 @@ void EditorApp::FocusGameViewIfRequested() {
     // case where its own Draw does not run. See GamePanel.h.
     ImGui::SetWindowFocus(m_gamePanel->Title());
 }
+
+void EditorApp::RevealTilePaletteIfRequested() {
+    TilePaintState& tiles = TilePaintState::Get();
+    if (!tiles.revealRequested || m_tilePalettePanel == nullptr) {
+        return;
+    }
+
+    // Opened first and focused on the NEXT frame, exactly as the Game view is
+    // and for the same reason: a closed panel has never been shown to ImGui,
+    // so there is no window of that name to focus yet.
+    if (!m_tilePalettePanel->IsOpen()) {
+        m_tilePalettePanel->SetOpen(true);
+        return;
+    }
+
+    tiles.revealRequested = false;
+    ImGui::SetWindowFocus(m_tilePalettePanel->Title());
+}
 void EditorApp::RebuildScriptsIfChanged() {
     if (!ScriptBuild::NeedsRebuild()) {
         return;   // the usual case, and it costs only a few timestamp checks
@@ -614,6 +636,7 @@ void EditorApp::Run(int frameLimit) {
         DrawPanels();
         DrawSaveAsPopup();
         FocusGameViewIfRequested();
+        RevealTilePaletteIfRequested();
 
         // Ctrl+S. Checked here rather than going through InputMap, because a
         // tool shortcut is not a game action - binding it through the game's

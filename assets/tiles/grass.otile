@@ -1,0 +1,6 @@
+{
+  "_comment": "Decoration: nothing collides with it. 'connectsTo' makes grass round itself off against stone instead of stopping dead at it - the relation is ONE WAY, so stone still ends cleanly where it meets grass. Name each other in both files to make it mutual.",
+  "sheet": "textures/tiles/grass.png",
+  "collision": "None",
+  "connectsTo": ["tiles/stone.otile"]
+}

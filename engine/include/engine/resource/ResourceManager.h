@@ -39,6 +39,7 @@
 // ============================================================================
 
 #include <engine/core/Subsystem.h>
+#include <engine/render/Font.h>
 #include <engine/render/Texture.h>
 
 #include <string>
@@ -66,6 +67,22 @@ public:
 
     // The magenta "this did not load" square, from assets/textures/missing.bmp.
     static TextureRef MissingTexture();
+
+    // Loads a .ttf at one particular size, or returns the already-baked one.
+    //
+    // KEYED ON PATH AND SIZE TOGETHER. A font atlas holds letters drawn at
+    // one size; the same file at a different size is a different atlas, and
+    // caching on the path alone would hand back 16-pixel letters to whoever
+    // asked for 32 and leave them wondering why their text is blurry. See
+    // render/Font.h.
+    //
+    // Never returns null. A file that will not load comes back as a fallback
+    // font that draws through the built-in 8x8, so a missing .ttf is ugly
+    // rather than invisible.
+    static FontRef LoadFont(std::string_view virtualPath, float pixelHeight);
+
+    // The font used by anything that does not name one.
+    static FontRef DefaultFont(float pixelHeight);
 
     // How many different images are loaded right now. Shown in the editor.
     static std::size_t LoadedCount();

@@ -127,7 +127,7 @@ int main(int argc, char** argv) {
     // is a SAFE place to change scene: the frame loop has not started, so
     // nothing is part way through walking a list of entities that is about to
     // be destroyed. That is the same reason a script should not call
-    // LoadSceneByIndex from OnUpdate; see Engine::LoadSceneByIndex.
+    // LoadSceneByIndex from a script update; see Engine::LoadSceneByIndex.
     if (sceneIndex >= 0) {
         std::string sceneError;
         if (!engine.LoadSceneByIndex(static_cast<std::size_t>(sceneIndex), sceneError)) {

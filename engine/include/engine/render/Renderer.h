@@ -19,7 +19,10 @@
 
 #include <engine/math/Vec2.h>
 #include <engine/platform/SdlHandles.h>
+#include <engine/render/Font.h>
 #include <engine/render/Texture.h>
+
+#include <string_view>
 
 namespace eng {
 
@@ -144,6 +147,26 @@ public:
     // display. This multiplies it up.
     static void  SetTextScale(float scale);
     static float TextScale();
+
+    // ---- text from a .ttf -------------------------------------------------
+    //
+    // `topLeft` is the top-left of the first line, NOT the baseline - the
+    // baseline is where a typesetter measures from, and nobody positioning a
+    // label in an interface thinks that way.
+    //
+    // A null or fallback font draws through DrawText above, so an interface
+    // whose font file is missing is ugly rather than invisible. An invisible
+    // interface is a far harder thing to diagnose.
+    static void DrawTextFont(const FontRef& font, Vec2 topLeft, std::string_view text,
+                             Color color);
+
+    // Makes a texture out of pixels already in memory: four bytes per pixel,
+    // red first. Used by the font baker, which produces its atlas rather than
+    // loading one. `smooth` picks linear filtering, which text wants and
+    // pixel art does not.
+    static TextureRef CreateTextureFromPixels(const unsigned char* rgba, int width,
+                                              int height, bool smooth,
+                                              std::string& outError);
 
     // ---- sprites ----------------------------------------------------------
     // Draws a texture centred on `centre`, `size` pixels across, turned by

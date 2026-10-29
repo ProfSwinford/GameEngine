@@ -21,6 +21,7 @@
 //  player can rebind. This layer is the single doorway raw input comes through.
 // ============================================================================
 
+#include <string>
 #include <vector>
 
 namespace eng {
@@ -52,6 +53,28 @@ struct RawEvent {
     float        mouseY = 0.0f;
     float        wheelY = 0.0f;   // positive is scroll up
     RawEventKind kind   = RawEventKind::None;
+};
+
+// ---------------------------------------------------------------------------
+//  A FILE DRAGGED IN FROM THE DESKTOP.
+//
+//  This is not a RawEvent, and deliberately so. A RawEvent is a small
+//  fixed-size record of "button 3 went down", with nowhere to put a file name,
+//  and widening every event in the list by a std::string to carry something
+//  that happens a handful of times in a whole session would be the wrong
+//  trade. Drops get their own list instead.
+//
+//  `path` is a REAL path on this machine - "C:/Users/you/Pictures/hero.png" -
+//  because that is what the operating system hands over. It is the one place
+//  in the engine where a path is not a virtual one, which is why the field is
+//  not called `virtualPath` like every other path in the codebase. See
+//  FileSystem::Import, which is what turns one of these into a file that is
+//  actually in the project.
+// ---------------------------------------------------------------------------
+struct DroppedFile {
+    std::string path;
+    float       x = 0.0f;   // where it was let go, in window pixels
+    float       y = 0.0f;
 };
 
 class EventPump {
@@ -101,6 +124,40 @@ public:
     float MouseX() const { return m_mouseX; }
     float MouseY() const { return m_mouseY; }
 
+    // Whether the left button is held RIGHT NOW. Read from the system each
+    // frame rather than tracked from events, so a missed Up cannot leave it
+    // stuck on.
+    bool MouseLeftDown() const { return m_mouseLeftDown; }
+
+    // ========================================================================
+    //  FILES DRAGGED IN FROM OUTSIDE THE PROGRAM.
+    //
+    //  Everything the user let go of over this window during the most recent
+    //  Poll(), which on nearly every frame is nothing at all. A panel reads
+    //  this to import what was dropped on it - see AssetBrowserPanel.
+    //
+    //  WHY EACH ONE CARRIES A POSITION. There is one window and it holds every
+    //  panel, so "a file was dropped" is not a useful thing to be told: the
+    //  Assets panel has to act on a drop that landed on IT and leave alone one
+    //  that landed on the Scene view. The operating system knows where the
+    //  cursor was at the moment of the drop, so that answer is carried along
+    //  rather than reconstructed afterwards from where the mouse is now -
+    //  which, at the end of a drag, is not where the drop happened.
+    // ========================================================================
+    const std::vector<DroppedFile>& DroppedFiles() const { return m_dropped; }
+
+    // True while a drag from outside is HOVERING over the window, before
+    // anything has been let go of.
+    //
+    // This is what lets a panel light up and say "drop here", and it is the
+    // one piece of this that spans frames: the hover starts when the cursor
+    // enters the window and ends when the user drops or drags back out, which
+    // may be many frames later. Everything else here is cleared by the next
+    // Poll.
+    bool  DragHovering() const { return m_dragHovering; }
+    float DragX() const { return m_dragX; }
+    float DragY() const { return m_dragY; }
+
     // Turning key numbers into readable names and back. The config file stores
     // bindings as text like "Space", and these are what translate between that
     // and the numbers the operating system actually reports.
@@ -124,8 +181,20 @@ private:
     // Avoiding it here avoids explaining that.
     std::vector<char> m_consumed;
 
+    // Cleared every Poll, exactly like m_events: a drop is something that
+    // happened on one frame.
+    std::vector<DroppedFile> m_dropped;
+
+    // NOT cleared every Poll - see DragHovering(). It is turned on when a
+    // drag from outside enters the window and off when it leaves or lets go,
+    // and the frames in between are the entire point of it.
+    bool  m_dragHovering = false;
+    float m_dragX = 0.0f;
+    float m_dragY = 0.0f;
+
     float m_mouseX = 0.0f;
     float m_mouseY = 0.0f;
+    bool  m_mouseLeftDown = false;
     bool  m_quitRequested = false;
     bool  m_focusGained   = false;
     bool  m_focusLost     = false;

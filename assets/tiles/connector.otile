@@ -1,0 +1,6 @@
+{
+  "_comment": "A CONNECTOR: invisible at runtime, but every tile beside it believes the material carries on through. Line the edge of a map with these and it runs off the screen instead of growing a finished border; line up the facing edges of two maps and the seam between them disappears. It has no sheet because it is never drawn - the editorTint is how you find it in the Scene view.",
+  "connector": true,
+  "tileSize": 32,
+  "editorTint": [245, 66, 233, 90]
+}

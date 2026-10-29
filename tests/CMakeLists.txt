@@ -18,6 +18,11 @@ set(TEST_SOURCES
     src/test_overlap.cpp
     src/test_transform.cpp
     src/test_random.cpp
+    src/test_assets.cpp
+    src/test_time.cpp
+    src/test_physics.cpp
+    src/test_tilemap.cpp
+    src/test_scriptfields.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

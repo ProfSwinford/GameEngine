@@ -7,6 +7,7 @@
 
 #include "AssetDragDrop.h"
 #include "EditorApp.h"
+#include "panels/TilePalettePanel.h"
 
 #include <imgui.h>
 
@@ -78,11 +79,14 @@ eng::AABB ScenePanel::EntityWorldBounds(eng::Entity& entity) {
     // one, then the sprite's size, and finally a small fixed box - so an
     // entity with nothing but a transform is still clickable rather than being
     // something you can see in the Hierarchy and never select in the view.
-    if (auto* box = entity.Find<eng::AABBColliderComponent>(); box != nullptr) {
-        return box->WorldBounds();
-    }
-    if (auto* circle = entity.Find<eng::CircleColliderComponent>(); circle != nullptr) {
-        return circle->WorldBounds();
+    //
+    // WHATEVER SHAPE THE COLLIDER IS. This used to ask for a box and then for
+    // a circle by name, which was complete when those were the only two - and
+    // would have quietly made a capsule, polygon or edge collider impossible
+    // to click on, because neither lookup would match and it would fall
+    // through to the sprite.
+    if (auto* collider = eng::FindCollider(entity); collider != nullptr) {
+        return collider->WorldBounds();
     }
 
     const eng::Vec2 position = entity.Transform().WorldPosition();
@@ -229,12 +233,426 @@ void ScenePanel::Draw() {
     // below would disagree with what is on screen.
     m_camera.SetViewportSize(eng::Vec2{m_imageSize.x, m_imageSize.y});
 
-    // THE ORDER OF THESE THREE MATTERS. See the long note above UpdateGizmo.
-    UpdateGizmo(m_imageOrigin);
-    HandlePicking(m_imageOrigin);
-    DrawGizmo(m_imageOrigin);
+    // THE ORDER OF THESE MATTERS. See the long note above UpdateGizmo.
+    //
+    // Painting comes first of all: while a brush is chosen the mouse belongs
+    // to it, and the handles and picking must not also act on the same click.
+    const bool painting = HandleTilePainting(m_imageOrigin);
+    if (!painting) {
+        UpdateGizmo(m_imageOrigin);
+    }
+    HandlePicking(m_imageOrigin, painting);
+    if (!painting) {
+        DrawGizmo(m_imageOrigin);
+    }
 
+    DrawTileOverlay(m_imageOrigin);
     DrawOverlay();
+}
+
+// ---------------------------------------------------------------------------
+//  Tile painting
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The connected run of cells holding the same thing as the one clicked.
+//
+// BOUNDED, and it has to be. A tile grid has no edges, so flood-filling empty
+// space would walk outward until it ran out of memory. The painted area plus
+// a one-cell margin is the region Unity's own tilemap fill uses, and it is the
+// one that makes "fill the inside of this room" do what you meant.
+std::vector<eng::TileCoord> FloodRegion(const eng::TilemapComponent& map,
+                                        eng::TileCoord from, std::size_t limit) {
+    std::vector<eng::TileCoord> filled;
+
+    eng::TileCoord lo{};
+    eng::TileCoord hi{};
+    if (!map.TileBounds(lo, hi)) {
+        // Nothing painted at all, so there is no region to speak of and no
+        // sensible place to stop. One cell is the honest answer.
+        filled.push_back(from);
+        return filled;
+    }
+
+    lo.x -= 1; lo.y -= 1;
+    hi.x += 1; hi.y += 1;
+
+    const bool insideBounds = (from.x >= lo.x) && (from.x <= hi.x) &&
+                              (from.y >= lo.y) && (from.y <= hi.y);
+    if (!insideBounds) {
+        filled.push_back(from);
+        return filled;
+    }
+
+    const eng::TileId target = map.GetTile(from);
+
+    const int width  = hi.x - lo.x + 1;
+    const int height = hi.y - lo.y + 1;
+    std::vector<bool> seen(static_cast<std::size_t>(width) * height, false);
+
+    const auto index = [&](eng::TileCoord cell) {
+        return static_cast<std::size_t>(cell.y - lo.y) * width +
+               static_cast<std::size_t>(cell.x - lo.x);
+    };
+
+    std::vector<eng::TileCoord> pending{from};
+    seen[index(from)] = true;
+
+    while (!pending.empty() && filled.size() < limit) {
+        const eng::TileCoord cell = pending.back();
+        pending.pop_back();
+        filled.push_back(cell);
+
+        // Four-way and not eight. A diagonal leak would pour through the
+        // single-pixel gap where two walls meet at a corner, which is exactly
+        // where a level has them.
+        const eng::TileCoord steps[4] = {
+            {cell.x + 1, cell.y}, {cell.x - 1, cell.y},
+            {cell.x, cell.y + 1}, {cell.x, cell.y - 1},
+        };
+        for (const eng::TileCoord& next : steps) {
+            if (next.x < lo.x || next.x > hi.x || next.y < lo.y || next.y > hi.y) {
+                continue;
+            }
+            if (seen[index(next)]) {
+                continue;
+            }
+            if (map.GetTile(next) != target) {
+                continue;
+            }
+            seen[index(next)] = true;
+            pending.push_back(next);
+        }
+    }
+
+    return filled;
+}
+
+} // namespace
+
+bool ScenePanel::HandleTilePainting(const ImVec2& imageOrigin) {
+    m_hasHoveredCell = false;
+
+    TilePaintState& state = TilePaintState::Get();
+    if (!state.IsPainting()) {
+        return false;
+    }
+
+    eng::TilemapComponent* map = state.TargetMap();
+    if (map == nullptr) {
+        // A brush with nothing to paint into. The editor is left behaving
+        // normally rather than swallowing clicks that can do nothing - the
+        // Tile Palette already says there is no target.
+        return false;
+    }
+
+    if (!m_hovered) {
+        return true;   // the mode is on; the pointer is simply somewhere else
+    }
+
+    const ImGuiIO&  io    = ImGui::GetIO();
+    const eng::Vec2 world = m_camera.ScreenToWorld(
+        eng::Vec2{io.MousePos.x - imageOrigin.x, io.MousePos.y - imageOrigin.y});
+
+    m_hoveredCell    = map->WorldToCell(world);
+    m_hasHoveredCell = true;
+
+    // Middle-drag still pans, so there is always a way to move around without
+    // leaving the brush. Right-drag is taken over for erasing.
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+        return true;
+    }
+
+    const bool leftDown  = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    const bool rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+
+    // Resolved only when something is actually about to be painted. Doing it
+    // on hover would add a tile to the map's palette just for moving the mouse
+    // across the view.
+    const auto brushId = [&]() -> eng::TileId {
+        return state.tilePath.empty() ? eng::kEmptyTile
+                                      : map->AddToPalette(state.tilePath);
+    };
+
+    const auto markDirty = [] { EditorState::Get().dirty = true; };
+
+    switch (state.tool) {
+        case TileTool::Select:
+            break;
+
+        case TileTool::Paint: {
+            if (leftDown) {
+                if (const eng::TileId id = brushId(); id != eng::kEmptyTile) {
+                    map->SetTile(m_hoveredCell, id);
+                    markDirty();
+                }
+            } else if (rightDown) {
+                map->SetTile(m_hoveredCell, eng::kEmptyTile);
+                markDirty();
+            }
+            break;
+        }
+
+        case TileTool::Erase: {
+            if (leftDown || rightDown) {
+                map->SetTile(m_hoveredCell, eng::kEmptyTile);
+                markDirty();
+            }
+            break;
+        }
+
+        case TileTool::Rectangle: {
+            const bool leftPressed  = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+            const bool rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+
+            if (!state.dragging && (leftPressed || rightPressed)) {
+                state.dragging  = true;
+                state.dragErase = rightPressed;
+                state.dragStart = m_hoveredCell;
+            } else if (state.dragging && !leftDown && !rightDown) {
+                // Applied ON RELEASE, so the box can be adjusted before it is
+                // committed - and so a mis-started drag can be taken back by
+                // dragging it down to nothing.
+                const eng::TileId id = state.dragErase ? eng::kEmptyTile : brushId();
+                if (state.dragErase || id != eng::kEmptyTile) {
+                    const int minX = std::min(state.dragStart.x, m_hoveredCell.x);
+                    const int maxX = std::max(state.dragStart.x, m_hoveredCell.x);
+                    const int minY = std::min(state.dragStart.y, m_hoveredCell.y);
+                    const int maxY = std::max(state.dragStart.y, m_hoveredCell.y);
+
+                    for (int y = minY; y <= maxY; ++y) {
+                        for (int x = minX; x <= maxX; ++x) {
+                            map->SetTile(x, y, id);
+                        }
+                    }
+                    markDirty();
+                    std::snprintf(m_status, sizeof(m_status), "%s %d x %d cells",
+                                  state.dragErase ? "cleared" : "filled",
+                                  maxX - minX + 1, maxY - minY + 1);
+                }
+                state.dragging = false;
+            }
+            break;
+        }
+
+        case TileTool::Fill: {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                const bool erasing = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                const eng::TileId id = erasing ? eng::kEmptyTile : brushId();
+
+                if (erasing || id != eng::kEmptyTile) {
+                    constexpr std::size_t kFillLimit = 200000;
+                    const std::vector<eng::TileCoord> region =
+                        FloodRegion(*map, m_hoveredCell, kFillLimit);
+
+                    for (const eng::TileCoord& cell : region) {
+                        map->SetTile(cell, id);
+                    }
+                    markDirty();
+
+                    if (region.size() >= kFillLimit) {
+                        std::snprintf(m_status, sizeof(m_status),
+                                      "fill stopped at %zu cells", region.size());
+                    } else {
+                        std::snprintf(m_status, sizeof(m_status), "filled %zu cell(s)",
+                                      region.size());
+                    }
+                }
+            }
+            break;
+        }
+
+        case TileTool::Pick: {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                const eng::TileId under = map->GetTile(m_hoveredCell);
+                if (under == eng::kEmptyTile) {
+                    std::snprintf(m_status, sizeof(m_status), "that cell is empty");
+                } else {
+                    state.tilePath = map->Palette()[static_cast<std::size_t>(under) - 1];
+                    state.tool     = TileTool::Paint;
+                    std::snprintf(m_status, sizeof(m_status), "picked up '%s'",
+                                  state.tilePath.c_str());
+                }
+            }
+            break;
+        }
+    }
+
+    return true;
+}
+
+void ScenePanel::CellCornersOnScreen(const ImVec2& imageOrigin,
+                                     const eng::TilemapComponent& map, int x, int y,
+                                     ImVec2 out[4]) const {
+    const eng::AABB local = map.CellBoundsLocal(x, y);
+
+    eng::Mat3 world = eng::Mat3::Identity();
+    if (const eng::Transform2D* transform = map.OwnerTransform(); transform != nullptr) {
+        world = transform->WorldMatrix();
+    }
+
+    // Anticlockwise from the bottom-left, so the four points form a loop that
+    // can be handed straight to AddPolyline.
+    const eng::Vec2 corners[4] = {
+        local.min,
+        eng::Vec2{local.max.x, local.min.y},
+        local.max,
+        eng::Vec2{local.min.x, local.max.y},
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        const eng::Vec2 screen =
+            m_camera.WorldToScreen(world.TransformPoint(corners[i]));
+        out[i] = ImVec2(imageOrigin.x + screen.x, imageOrigin.y + screen.y);
+    }
+}
+
+void ScenePanel::DrawTileOverlay(const ImVec2& imageOrigin) {
+    TilePaintState& state = TilePaintState::Get();
+    if (!state.IsPainting()) {
+        return;
+    }
+
+    eng::TilemapComponent* map = state.TargetMap();
+    if (map == nullptr) {
+        return;
+    }
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    // Clipped to the picture, or the grid would be drawn over the panels
+    // docked beside this one.
+    draw->PushClipRect(imageOrigin,
+                       ImVec2(imageOrigin.x + m_imageSize.x,
+                              imageOrigin.y + m_imageSize.y),
+                       true);
+
+    // ---- the grid ---------------------------------------------------------
+    if (state.showGrid) {
+        const eng::Vec2 cellSize = map->CellSize();
+        const eng::AABB visible  = m_camera.VisibleBounds();
+
+        eng::Mat3 world = eng::Mat3::Identity();
+        if (const eng::Transform2D* transform = map->OwnerTransform();
+            transform != nullptr) {
+            world = transform->WorldMatrix();
+        }
+        const eng::Mat3 toLocal = world.Inverse();
+
+        // All four corners, because a rotated map's visible area is a tilted
+        // rectangle in its own space - the same argument the renderer makes.
+        const eng::Vec2 screenCorners[4] = {
+            visible.min,
+            eng::Vec2{visible.max.x, visible.min.y},
+            visible.max,
+            eng::Vec2{visible.min.x, visible.max.y},
+        };
+        eng::Vec2 lo = toLocal.TransformPoint(screenCorners[0]);
+        eng::Vec2 hi = lo;
+        for (int i = 1; i < 4; ++i) {
+            const eng::Vec2 p = toLocal.TransformPoint(screenCorners[i]);
+            lo.x = std::min(lo.x, p.x);
+            lo.y = std::min(lo.y, p.y);
+            hi.x = std::max(hi.x, p.x);
+            hi.y = std::max(hi.y, p.y);
+        }
+
+        const int minX = static_cast<int>(std::floor(lo.x / cellSize.x));
+        const int maxX = static_cast<int>(std::floor(hi.x / cellSize.x)) + 1;
+        const int minY = static_cast<int>(std::floor(lo.y / cellSize.y));
+        const int maxY = static_cast<int>(std::floor(hi.y / cellSize.y)) + 1;
+
+        // Zoomed far enough out, the lines are closer together than they are
+        // wide and the grid becomes a grey wash that hides the map underneath
+        // it. Past that point it is more useful not drawn.
+        constexpr int kMaxGridLines = 160;
+        if ((maxX - minX) <= kMaxGridLines && (maxY - minY) <= kMaxGridLines) {
+            const ImU32 colour = IM_COL32(150, 160, 185, 60);
+
+            for (int x = minX; x <= maxX; ++x) {
+                const eng::Vec2 a = world.TransformPoint(
+                    eng::Vec2{static_cast<float>(x) * cellSize.x, lo.y});
+                const eng::Vec2 b = world.TransformPoint(
+                    eng::Vec2{static_cast<float>(x) * cellSize.x, hi.y});
+                const eng::Vec2 sa = m_camera.WorldToScreen(a);
+                const eng::Vec2 sb = m_camera.WorldToScreen(b);
+                draw->AddLine(ImVec2(imageOrigin.x + sa.x, imageOrigin.y + sa.y),
+                              ImVec2(imageOrigin.x + sb.x, imageOrigin.y + sb.y),
+                              colour);
+            }
+            for (int y = minY; y <= maxY; ++y) {
+                const eng::Vec2 a = world.TransformPoint(
+                    eng::Vec2{lo.x, static_cast<float>(y) * cellSize.y});
+                const eng::Vec2 b = world.TransformPoint(
+                    eng::Vec2{hi.x, static_cast<float>(y) * cellSize.y});
+                const eng::Vec2 sa = m_camera.WorldToScreen(a);
+                const eng::Vec2 sb = m_camera.WorldToScreen(b);
+                draw->AddLine(ImVec2(imageOrigin.x + sa.x, imageOrigin.y + sa.y),
+                              ImVec2(imageOrigin.x + sb.x, imageOrigin.y + sb.y),
+                              colour);
+            }
+        }
+    }
+
+    // ---- what the next click will affect ----------------------------------
+    if (m_hasHoveredCell) {
+        const bool erasing = (state.tool == TileTool::Erase) ||
+                             (state.dragging && state.dragErase);
+        const ImU32 colour = erasing ? IM_COL32(235, 90, 80, 230)
+                                     : IM_COL32(250, 200, 90, 230);
+
+        int minX = m_hoveredCell.x;
+        int maxX = m_hoveredCell.x;
+        int minY = m_hoveredCell.y;
+        int maxY = m_hoveredCell.y;
+
+        if (state.tool == TileTool::Rectangle && state.dragging) {
+            minX = std::min(state.dragStart.x, m_hoveredCell.x);
+            maxX = std::max(state.dragStart.x, m_hoveredCell.x);
+            minY = std::min(state.dragStart.y, m_hoveredCell.y);
+            maxY = std::max(state.dragStart.y, m_hoveredCell.y);
+        }
+
+        // The outline of the whole affected box, drawn from its corner cells
+        // rather than cell by cell - a 200x200 rectangle preview would
+        // otherwise be forty thousand outlines.
+        ImVec2 lowCorners[4];
+        ImVec2 highCorners[4];
+        CellCornersOnScreen(imageOrigin, *map, minX, minY, lowCorners);
+        CellCornersOnScreen(imageOrigin, *map, maxX, maxY, highCorners);
+
+        const ImVec2 loop[4] = {
+            lowCorners[0],                                  // bottom-left of min cell
+            ImVec2(highCorners[1].x, lowCorners[1].y),      // bottom-right
+            highCorners[2],                                 // top-right of max cell
+            ImVec2(lowCorners[3].x, highCorners[3].y),      // top-left
+        };
+        draw->AddPolyline(loop, 4, colour, ImDrawFlags_Closed, 2.0f);
+
+        if (minX != maxX || minY != maxY) {
+            const ImVec2 label(std::min(loop[0].x, loop[2].x) + 4.0f,
+                               std::min(loop[0].y, loop[2].y) - 18.0f);
+            char text[64];
+            std::snprintf(text, sizeof(text), "%d x %d", maxX - minX + 1,
+                          maxY - minY + 1);
+            draw->AddText(label, colour, text);
+        }
+    }
+
+    draw->PopClipRect();
+
+    // The mode, said out loud over the view. A brush that is on without
+    // anything saying so is a brush you forget about and then paint with by
+    // accident while trying to select something.
+    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + 8.0f,
+                                     imageOrigin.y + m_imageSize.y - 24.0f));
+    ImGui::TextColored(ImVec4(0.98f, 0.80f, 0.35f, 1.0f),
+                       "TILE %s%s%s", TileToolName(state.tool),
+                       state.tilePath.empty() ? "" : "  -  ",
+                       state.tilePath.empty() ? "(no tile chosen)"
+                                              : state.tilePath.c_str());
 }
 
 void ScenePanel::DrawOverlay() {
@@ -270,7 +688,7 @@ void ScenePanel::DrawOverlay() {
     ImGui::EndGroup();
 }
 
-void ScenePanel::HandlePicking(const ImVec2& imageOrigin) {
+void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting) {
     ImGuiIO& io = ImGui::GetIO();
 
     if (!m_hovered && m_dragAxis == GizmoAxis::None) {
@@ -278,8 +696,12 @@ void ScenePanel::HandlePicking(const ImVec2& imageOrigin) {
     }
 
     // ---- pan: drag with the middle or right button ------------------------
+    //
+    // WHILE A BRUSH IS CHOSEN, RIGHT-DRAG ERASES INSTEAD. Middle-drag still
+    // pans, so there is always a way to move around without putting the brush
+    // down - which there would not be if painting took both of them.
     if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
-        ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+        (!painting && ImGui::IsMouseDragging(ImGuiMouseButton_Right))) {
         const ImVec2 delta = io.MouseDelta;
         // Divided by the zoom so a drag moves the world under the cursor by
         // the same number of PIXELS however far in you are. The y is negated
@@ -340,7 +762,7 @@ void ScenePanel::HandlePicking(const ImVec2& imageOrigin) {
     // ---- left click selects ------------------------------------------------
     // Only when a handle is not being dragged, and on the press rather than
     // the release, so click-and-drag on a handle never also reselects.
-    if (m_hovered && m_dragAxis == GizmoAxis::None &&
+    if (m_hovered && !painting && m_dragAxis == GizmoAxis::None &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const eng::Vec2 screen{io.MousePos.x - imageOrigin.x,
                                io.MousePos.y - imageOrigin.y};
@@ -659,7 +1081,8 @@ void ScenePanel::RenderView() {
         });
     }
 
-    eng::Engine::Get().RenderWorld(m_camera, /*includeGizmos=*/true);
+    eng::Engine::Get().RenderWorld(m_camera, /*includeGizmos=*/true,
+                                   /*editorTints=*/true);
 
     eng::Renderer::SetRenderTarget(nullptr);
 }

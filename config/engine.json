@@ -2,7 +2,7 @@
   "_comment": "The settings the engine reads when it starts. Change a value, save, and run again - no rebuilding. config/engine.example.json is the documented copy; this is the one that is actually read.",
 
   "window": {
-    "title": "Orion Engine",
+    "title": "My Engine",
     "width": 1280,
     "height": 720
   },
@@ -19,6 +19,12 @@
     "maxStepsPerFrame": 5,
     "logBufferCapacity": 4096,
     "gizmoCircleSegments": 24
+  },
+
+  "physics": {
+    "_note": "gravity is in the units your game uses. Unity's -9.81 is metres per second squared; this project works in PIXELS, so -981 is the same real-world gravity at roughly 100 pixels to the metre. Set gravity to [0,0] for a top-down game. solverIterations is how many passes the contact solver makes - raise it if stacked objects sink into each other.",
+    "gravity": [0.0, -981.0],
+    "solverIterations": 4
   },
 
   "startup": {

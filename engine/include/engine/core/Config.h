@@ -27,6 +27,7 @@
 // ============================================================================
 
 #include <engine/core/Json.h>
+#include <engine/math/Vec2.h>
 #include <engine/core/Log.h>
 
 #include <string>
@@ -51,6 +52,19 @@ struct BootConfig {
     int         gizmoCircleSegments  = 24;      // how round a drawn circle looks
     float       fixedTimestepSeconds = 1.0f / 60.0f;
     int         maxStepsPerFrame     = 5;
+
+    // "physics"
+    //
+    // UNITY'"'"'S NUMBER IS -9.81, and that is metres per second squared. A 2D
+    // game'"'"'s units are usually PIXELS, so -9.81 is a barely visible drift -
+    // about 30 pixels in two and a half seconds. At roughly 100 pixels to the
+    // metre, -981 is the same gravity as Earth'"'"'s.
+    //
+    // The engine'"'"'s own default stays at Unity'"'"'s value so that the number means
+    // what a physics textbook says it means; the config file is where a
+    // project says what its units are.
+    Vec2        gravity = Vec2{0.0f, -9.81f};
+    int         solverIterations = 4;
 
     // "startup" - the scene loaded when the game starts.
     //

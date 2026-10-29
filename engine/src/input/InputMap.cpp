@@ -341,6 +341,18 @@ void InputMap::InjectAction(std::string_view action, bool down) {
     }
 }
 
+void InputMap::ResetState() {
+    for (auto& [contextName, context] : g_contexts) {
+        for (auto& [actionName, entry] : context.actions) {
+            // All three. See the note in InputMap.h for why none of them can
+            // be left out.
+            entry.downNow  = false;
+            entry.downLast = false;
+            entry.state    = ActionState::Idle;
+        }
+    }
+}
+
 void InputMap::ClearInjectedActions() {
     // Releases everything. An autopilot that stops steering must not leave the
     // player walking into a wall forever.

@@ -89,6 +89,12 @@ bool LoadBootConfig(std::string_view virtualPath, BootConfig& outConfig,
     outConfig.maxStepsPerFrame =
         ReadInt(tunables, "maxStepsPerFrame", outConfig.maxStepsPerFrame, "tunables");
 
+    // --- physics ----------------------------------------------------------
+    const Json& physics = Section(document, "physics");
+    outConfig.gravity = ReadVec2(physics, "gravity", outConfig.gravity, "physics");
+    outConfig.solverIterations =
+        ReadInt(physics, "solverIterations", outConfig.solverIterations, "physics");
+
     // --- startup ----------------------------------------------------------
     outConfig.startupScene =
         ReadString(Section(document, "startup"), "scene", outConfig.startupScene, "startup");

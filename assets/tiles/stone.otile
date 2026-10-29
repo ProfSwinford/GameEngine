@@ -1,0 +1,9 @@
+{
+  "_comment": "A Fang-format auto-tile. The sheet is ONE TILE WIDE and FIVE TILES TALL: the five bands are, top to bottom, outer corner / vertical edge / horizontal edge / inner corner / fill. tileSize and frames are left out deliberately - they are worked out from the image, so there is only one description of them. See engine/include/engine/tilemap/AutoTile.h.",
+  "collision": "Grid",
+  "connectsTo": [
+    "tiles/water.otile",
+    "textures/tiles/lava.otile"
+  ],
+  "sheet": "textures/tiles/stone.png"
+}

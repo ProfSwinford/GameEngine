@@ -6,8 +6,9 @@
 //  INSPECTOR: every component on whichever entity is selected in the
 //  Hierarchy, with its fields editable and taking effect immediately - the
 //  transform's position, rotation and scale; the sprite's image and colour;
-//  the collider's size and layers; a script's binding. Plus an "Add Component"
-//  row at the bottom. Same panel Unity puts on the right.
+//  the collider's size and layers; a script's binding and its own variables.
+//  Plus an "Add Component" row at the bottom. Same panel Unity puts on the
+//  right.
 //
 //  TOOLBAR: Play, Pause and Step, plus a time-scale slider and a readout of
 //  how far the simulation has got.
@@ -31,6 +32,12 @@
 //     shows system-owned fields as READ-ONLY while the game runs, and says so,
 //     rather than letting somebody drag a position that a movement system puts
 //     straight back.
+//
+//     A SCRIPT'S OWN VARIABLES ARE THE EXCEPTION, and they stay editable
+//     while the game runs on purpose. Nothing else owns them - the script
+//     reads them and nobody writes them - so dragging one is not a value
+//     being fought over, it is the only honest way to find out what a jump
+//     height should be. See engine/scene/ScriptFields.h.
 //
 //  3. DESTROYING FROM THE INSPECTOR goes through the deferred queue, exactly
 //     like everything else. Deleting an entity from a panel in the middle of a

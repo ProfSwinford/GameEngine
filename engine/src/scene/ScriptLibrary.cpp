@@ -128,14 +128,15 @@ bool ScriptLibrary::Load(std::string_view virtualPath, std::string& outError) {
     // Each script is listed WITH THE HOOKS IT TURNED OUT TO HAVE.
     //
     // Because hooks are found by name rather than declared, a misspelled
-    // OnUpdate is not a compile error - it is a function nobody calls. This
+    // hook name is not a compile error - it is a function nobody calls. This
     // line is what makes that visible: if your script is listed with hooks you
     // did not expect, the spelling is where to look. A script with none at all
     // is reported as a warning, because it is almost certainly a mistake.
     ScriptRegistry::ForEachEntry([](const char* name, const ScriptRegistry::Entry& e) {
         const std::string hooks = DescribeHooks(e.hooks);
         if (e.hooks.start == nullptr && e.hooks.update == nullptr &&
-            e.hooks.destroy == nullptr && !e.hooks.AnyCollision()) {
+            e.hooks.fixedUpdate == nullptr &&
+            e.hooks.destroy == nullptr && !e.hooks.AnyContact()) {
             ENGINE_LOG_WARN(Channels::kScene, "    script '{}' has {}", name, hooks);
         } else {
             ENGINE_LOG_INFO(Channels::kScene, "    script '{}' - {}", name, hooks);

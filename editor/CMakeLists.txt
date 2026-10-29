@@ -34,6 +34,7 @@ set(EDITOR_SOURCES
     src/panels/HierarchyPanel.cpp        # Hierarchy- every entity in the scene
     src/panels/InspectorPanel.cpp        # Inspector- the selected entity's components
     src/panels/ScenePanel.cpp            # Scene    - the view you edit in
+    src/panels/TilePalettePanel.cpp      # Tiles    - choose a tile and a brush
     src/panels/ToolbarPanel.cpp          # Toolbar  - Play, Pause, Step
 )
 

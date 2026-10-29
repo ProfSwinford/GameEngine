@@ -1,0 +1,136 @@
+{
+  "_comment": "A tilemap demo. The level is ONE entity with a TilemapComponent: the grid holds a small number per cell, and what each number looks like lives in a .otile file. Nothing here says which of the 47 shapes a cell is - that is worked out from its neighbours every frame. See engine/include/engine/tilemap/AutoTile.h.",
+  "_connectors": "The bottom row, at y = -1, is CONNECTOR tiles: invisible, but the stone above believes the ground carries on through them, so the floor runs off the bottom of the screen instead of growing a finished edge. They show as faint magenta in the Scene view only.",
+  "_try": "Open the Tile Palette panel, choose a tile and a brush, and paint. The walls become solid as you draw them, because TilemapColliderComponent watches the map and merges the solid cells into boxes.",
+  "camera": {
+    "position": [
+      512.0,
+      240.0
+    ],
+    "zoom": 1.0
+  },
+  "entities": [
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "chunks": [
+            {
+              "at": [
+                0,
+                -1
+              ],
+              "cells": "240:0 16:4"
+            },
+            {
+              "at": [
+                1,
+                -1
+              ],
+              "cells": "240:0 16:4"
+            },
+            {
+              "at": [
+                0,
+                0
+              ],
+              "cells": "13:1 3:3 12:1 4:3 11:2 40:0 4:1 12:0 4:2 80:0 5:1 11:0 5:2 52:0"
+            },
+            {
+              "at": [
+                1,
+                0
+              ],
+              "cells": "5:3 11:1 5:3 11:1 5:0 11:2 26:0 3:1 13:0 3:2 37:0 6:1 10:0 6:2 104:0"
+            }
+          ],
+          "layer": -10,
+          "palette": [
+            "tiles/stone.otile",
+            "tiles/grass.otile",
+            "tiles/water.otile",
+            "tiles/connector.otile"
+          ],
+          "type": "TilemapComponent"
+        },
+        {
+          "collidesWith": [
+            "Player"
+          ],
+          "layer": "World",
+          "trigger": false,
+          "type": "TilemapColliderComponent"
+        }
+      ],
+      "name": "Level"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            176.0,
+            420.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 0,
+          "size": [
+            24.0,
+            48.0
+          ],
+          "texture": "textures/checker_red.bmp",
+          "tint": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "type": "SpriteComponent"
+        },
+        {
+          "collidesWith": [
+            "World"
+          ],
+          "friction": 0.0,
+          "halfExtents": [
+            12.0,
+            24.0
+          ],
+          "layer": "Player",
+          "trigger": false,
+          "type": "BoxColliderComponent"
+        },
+        {
+          "bodyType": "Dynamic",
+          "freezeRotation": true,
+          "gravityScale": 1.0,
+          "mass": 1.0,
+          "type": "Rigidbody2DComponent"
+        },
+        {
+          "script": "TilemapWalker",
+          "type": "ScriptComponent"
+        }
+      ],
+      "name": "Player"
+    }
+  ],
+  "name": "<unnamed>"
+}

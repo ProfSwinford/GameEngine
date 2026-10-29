@@ -89,6 +89,7 @@ inline constexpr std::string_view kFileSys  = "FileSystem";
 inline constexpr std::string_view kResource = "Resource";
 inline constexpr std::string_view kScene    = "Scene";
 inline constexpr std::string_view kPhysics  = "Physics";
+inline constexpr std::string_view kTilemap  = "Tilemap";
 inline constexpr std::string_view kConfig   = "Config";
 inline constexpr std::string_view kEditor   = "Editor";
 inline constexpr std::string_view kGame     = "Game";

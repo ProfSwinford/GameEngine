@@ -8,7 +8,9 @@
 //
 //      class Bouncer : public eng::ScriptBehaviour {
 //      public:
-//          void OnUpdate(float dt) { Transform()->Translate({0, dt * 50}); }
+//          void OnFixedUpdate() {
+//              Transform()->Translate({0, Time::DeltaTime() * 50});
+//          }
 //      };
 //      ENGINE_REGISTER_SCRIPT(Bouncer)      // without this it can never be found
 //
@@ -28,7 +30,7 @@
 //  script, and nothing in this file depends on understanding it.
 //
 //  THE PAYOFF IS SPEED AS WELL AS CONVENIENCE. Because the engine knows at
-//  build time which hooks a script actually has, a script with no OnUpdate is
+//  build time which hooks a script actually has, a script with no update is
 //  never put in the update list at all. It costs exactly nothing per frame
 //  rather than a call into an empty function sixty times a second.
 //
@@ -66,6 +68,25 @@
 //  that says to check both the spelling and the `public:`.
 //
 //  ==========================================================================
+//  VARIABLES IN THE INSPECTOR
+//
+//  A script can also offer up the numbers worth tuning, and those appear in
+//  the Inspector, can be changed while the game runs, and are saved on each
+//  entity separately:
+//
+//      float speed = 200.0f;
+//
+//      void OnExpose(eng::ScriptFields& fields) {
+//          fields.Var("speed", speed);
+//      }
+//
+//  THIS ONE IS WRITTEN OUT RATHER THAN FOUND, which is the opposite of how
+//  the hooks above work, and it is not an inconsistency: a `requires`
+//  expression can ask whether a NAMED member exists, and no C++ construct can
+//  ask what members exist at all. See ScriptFields.h for that and for why the
+//  scene file deliberately stores only the values somebody changed.
+//
+//  ==========================================================================
 //  ONE HONEST DIFFERENCE FROM UNITY
 //  A script here is COMPILED C++, not an interpreted file. There is no
 //  scripting language and no virtual machine. The editor compiles your scripts
@@ -94,6 +115,7 @@
 // ============================================================================
 
 #include <engine/scene/Component.h>
+#include <engine/scene/ScriptFields.h>
 #include <engine/scene/ScriptHooks.h>
 #include <engine/scene/SystemOrder.h>
 
@@ -101,6 +123,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace eng {
 
@@ -109,7 +132,8 @@ class ScriptComponent;
 // ---------------------------------------------------------------------------
 //  The class you inherit from.
 //
-//  Note what is NOT here: OnStart, OnUpdate, OnDestroy, OnCollisionEnter. If
+//  Note what is NOT here: OnStart, OnUpdate, OnFixedUpdate, OnDestroy,
+//  OnCollisionEnter. If
 //  this class declared them, every script would appear to have them and the
 //  compiler could never tell which ones you actually wrote. Their absence is
 //  the whole mechanism.
@@ -192,8 +216,13 @@ public:
 
     const char* TypeName() const override { return kTypeName; }
 
-    // Scene file field:
+    // Scene file fields:
     //   "script": "PlayerController"
+    //   "vars":   { "speed": 120.0, "colour": [255, 0, 0, 255] }
+    //
+    // "vars" holds ONLY the variables somebody changed - see ScriptFields.h
+    // for why the defaults are deliberately not written down, and what that
+    // buys when a default changes in the code.
     bool Deserialize(const Json& node, std::string& outError) override;
     bool Serialize(Json& out) const override;
 
@@ -212,19 +241,87 @@ public:
     bool IsResolved() const { return m_behaviour != nullptr; }
 
     // Which hooks the bound script turned out to have. The Inspector shows
-    // them, because "this script has no OnUpdate" is the answer to "why is
+    // them, because "this script has no update" is the answer to "why is
     // nothing happening" often enough to be worth putting on screen.
     const ScriptHooks& Hooks() const { return m_hooks; }
 
-    // Does this component need Tick() at all? False for a script that has
-    // already started and has no OnUpdate - and the system drops those from
-    // its list rather than calling into nothing every step.
-    bool NeedsTick() const {
+    // ---- the script's variables ------------------------------------------
+    //
+    // Empty when the script exposes nothing, and also when it is not compiled
+    // into this build - there is no object to point at. The saved values
+    // survive both; see SavedValues below.
+    //
+    // THE POINTERS INSIDE ARE ONLY VALID WHILE THE SCRIPT IS BOUND. Do not
+    // hold on to a ScriptField across a frame in which scripts could be
+    // rebuilt, which in the editor is any frame at all.
+    const ScriptFields& Fields() const { return m_fields; }
+
+    // What goes in the scene file: the variables that differ from the
+    // script's own initialisers, as JSON.
+    //
+    // IT IS KEPT WHEN THE SCRIPT IS NOT. A build without PlayerController
+    // compiled in still holds that component's values, writes them back out
+    // untouched, and hands them over on the build that has the class. That is
+    // why they are stored as JSON rather than as typed values - with no class
+    // to ask, there is nothing to say that "speed" is a float.
+    const Json& SavedValues() const { return m_savedValues; }
+
+    // Records a variable's CURRENT value as the saved one.
+    //
+    // The editor changes a variable by writing through the field's own
+    // pointer and then calls this, so there is exactly one piece of code that
+    // knows how each type is stored. False means no variable has that name.
+    //
+    // A value equal to the script's default is still recorded, rather than
+    // quietly dropped. "I want this pinned at 90 whatever the code later says"
+    // is a real intention, and the Inspector offers a way to undo it.
+    bool SaveFieldValue(std::string_view name);
+
+    // Forgets the saved value and puts the script's own initialiser back -
+    // the value the variable had the moment the object was created, captured
+    // before anything was applied to it.
+    bool RevertFieldValue(std::string_view name);
+
+    bool IsFieldOverridden(std::string_view name) const;
+
+    // Saved values that no variable claims. Two very different causes, and
+    // the Inspector tells them apart because only one is a problem:
+    //
+    //   - the script is not compiled in, so NOTHING is claimed and all of
+    //     this is simply waiting;
+    //   - the script is running and a variable has been renamed or removed,
+    //     which leaves a value behind that will never be used again.
+    std::vector<std::string> UnusedSavedValues() const;
+
+    // Drops those, and says how many went. REFUSES while the script is
+    // unresolved, where "unused" means "all of them" and this would be a
+    // quiet way to delete everything the component was keeping safe.
+    std::size_t ForgetUnusedSavedValues();
+
+    // Does this component need to be in either update list?
+    //
+    // Answered separately for the two, because a script with only OnUpdate
+    // must not be walked every simulation step and a script with only
+    // OnFixedUpdate must not be walked every frame. A script with neither -
+    // a collision-only one - is in no list at all once it has started, which
+    // is the whole point of the hook table.
+    //
+    // Both stay true until the script has STARTED, because OnStart is fired
+    // by whichever update reaches it first and something has to get there.
+    bool NeedsFixedTick() const {
+        return m_behaviour != nullptr && (!m_started || m_hooks.fixedUpdate != nullptr);
+    }
+    bool NeedsFrameTick() const {
         return m_behaviour != nullptr && (!m_started || m_hooks.update != nullptr);
     }
 
     // Called by ScriptSystem only.
-    void Tick(float deltaSeconds);
+    //
+    // FixedTick runs inside a simulation step; FrameTick runs once per drawn
+    // frame. Neither takes a delta any more - a script asks Time for the one
+    // it wants, and gets the right answer for whichever of these it is in.
+    void FixedTick();
+    void FrameTick();
     void DispatchCollision(const std::string& messageType, EntityId other);
 
     // Used when the compiled scripts are being reloaded.
@@ -237,21 +334,72 @@ public:
     void RebindAfterReload();
 
 private:
+    // Fires OnStart if it has not run yet. Shared by both ticks so that it
+    // happens exactly once however many updates a script has.
+    void EnsureStarted();
+
     void Bind();
     void Unbind();
+
+    // Asks the script for its variables, remembers what they started as, and
+    // then applies whatever was saved. In that order, because the defaults
+    // have to be captured BEFORE anything overwrites them - they are the only
+    // record of what the code said, and the object is the only place they
+    // exist.
+    void BuildFields();
+    void ApplySavedValues();
 
     std::string                      m_scriptName;
     std::unique_ptr<ScriptBehaviour> m_behaviour;
     ScriptHooks                      m_hooks;
     bool                             m_started = false;
+
+    // Rebuilt on every bind and emptied on every unbind, exactly like
+    // m_hooks: both are made of pointers into the compiled script library.
+    ScriptFields m_fields;
+
+    // The values the code itself gave, captured at bind. Used by the revert
+    // button, which is the only reason they are kept - the live object has
+    // them until somebody changes one.
+    Json m_defaults = Json::object();
+
+    // The durable half. Loaded from the scene file, written back to it, and
+    // KEPT ACROSS A RELOAD and across a script that is not compiled in - the
+    // same rule m_scriptName follows, and for the same reason.
+    Json m_savedValues = Json::object();
+
+    // Set once the trigger-versus-collision mismatch has been reported for
+    // this script, so the message appears once rather than sixty times a
+    // second for as long as the two things overlap.
+    bool                             m_warnedAboutTriggerMismatch = false;
 };
 
 // ---------------------------------------------------------------------------
-//  The system that runs them.
+//  The system that runs them, and it runs them at TWO different rates.
 //
-//  Stage 200 (Gameplay) - BEFORE movement at 300 and collision at 400, so a
-//  script that decides to move something this step has that movement applied
-//  and checked in the same step rather than the next one.
+//  OnFixedUpdate goes through the System interface below, at stage 200
+//  (Gameplay) - BEFORE movement at 300 and collision at 400, so a script that
+//  decides to move something this step has that movement applied and checked
+//  in the same step rather than the next one.
+//
+//  OnUpdate does NOT, and that is the one surprising thing in this file.
+//  ==========================================================================
+//  WHY THE PER-FRAME UPDATE IS NOT A RENDER-STAGE SYSTEM
+//
+//  Stages 800 and above already run once per drawn frame, via
+//  SystemScheduler::RenderPass, so registering a second system up there looks
+//  like the obvious way to get a per-frame hook. It is a trap.
+//
+//  RenderPass is called from Engine::RenderWorld, and THE EDITOR CALLS
+//  RenderWorld TWICE - once for the Game view and once for the Scene view.
+//  Drawing the world twice is the entire point of having two panels, so that
+//  is correct for anything that draws. For a script it is a disaster: every
+//  OnUpdate would run twice per frame in the editor and once in the player,
+//  so anything accumulating would move at double speed in the editor only,
+//  and nothing anywhere would report it.
+//
+//  So FrameUpdate is a plain static called once by Engine, from a place that
+//  happens once per frame no matter how many times the world is drawn.
 // ---------------------------------------------------------------------------
 class ScriptSystem final : public System {
 public:
@@ -259,15 +407,22 @@ public:
     const char* Name() const override  { return "ScriptSystem"; }
     int         Order() const override { return SystemStage::kGameplay; }
 
+    // The per-frame half. Called by Engine ONLY, exactly once per frame, and
+    // only when the game is actually running - see Engine::Simulate for the
+    // gate and why it is the one Unity uses.
+    static void FrameUpdate();
+
     static void        Register(ScriptComponent& script);
     static void        Unregister(ScriptComponent& script);
     static void        Clear();
     static std::size_t Count();
 
-    // How many of those are actually ticked every step. Always smaller than
-    // Count() whenever some scripts are collision-only, and the gap is the
+    // How many of those are actually walked, per simulation step and per
+    // drawn frame. Both are smaller than Count() whenever some scripts are
+    // collision-only or only have one of the two updates, and that gap is the
     // point of the whole hook mechanism.
     static std::size_t TickingCount();
+    static std::size_t FrameTickingCount();
 
     // How many attached scripts could not be found in this build. Shown in the
     // editor, because "nothing happens when I press Play" and "three of my

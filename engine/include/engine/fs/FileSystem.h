@@ -123,6 +123,57 @@ public:
     static bool Rename(std::string_view virtualPath, std::string_view newName,
                        std::string& outError);
 
+    // ========================================================================
+    //  Moves a file or folder INTO ANOTHER FOLDER, keeping its own name.
+    //
+    //  The other half of Rename, which changes a name without changing where
+    //  something lives. Keeping them apart is what stops either one doing the
+    //  other's job by accident - see the note on Rename just above.
+    //
+    //  `virtualTargetDirectory` is a FOLDER, and the assets root IS the empty
+    //  string, so "" is a legitimate destination meaning "back out to the
+    //  top".
+    //
+    //  THREE THINGS ARE REFUSED, and every one of them is something a drag
+    //  can ask for by accident:
+    //
+    //    * moving a folder into itself, or into one of its own sub-folders.
+    //      std::filesystem::rename will do this without complaint and leave
+    //      the whole branch unreachable, so it is caught here first.
+    //    * moving something onto a name that is already taken, which would
+    //      destroy whatever was there.
+    //    * moving something into the folder it is already in. Nothing is
+    //      harmed, but reporting a successful move that moved nothing is how
+    //      a user concludes the feature does not work.
+    // ========================================================================
+    static bool Move(std::string_view virtualPath,
+                     std::string_view virtualTargetDirectory, std::string& outError);
+
+    // ========================================================================
+    //  Copies something from ANYWHERE ON THIS MACHINE into the project.
+    //
+    //  This is what dragging a file from the desktop onto the Assets panel
+    //  does. It is the only function here that takes a REAL path rather than
+    //  a virtual one, for the unavoidable reason that the thing being
+    //  imported is not in the project yet and so has no virtual path to give.
+    //
+    //  IT COPIES RATHER THAN MOVES. A tool that silently emptied a file out
+    //  of somebody's Downloads folder because they dragged it somewhere would
+    //  be indefensible, however convenient it occasionally was.
+    //
+    //  A FOLDER ARRIVES WITH ITS CONTENTS. Dropping a sprite pack in should
+    //  bring the sprites, not an empty folder named after them.
+    //
+    //  THE NAME IS MADE UNIQUE rather than overwritten or refused: a second
+    //  `tiles.png` is written as `tiles (2).png`. Refusing is safe but
+    //  maddening half way through a drop of twenty files, and overwriting is
+    //  not safe at all. `outVirtualPath` reports where it actually landed,
+    //  which is the only way the caller can say so.
+    // ========================================================================
+    static bool Import(std::string_view realSourcePath,
+                       std::string_view virtualTargetDirectory,
+                       std::string& outVirtualPath, std::string& outError);
+
     // Reads a whole TEXT file - a scene, the config - into a std::string.
     //
     // std::string is used rather than a list of bytes because that is what the

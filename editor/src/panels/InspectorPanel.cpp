@@ -17,9 +17,11 @@
 #include <imgui_internal.h>   // GetCurrentWindow, for a whole-window drop target
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace editor {
 namespace {
@@ -154,7 +156,313 @@ std::set<std::string> GatherLayerNames(eng::Scene& scene) {
     return names;
 }
 
+// ---------------------------------------------------------------------------
+//  The outline of a polygon or an edge collider, as an editable list.
+//
+//  A TEMPLATE over the two collider types rather than two near-identical
+//  functions, because they offer the same three operations - Points,
+//  SetPoints and a maximum - and the drift between two copies of a list editor
+//  is exactly the kind nobody notices until one of them loses a point.
+//
+//  THE WHOLE LIST IS REPLACED on any change rather than edited in place. That
+//  is what routes every edit through SetPoints, which is where the count is
+//  checked and clamped - so the panel cannot produce a shape the collision
+//  system refuses.
+// ---------------------------------------------------------------------------
+template <typename T>
+void DrawPointList(T& collider, int maxPoints) {
+    std::vector<eng::Vec2> points = collider.Points();
+    bool                   changed = false;
+
+    // Deferred, for the same reason the Assets panel defers a move: removing
+    // an entry while the loop that draws it is still running would read past
+    // the end of the list.
+    int removeAt = -1;
+
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+
+        float xy[2] = {points[i].x, points[i].y};
+        if (ImGui::DragFloat2("##point", xy, 0.5f)) {
+            points[i] = eng::Vec2{xy[0], xy[1]};
+            changed    = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) {
+            removeAt = static_cast<int>(i);
+        }
+        ImGui::PopID();
+    }
+
+    if (removeAt >= 0 && points.size() > 2) {
+        points.erase(points.begin() + removeAt);
+        changed = true;
+    }
+
+    if (static_cast<int>(points.size()) < maxPoints && ImGui::SmallButton("+ point")) {
+        // The new point goes just past the last one rather than on top of it.
+        // Two points in the same place have no direction between them, and a
+        // shape with a zero-length edge is one the maths has to special-case.
+        const eng::Vec2 last = points.empty() ? eng::Vec2{0.0f, 0.0f} : points.back();
+        points.push_back(last + eng::Vec2{8.0f, 0.0f});
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d of %d points", static_cast<int>(points.size()), maxPoints);
+
+    if (changed) {
+        collider.SetPoints(std::move(points));
+        EditorState::Get().dirty = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Rigidbody2D
+// ---------------------------------------------------------------------------
+void DrawRigidbody(eng::Rigidbody2DComponent& body) {
+    int type = 0;
+    switch (body.BodyType()) {
+        case eng::RigidbodyType::Dynamic:   type = 0; break;
+        case eng::RigidbodyType::Kinematic: type = 1; break;
+        case eng::RigidbodyType::Static:    type = 2; break;
+    }
+    if (ImGui::Combo("Body type", &type, "Dynamic\0Kinematic\0Static\0")) {
+        body.SetBodyType(type == 0   ? eng::RigidbodyType::Dynamic
+                         : type == 1 ? eng::RigidbodyType::Kinematic
+                                     : eng::RigidbodyType::Static);
+        EditorState::Get().dirty = true;
+    }
+
+    // WHAT EACH ONE MEANS, on screen rather than in a manual. Picking the
+    // wrong body type is the most common physics mistake there is, and the
+    // moment somebody is choosing is the moment the explanation is worth
+    // having.
+    switch (body.BodyType()) {
+        case eng::RigidbodyType::Dynamic:
+            ImGui::TextDisabled("gravity and forces move it; collisions push it about");
+            break;
+        case eng::RigidbodyType::Kinematic:
+            ImGui::TextDisabled("moves only when told to, and pushes dynamic things "
+                                "out of the way - a lift, a platform, a character");
+            break;
+        case eng::RigidbodyType::Static:
+            ImGui::TextDisabled("never moves; the same as having no rigidbody at all");
+            break;
+    }
+
+    const bool dynamic = body.BodyType() == eng::RigidbodyType::Dynamic;
+    if (!dynamic) {
+        ImGui::BeginDisabled();
+    }
+
+    bool autoMass = body.UseAutoMass();
+    if (ImGui::Checkbox("Auto mass", &autoMass)) {
+        body.SetUseAutoMass(autoMass);
+        EditorState::Get().dirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(from the collider's area x its density)");
+
+    if (autoMass) {
+        ImGui::BeginDisabled();
+    }
+    float mass = body.Mass();
+    if (ImGui::DragFloat("Mass", &mass, 0.1f, 0.0001f, 100000.0f)) {
+        body.SetMass(mass);
+        EditorState::Get().dirty = true;
+    }
+    if (autoMass) {
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("working out to %.3f", static_cast<double>(body.Mass()));
+    }
+
+    float gravityScale = body.GravityScale();
+    if (ImGui::DragFloat("Gravity scale", &gravityScale, 0.05f, -10.0f, 10.0f)) {
+        body.SetGravityScale(gravityScale);
+        EditorState::Get().dirty = true;
+    }
+    ImGui::TextDisabled("0 floats, 1 is normal, 2 falls twice as hard");
+
+    float linearDrag = body.LinearDrag();
+    if (ImGui::DragFloat("Linear drag", &linearDrag, 0.05f, 0.0f, 100.0f)) {
+        body.SetLinearDrag(linearDrag);
+        EditorState::Get().dirty = true;
+    }
+
+    float angularDrag = body.AngularDrag();
+    if (ImGui::DragFloat("Angular drag", &angularDrag, 0.01f, 0.0f, 100.0f)) {
+        body.SetAngularDrag(angularDrag);
+        EditorState::Get().dirty = true;
+    }
+
+    bool freeze = body.FreezeRotation();
+    if (ImGui::Checkbox("Freeze rotation", &freeze)) {
+        body.SetFreezeRotation(freeze);
+        EditorState::Get().dirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(nearly always what a character wants)");
+
+    if (!dynamic) {
+        ImGui::EndDisabled();
+    }
+
+    // THE LIVE VALUES, which are not settings and are not saved. Worth showing
+    // because "why is it drifting?" is answered by looking at a velocity that
+    // is not quite zero, and there is nowhere else to see it.
+    ImGui::SeparatorText("Right now");
+    const eng::Vec2 velocity = body.Velocity();
+    ImGui::Text("velocity  %.2f, %.2f", static_cast<double>(velocity.x),
+                static_cast<double>(velocity.y));
+    ImGui::Text("spin      %.3f rad/s",
+                static_cast<double>(body.AngularVelocity()));
+}
+
+// ---------------------------------------------------------------------------
+//  TilemapComponent
+//
+//  Deliberately NOT a cell editor. Cells are painted in the Scene view with
+//  the Tile Palette; a grid of numbers here would be a second, worse way of
+//  doing the same thing. What belongs here is everything ABOUT the map that
+//  is not a cell: how big a cell is, which layer it draws on, and which
+//  materials it uses.
+// ---------------------------------------------------------------------------
+void DrawTilemap(eng::TilemapComponent& map) {
+    ImGui::Text("%zu tile(s) in %zu chunk(s)", map.TileCount(), map.ChunkCount());
+
+    eng::TileCoord lo{};
+    eng::TileCoord hi{};
+    if (map.TileBounds(lo, hi)) {
+        ImGui::TextDisabled("painted from (%d, %d) to (%d, %d)", lo.x, lo.y, hi.x, hi.y);
+    } else {
+        ImGui::TextDisabled("nothing painted yet - use the Tile Palette");
+    }
+
+    int layer = map.Layer();
+    if (ImGui::DragInt("Layer", &layer, 0.2f, -1000, 1000)) {
+        map.SetLayer(layer);
+        EditorState::Get().dirty = true;
+    }
+    ImGui::TextDisabled("shared with sprites: a NEGATIVE layer puts the map behind them");
+
+    eng::Color    tint = map.Tint();
+    float         rgba[4] = {tint.r / 255.0f, tint.g / 255.0f, tint.b / 255.0f,
+                             tint.a / 255.0f};
+    if (ImGui::ColorEdit4("Tint", rgba)) {
+        map.SetTint(eng::Color{static_cast<unsigned char>(rgba[0] * 255.0f),
+                               static_cast<unsigned char>(rgba[1] * 255.0f),
+                               static_cast<unsigned char>(rgba[2] * 255.0f),
+                               static_cast<unsigned char>(rgba[3] * 255.0f)});
+        EditorState::Get().dirty = true;
+    }
+
+    // ---- cell size ---------------------------------------------------------
+    const eng::Vec2 cellSize = map.CellSize();
+    bool            explicitSize = map.HasExplicitCellSize();
+
+    if (ImGui::Checkbox("Set cell size by hand", &explicitSize)) {
+        // Unticking goes back to the tile's own size, which is what a map
+        // drawn at the size its art was drawn at wants.
+        map.SetCellSize(explicitSize ? cellSize : eng::Vec2{0.0f, 0.0f});
+        EditorState::Get().dirty = true;
+    }
+
+    if (map.HasExplicitCellSize()) {
+        float size[2] = {cellSize.x, cellSize.y};
+        if (ImGui::DragFloat2("Cell size", size, 0.5f, 1.0f, 4096.0f)) {
+            map.SetCellSize(eng::Vec2{size[0], size[1]});
+            EditorState::Get().dirty = true;
+        }
+    } else {
+        ImGui::Text("Cell size: %.0f x %.0f", static_cast<double>(cellSize.x),
+                    static_cast<double>(cellSize.y));
+        ImGui::TextDisabled("taken from the first tile in the palette");
+    }
+
+    // ---- the palette -------------------------------------------------------
+    ImGui::SeparatorText("Palette");
+    ImGui::TextDisabled("a cell stores a position in this list, not a path");
+
+    if (map.Palette().empty()) {
+        ImGui::TextDisabled("empty - painting adds to it");
+    }
+
+    for (std::size_t i = 0; i < map.Palette().size(); ++i) {
+        const std::string&    path  = map.Palette()[i];
+        const eng::TileAsset* asset = map.AssetFor(static_cast<eng::TileId>(i + 1));
+
+        ImGui::PushID(static_cast<int>(i));
+        if (asset != nullptr) {
+            ImGui::Text("%zu. %s", i + 1, path.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%dpx%s%s)", asset->TileSize(),
+                                asset->IsSolid() ? ", solid" : "",
+                                asset->IsConnector() ? ", connector" : "");
+        } else {
+            // Named but not loadable. Said in red, because every cell using
+            // this entry is occupied as far as the map is concerned and
+            // invisible as far as the screen is - which is a confusing pair of
+            // symptoms to be left to work out.
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                               "%zu. %s  - WILL NOT LOAD", i + 1, path.c_str());
+        }
+        ImGui::PopID();
+    }
+
+    if (!map.Palette().empty()) {
+        if (ImGui::Button("Drop unused entries")) {
+            const std::size_t dropped = map.CompactPalette();
+            EditorState::Get().dirty  = true;
+            ENGINE_LOG_INFO(eng::Channels::kTilemap,
+                            "tilemap palette compacted: {} entr{} dropped", dropped,
+                            dropped == 1 ? "y" : "ies");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload tiles")) {
+            // Re-reads every .otile the map uses, so editing one in a text
+            // editor and coming back shows the change.
+            for (const std::string& path : map.Palette()) {
+                std::string error;
+                if (!eng::TileLibrary::Reload(path, error)) {
+                    ENGINE_LOG_ERROR(eng::Channels::kTilemap,
+                                     "could not reload '{}': {}", path, error);
+                }
+            }
+            map.RefreshPalette();
+        }
+    }
+
+    ImGui::SeparatorText("Danger");
+    if (ImGui::Button("Clear every cell")) {
+        ImGui::OpenPopup("confirmclear");
+    }
+    if (ImGui::BeginPopupModal("confirmclear", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Erase all %zu tile(s) in this map?", map.TileCount());
+        ImGui::TextDisabled("There is no undo.");
+        if (ImGui::Button("Erase")) {
+            map.Clear();
+            EditorState::Get().dirty = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
+    bool enabled = collider.Enabled();
+    if (ImGui::Checkbox("Enabled", &enabled)) {
+        collider.SetEnabled(enabled);
+        EditorState::Get().dirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(switched off it takes part in nothing - no events, no "
+                        "pushing, invisible to queries)");
+
     bool trigger = collider.IsTrigger();
     if (ImGui::Checkbox("Trigger", &trigger)) {
         collider.SetTrigger(trigger);
@@ -163,28 +471,178 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
     ImGui::SameLine();
     ImGui::TextDisabled("(reports overlaps but does not block movement)");
 
+    // SPELLED OUT, because this is the one setting that silently changes which
+    // hook a script needs. See physics/Collider.h.
+    if (trigger) {
+        ImGui::TextDisabled("sends OnTriggerEnter / Stay / Exit - NOT OnCollision...");
+    } else {
+        ImGui::TextDisabled("sends OnCollisionEnter / Stay / Exit");
+    }
+
     float offset[2] = {collider.Offset().x, collider.Offset().y};
     if (ImGui::DragFloat2("Offset", offset, 0.5f)) {
         collider.SetOffset(eng::Vec2{offset[0], offset[1]});
         EditorState::Get().dirty = true;
     }
 
-    // The shape-specific field. Which one depends on what this actually is.
-    if (collider.Shape() == eng::ColliderShape::Box) {
-        auto& box = static_cast<eng::AABBColliderComponent&>(collider);
-        float half[2] = {box.HalfExtents().x, box.HalfExtents().y};
-        if (ImGui::DragFloat2("Half size", half, 0.5f, 0.0f, 10000.0f)) {
-            box.SetHalfExtents(eng::Vec2{half[0], half[1]});
-            EditorState::Get().dirty = true;
+// The shape-specific fields. Which ones depend on what this actually is.
+    switch (collider.Shape()) {
+        case eng::ColliderShape::Box: {
+            auto& box = static_cast<eng::BoxColliderComponent&>(collider);
+            float half[2] = {box.HalfExtents().x, box.HalfExtents().y};
+            if (ImGui::DragFloat2("Half size", half, 0.5f, 0.0f, 10000.0f)) {
+                box.SetHalfExtents(eng::Vec2{half[0], half[1]});
+                EditorState::Get().dirty = true;
+            }
+            ImGui::TextDisabled("half the width and half the height");
+
+            float edge = box.EdgeRadius();
+            if (ImGui::DragFloat("Edge radius", &edge, 0.1f, 0.0f, 1000.0f)) {
+                box.SetEdgeRadius(edge);
+                EditorState::Get().dirty = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(rounds the corners)");
+            break;
         }
-        ImGui::TextDisabled("half the width and half the height");
-    } else {
-        auto& circle = static_cast<eng::CircleColliderComponent&>(collider);
-        float radius = circle.Radius();
-        if (ImGui::DragFloat("Radius", &radius, 0.5f, 0.0f, 10000.0f)) {
-            circle.SetRadius(radius);
-            EditorState::Get().dirty = true;
+
+        case eng::ColliderShape::Circle: {
+            auto& circle = static_cast<eng::CircleColliderComponent&>(collider);
+            float radius = circle.Radius();
+            if (ImGui::DragFloat("Radius", &radius, 0.5f, 0.0f, 10000.0f)) {
+                circle.SetRadius(radius);
+                EditorState::Get().dirty = true;
+            }
+            break;
         }
+
+        case eng::ColliderShape::Capsule: {
+            auto& capsule = static_cast<eng::CapsuleColliderComponent&>(collider);
+            float size[2] = {capsule.Size().x, capsule.Size().y};
+            if (ImGui::DragFloat2("Size", size, 0.5f, 0.0f, 10000.0f)) {
+                capsule.SetSize(eng::Vec2{size[0], size[1]});
+                EditorState::Get().dirty = true;
+            }
+
+            int direction = capsule.Direction() == eng::CapsuleDirection::Vertical ? 0 : 1;
+            if (ImGui::Combo("Direction", &direction, "Vertical\0Horizontal\0")) {
+                capsule.SetDirection(direction == 0 ? eng::CapsuleDirection::Vertical
+                                                    : eng::CapsuleDirection::Horizontal);
+                EditorState::Get().dirty = true;
+            }
+            ImGui::TextDisabled("the round ends are on the long axis; as wide as it is "
+                                "tall makes a circle");
+            break;
+        }
+
+        case eng::ColliderShape::Polygon: {
+            auto& polygon = static_cast<eng::PolygonColliderComponent&>(collider);
+            DrawPointList(polygon, eng::ConvexShape::kMaxPoints);
+
+            // SAID OUT LOUD, because a dented outline still collides - as its
+            // convex hull - and the shape on screen then differs from the
+            // shape being tested with nothing to show why.
+            if (!polygon.IsConvex()) {
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f),
+                                   "NOT CONVEX - this collides as the hull of these "
+                                   "points, not as drawn.");
+                ImGui::TextDisabled("Split it into several colliders instead.");
+            }
+            break;
+        }
+
+        case eng::ColliderShape::Tilemap: {
+            auto& tiles = static_cast<eng::TilemapColliderComponent&>(collider);
+
+            ImGui::TextWrapped(
+                "This collider has no shape of its own: it is the TilemapComponent "
+                "beside it. Cells whose tile says \"collision\": \"Grid\" are solid, "
+                "and the rest are walked through.");
+
+            const std::size_t cells = tiles.SolidCellCount();
+            const std::size_t boxes = tiles.BoxCount();
+            if (boxes > 0) {
+                ImGui::Text("%zu solid cell(s) merged into %zu box(es)", cells, boxes);
+                ImGui::TextDisabled(
+                    "merged %.0f to 1 - a flat floor is ONE box, so nothing can catch "
+                    "on a join between two of them",
+                    static_cast<double>(cells) / static_cast<double>(boxes));
+            } else if (cells > 0) {
+                ImGui::TextDisabled("%zu solid cell(s), not yet merged", cells);
+            } else {
+                ImGui::TextDisabled("nothing here is solid yet");
+            }
+
+            if (ImGui::Button("Rebuild")) {
+                // Only needed when a .otile has been edited: changing a tile
+                // from decoration to solid changes which cells are solid
+                // without any cell having changed, so the map's revision does
+                // not move and nothing would otherwise notice.
+                tiles.Invalidate();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Painting rebuilds this automatically. Use it after "
+                                  "editing a .otile file's \"collision\" setting.");
+            }
+            break;
+        }
+
+        case eng::ColliderShape::Edge: {
+            auto& edge = static_cast<eng::EdgeColliderComponent&>(collider);
+            DrawPointList(edge, eng::EdgeColliderComponent::kMaxEdgePoints);
+
+            float radius = edge.EdgeRadius();
+            if (ImGui::DragFloat("Edge radius", &radius, 0.1f, 0.0f, 1000.0f)) {
+                edge.SetEdgeRadius(radius);
+                EditorState::Get().dirty = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(gives the line thickness)");
+
+            bool loop = edge.Loop();
+            if (ImGui::Checkbox("Loop", &loop)) {
+                edge.SetLoop(loop);
+                EditorState::Get().dirty = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(joins the last point back to the first)");
+            break;
+        }
+    }
+
+    ImGui::SeparatorText("Surface");
+
+    eng::PhysicsMaterial2D material = collider.Material();
+    bool                   materialChanged = false;
+
+    materialChanged |= ImGui::DragFloat("Friction", &material.friction, 0.01f, 0.0f, 2.0f);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(0 is ice)");
+
+    materialChanged |=
+        ImGui::DragFloat("Bounciness", &material.bounciness, 0.01f, 0.0f, 1.0f);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(0 is a beanbag, 1 a superball)");
+
+    if (materialChanged) {
+        collider.SetMaterial(material);
+        EditorState::Get().dirty = true;
+    }
+
+    float density = collider.Density();
+    if (ImGui::DragFloat("Density", &density, 0.05f, 0.0001f, 1000.0f)) {
+        collider.SetDensity(density);
+        EditorState::Get().dirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(only used when a rigidbody has Auto mass on)");
+
+    // NEITHER OF THE FIRST TWO DOES ANYTHING WITHOUT A RIGIDBODY, and a
+    // slider that silently has no effect is worse than no slider. Said here
+    // rather than left to be discovered.
+    if (collider.AttachedRigidbody() == nullptr && !collider.IsTrigger()) {
+        ImGui::TextDisabled("no Rigidbody2D on this entity, so nothing here is pushed "
+                            "- friction and bounciness need something to act on.");
     }
 
     ImGui::SeparatorText("Layers");
@@ -312,6 +770,253 @@ void DrawCamera(eng::CameraComponent& camera) {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  The interface components. See engine/include/engine/scene/UI.h.
+// ---------------------------------------------------------------------------
+
+// A colour, as four 0-255 channels. ImGui works in 0-1 floats, so this is the
+// conversion both ways in one place rather than in each of the eight callers.
+bool DrawColorField(const char* label, eng::Color& color) {
+    float rgba[4] = {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                     color.a / 255.0f};
+    if (!ImGui::ColorEdit4(label, rgba, ImGuiColorEditFlags_AlphaBar)) {
+        return false;
+    }
+    const auto channel = [](float v) {
+        const float scaled = v * 255.0f + 0.5f;
+        return static_cast<unsigned char>(scaled < 0.0f ? 0.0f
+                                          : (scaled > 255.0f ? 255.0f : scaled));
+    };
+    color = eng::Color{channel(rgba[0]), channel(rgba[1]), channel(rgba[2]),
+                       channel(rgba[3])};
+    return true;
+}
+
+void DrawUIRect(eng::UIRectComponent& rect) {
+    bool changed = false;
+
+    // ---- which space ------------------------------------------------------
+    int space = (rect.space == eng::UISpace::World) ? 1 : 0;
+    if (ImGui::Combo("Space", &space, "Screen\0World\0")) {
+        rect.space = (space == 1) ? eng::UISpace::World : eng::UISpace::Screen;
+        changed    = true;
+    }
+    if (rect.space == eng::UISpace::World) {
+        ImGui::TextDisabled("positioned by this entity's TRANSFORM, and it");
+        ImGui::TextDisabled("scales with the camera - good for a name tag");
+    } else {
+        ImGui::TextDisabled("positioned in pixels from the anchor, and the");
+        ImGui::TextDisabled("camera does not affect it - good for a score");
+    }
+
+    // ---- anchor, only when it means something -----------------------------
+    //
+    // DISABLED rather than hidden in world space, where the transform is in
+    // charge and an anchor does nothing. A field that vanishes teaches
+    // nothing; one that is visibly unavailable says it does not apply.
+    ImGui::BeginDisabled(rect.space == eng::UISpace::World);
+    int anchor = static_cast<int>(rect.anchor);
+    if (ImGui::Combo("Anchor", &anchor,
+                     "TopLeft\0Top\0TopRight\0Left\0Center\0Right\0"
+                     "BottomLeft\0Bottom\0BottomRight\0")) {
+        rect.anchor = static_cast<eng::UIAnchor>(anchor);
+        changed     = true;
+    }
+
+    float offset[2] = {rect.offset.x, rect.offset.y};
+    if (ImGui::DragFloat2("Offset", offset, 1.0f)) {
+        rect.offset = eng::Vec2{offset[0], offset[1]};
+        changed     = true;
+    }
+    ImGui::EndDisabled();
+
+    float size[2] = {rect.size.x, rect.size.y};
+    if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4096.0f)) {
+        rect.size = eng::Vec2{size[0], size[1]};
+        changed   = true;
+    }
+
+    float pivot[2] = {rect.pivot.x, rect.pivot.y};
+    if (ImGui::DragFloat2("Pivot", pivot, 0.01f, 0.0f, 1.0f)) {
+        rect.pivot = eng::Vec2{pivot[0], pivot[1]};
+        changed    = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Which point of this object sits at the position above. "
+                          "0,0 is its top-left corner and 0.5,0.5 its middle.");
+    }
+
+    if (ImGui::DragInt("Sort order", &rect.sortOrder, 0.1f, -100, 100)) {
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Higher draws later, so higher is in front.");
+    }
+
+    if (ImGui::Checkbox("Visible", &rect.visible)) {
+        changed = true;
+    }
+
+    // Where it actually ended up, which is the fastest way to answer "why is
+    // my label off the edge of the screen".
+    ImGui::TextDisabled("on screen: %.0f,%.0f to %.0f,%.0f", rect.resolvedMin.x,
+                        rect.resolvedMin.y, rect.resolvedMax.x, rect.resolvedMax.y);
+
+    if (changed) {
+        EditorState::Get().dirty = true;
+    }
+}
+
+void DrawUIText(eng::UITextComponent& label) {
+    bool changed = false;
+
+    char buffer[512];
+    std::snprintf(buffer, sizeof(buffer), "%s", label.text.c_str());
+    if (ImGui::InputTextMultiline("Text", buffer, sizeof(buffer),
+                                  ImVec2(-1.0f, ImGui::GetTextLineHeight() * 3.0f))) {
+        label.text = buffer;
+        changed    = true;
+    }
+
+    char fontBuffer[256];
+    std::snprintf(fontBuffer, sizeof(fontBuffer), "%s", label.fontPath.c_str());
+    if (ImGui::InputTextWithHint("Font", "fonts/Something.ttf  (blank = built-in)",
+                                 fontBuffer, sizeof(fontBuffer))) {
+        label.fontPath = fontBuffer;
+        changed        = true;
+    }
+
+    // DROPPING A FILE ON IT, which is how every other asset is assigned in
+    // this editor - and the only discoverable way to find out that a .ttf
+    // goes here at all.
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadFont)) {
+            label.fontPath = static_cast<const char*>(payload->Data);
+            changed        = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (ImGui::DragFloat("Size", &label.fontSize, 0.5f, 4.0f, 256.0f, "%.0f px")) {
+        changed = true;
+    }
+
+    changed |= DrawColorField("Colour", label.color);
+
+    int align = static_cast<int>(label.align);
+    if (ImGui::Combo("Align", &align, "Left\0Center\0Right\0")) {
+        label.align = static_cast<eng::UIAlign>(align);
+        changed     = true;
+    }
+    if (ImGui::Checkbox("Centre vertically", &label.middle)) {
+        changed = true;
+    }
+
+    // What actually got used, which is the only way to tell a working font
+    // path from one that silently fell back.
+    if (const eng::FontRef& font = label.ResolvedFont()) {
+        if (font->isFallback) {
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                               label.fontPath.empty()
+                                   ? "using the built-in 8x8 font"
+                                   : "that font did not load - using the built-in one");
+        } else {
+            ImGui::TextDisabled("%s at %.0fpx", font->path.c_str(), font->pixelHeight);
+        }
+    }
+
+    if (changed) {
+        EditorState::Get().dirty = true;
+    }
+}
+
+void DrawUIImage(eng::UIImageComponent& image) {
+    bool changed = false;
+
+    char buffer[256];
+    std::snprintf(buffer, sizeof(buffer), "%s", image.texturePath.c_str());
+    if (ImGui::InputTextWithHint("Texture", "blank = a plain rectangle", buffer,
+                                 sizeof(buffer))) {
+        image.texturePath = buffer;
+        changed           = true;
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadTexture)) {
+            image.texturePath = static_cast<const char*>(payload->Data);
+            changed           = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    changed |= DrawColorField("Tint", image.tint);
+
+    if (ImGui::DragFloat("Outline", &image.outlineThickness, 0.1f, 0.0f, 16.0f,
+                         "%.0f")) {
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("0 fills the rectangle. Anything else draws its edge only. "
+                          "Ignored when a texture is set.");
+    }
+
+    if (changed) {
+        EditorState::Get().dirty = true;
+    }
+}
+
+void DrawUIButton(eng::UIButtonComponent& button) {
+    bool changed = false;
+
+    if (ImGui::Checkbox("Interactable", &button.interactable)) {
+        changed = true;
+    }
+
+    changed |= DrawColorField("Normal",   button.normalTint);
+    changed |= DrawColorField("Hover",    button.hoverTint);
+    changed |= DrawColorField("Pressed",  button.pressedTint);
+    changed |= DrawColorField("Disabled", button.disabledTint);
+
+    ImGui::Separator();
+
+    // LIVE STATE, which turns "my button does nothing" from a guess into a
+    // reading: hover it in the Game view and watch this.
+    ImGui::TextDisabled("hovered: %s   pressed: %s",
+                        button.IsHovered() ? "yes" : "no",
+                        button.IsPressed() ? "yes" : "no");
+    ImGui::TextWrapped("These colours tint the UIImage on this same entity, so a "
+                       "button needs one. Read it from a script with "
+                       "Owner()->Find<eng::UIButtonComponent>()->WasClicked().");
+
+    if (changed) {
+        EditorState::Get().dirty = true;
+    }
+}
+
+void DrawUISlider(eng::UISliderComponent& slider) {
+    bool changed = false;
+
+    if (ImGui::DragFloat("Value", &slider.value, 0.01f, slider.minValue,
+                         slider.maxValue)) {
+        changed = true;
+    }
+    if (ImGui::DragFloat("Min", &slider.minValue, 0.1f)) { changed = true; }
+    if (ImGui::DragFloat("Max", &slider.maxValue, 0.1f)) { changed = true; }
+    if (ImGui::Checkbox("Interactable", &slider.interactable)) { changed = true; }
+
+    changed |= DrawColorField("Track", slider.trackColor);
+    changed |= DrawColorField("Fill",  slider.fillColor);
+    changed |= DrawColorField("Knob",  slider.knobColor);
+
+    if (slider.maxValue <= slider.minValue) {
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "max is not above min, so this cannot be dragged");
+    }
+
+    if (changed) {
+        EditorState::Get().dirty = true;
+    }
+}
+
 void DrawSpin(eng::SpinComponent& spin) {
     // Edited in degrees, stored in radians - same reason as the transform's
     // rotation field above.
@@ -382,6 +1087,338 @@ void DrawScriptNameLink(const eng::ScriptComponent& script, ImVec4 colour) {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  A script's variables.
+//
+//  The script says which ones it has - see engine/scene/ScriptFields.h for why
+//  it has to say rather than be asked - and everything here is drawing them.
+//
+//  ==========================================================================
+//  THE LABEL IS THE NAME FROM THE CODE, NOT A TIDIED-UP VERSION OF IT.
+//
+//  Unity turns `maxSpeed` into "Max Speed", which reads better and is the
+//  wrong trade here. That name is also the KEY IN THE SCENE FILE, and this
+//  project's scenes are meant to be opened and edited by hand - so a label
+//  that does not match what is in the file would mean looking up the
+//  translation every time. `maxSpeed` on screen and "maxSpeed" in the file.
+//
+//  ==========================================================================
+//  WHAT THE OVERRIDE MARK IS FOR
+//
+//  A variable somebody changed is saved in the scene; one they left alone is
+//  not, and takes whatever the code says. Those two look identical on screen -
+//  both are just a number - so an overridden one gets a `revert` button beside
+//  it. That is both the indicator and the way out.
+// ---------------------------------------------------------------------------
+
+// The longest text a string variable can be edited with here. Generous enough
+// for any name or path in this project; the case that exceeds it is handled
+// rather than truncated. See DrawStringField.
+constexpr int kScriptStringMax = 256;
+
+// How fast a drag box moves, taken from the number already in it.
+//
+// One fixed step cannot serve both a 0.2 blend and a 2000-pixel distance: at
+// 0.1 per pixel the first is unusable and the second takes half a minute to
+// cross. Scaling by the value gives fine control near zero and coarse control
+// far out, which is what anybody would pick by hand for each field.
+//
+// The floor matters: without it a variable sitting at exactly 0 would have a
+// step of 0 and the drag would be dead.
+float DragStepFor(float value) {
+    return std::max(0.01f, std::abs(value) * 0.01f);
+}
+
+// Text is the one type that cannot be handed to ImGui as a pointer, because
+// ImGui edits a char buffer and the variable is a std::string.
+bool DrawStringField(const eng::ScriptField& field) {
+    std::string* text = field.AsString();
+    if (text == nullptr) {
+        return false;
+    }
+
+    // ======================================================================
+    //  LONGER THAN THE BUFFER: SHOWN, NOT EDITED.
+    //
+    //  Copying it in would truncate it, and the first keystroke would then
+    //  write the short version back over the variable - deleting the rest of
+    //  somebody's text with nothing on screen having warned them. Refusing to
+    //  edit it is the only safe option, and the file is still there.
+    // ======================================================================
+    if (text->size() >= static_cast<std::size_t>(kScriptStringMax)) {
+        ImGui::BeginDisabled();
+        char preview[80];
+        std::snprintf(preview, sizeof(preview), "%.60s...", text->c_str());
+        ImGui::InputText(field.name.c_str(), preview, sizeof(preview),
+                         ImGuiInputTextFlags_ReadOnly);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("%zu characters - too long to edit here, so it is shown "
+                            "read-only. Change it in the scene file.", text->size());
+        return false;
+    }
+
+    char buffer[kScriptStringMax];
+    std::snprintf(buffer, sizeof(buffer), "%s", text->c_str());
+    if (ImGui::InputText(field.name.c_str(), buffer, sizeof(buffer))) {
+        *text = buffer;
+        return true;
+    }
+    return false;
+}
+
+// One variable, drawn with whichever widget suits its type. True on a frame
+// the value was actually changed.
+bool DrawFieldWidget(const eng::ScriptField& field) {
+    const char* label = field.name.c_str();
+
+    switch (field.type) {
+        case eng::ScriptFieldType::Float: {
+            float* value = field.AsFloat();
+            if (value == nullptr) {
+                break;
+            }
+            if (field.ranged) {
+                return ImGui::SliderFloat(label, value, field.min, field.max);
+            }
+            return ImGui::DragFloat(label, value, DragStepFor(*value));
+        }
+
+        case eng::ScriptFieldType::Int: {
+            int* value = field.AsInt();
+            if (value == nullptr) {
+                break;
+            }
+            if (field.ranged) {
+                return ImGui::SliderInt(label, value, static_cast<int>(field.min),
+                                        static_cast<int>(field.max));
+            }
+            // The same step the sprite's draw order uses, because a whole
+            // number wants one pixel of mouse per unit and not less.
+            return ImGui::DragInt(label, value, 0.2f);
+        }
+
+        case eng::ScriptFieldType::Bool: {
+            bool* value = field.AsBool();
+            if (value == nullptr) {
+                break;
+            }
+            return ImGui::Checkbox(label, value);
+        }
+
+        case eng::ScriptFieldType::String:
+            return DrawStringField(field);
+
+        case eng::ScriptFieldType::Vec2: {
+            eng::Vec2* value = field.AsVec2();
+            if (value == nullptr) {
+                break;
+            }
+            float xy[2] = {value->x, value->y};
+            // ONE step for both halves, taken from the larger. Two different
+            // sensitivities on one widget would make a diagonal drag curve.
+            const float step =
+                DragStepFor(std::max(std::abs(xy[0]), std::abs(xy[1])));
+            if (ImGui::DragFloat2(label, xy, step)) {
+                *value = eng::Vec2{xy[0], xy[1]};
+                return true;
+            }
+            return false;
+        }
+
+        case eng::ScriptFieldType::Color: {
+            eng::Color* value = field.AsColor();
+            if (value == nullptr) {
+                break;
+            }
+            // ImGui works in 0-1 floats and the engine stores 0-255 bytes,
+            // the same conversion DrawSprite does for a tint.
+            float rgba[4] = {value->r / 255.0f, value->g / 255.0f, value->b / 255.0f,
+                             value->a / 255.0f};
+            if (ImGui::ColorEdit4(label, rgba)) {
+                *value = eng::Color{static_cast<unsigned char>(rgba[0] * 255.0f),
+                                    static_cast<unsigned char>(rgba[1] * 255.0f),
+                                    static_cast<unsigned char>(rgba[2] * 255.0f),
+                                    static_cast<unsigned char>(rgba[3] * 255.0f)};
+                return true;
+            }
+            return false;
+        }
+    }
+
+    // Reached only when a field's type and its pointer disagree, which the
+    // AsFloat/AsInt/... accessors refuse to act on rather than casting
+    // regardless. Saying so beats drawing a blank row.
+    ImGui::TextDisabled("%s - cannot be shown (%s)", label,
+                        eng::ScriptFieldTypeName(field.type));
+    return false;
+}
+
+// What hovering a variable explains: the script's own note, the type, and
+// whether this entity has its own value or is using the code's.
+void DrawFieldTooltip(const eng::ScriptComponent& script,
+                      const eng::ScriptField& field, bool overridden) {
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        return;
+    }
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+
+    if (!field.tooltip.empty()) {
+        ImGui::TextUnformatted(field.tooltip.c_str());
+        ImGui::Separator();
+    }
+    ImGui::TextDisabled("%s", eng::ScriptFieldTypeName(field.type));
+
+    if (overridden) {
+        ImGui::TextDisabled("saved on this entity as %s",
+                            script.SavedValues().at(field.name).dump().c_str());
+    } else {
+        ImGui::TextDisabled("using the value from the script's own code - change it "
+                            "here and it is saved on this entity only");
+    }
+
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+// True when it drew anything, so the caller can decide whether a separator
+// belongs under it. Returned rather than asked for a second time: the answer
+// costs a list of strings to work out, and working it out twice a frame for a
+// question with one answer is the kind of waste that spreads.
+bool DrawScriptFields(eng::ScriptComponent& script) {
+    const eng::ScriptFields&       fields = script.Fields();
+    const std::vector<std::string> unused = script.UnusedSavedValues();
+
+    // A script that exposes nothing and has nothing saved gets no section at
+    // all. Most scripts are in that position and an empty "Variables" header
+    // on every one of them would be noise.
+    if (fields.Empty() && unused.empty()) {
+        return false;
+    }
+
+    ImGui::SeparatorText("Variables");
+
+    for (const eng::ScriptField& field : fields.All()) {
+        // Keyed on the NAME, so the widget keeps its identity when another
+        // variable is added above it. An index would hand one field's
+        // half-typed text to its neighbour.
+        ImGui::PushID(field.name.c_str());
+
+        const bool overridden = script.IsFieldOverridden(field.name);
+
+        if (DrawFieldWidget(field)) {
+            // The widget has already written the new value through the
+            // field's own pointer; this records it as the saved one. Exactly
+            // one piece of code - FieldToJson - knows how each type is
+            // stored, and it is in the engine beside the code that reads it
+            // back.
+            script.SaveFieldValue(field.name);
+            EditorState::Get().dirty = true;
+        }
+        DrawFieldTooltip(script, field, overridden);
+
+        // DIRECTLY AFTER THE WIDGET, so it reads as belonging to it. Anything
+        // that has to be said about the value goes underneath, below.
+        if (overridden) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("revert")) {
+                script.RevertFieldValue(field.name);
+                EditorState::Get().dirty = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Forget this entity's value and go back to the one "
+                                  "written in the script");
+            }
+
+            // A SAVED VALUE THAT WILL NOT LOAD. The engine reports this to
+            // the Console when the scene opens, and then it is over - so it
+            // is also shown here, next to the variable it is about, for as
+            // long as it is true.
+            if (!eng::JsonFitsFieldType(field.type,
+                                        script.SavedValues().at(field.name))) {
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                                   "the scene file has %s here, which is not a %s - "
+                                   "the script's own value is being used",
+                                   script.SavedValues().at(field.name).dump().c_str(),
+                                   eng::ScriptFieldTypeName(field.type));
+            }
+        }
+
+        // A RANGED VALUE OUTSIDE ITS RANGE, which is otherwise invisible: a
+        // slider draws it pinned at whichever end it overshot, so 500 on a
+        // 1-to-200 range looks exactly like 200. It can get there from a
+        // hand-edited scene file or from the script setting it, because
+        // nothing clamps on load - deliberately, since silently rewriting a
+        // number somebody typed is worse than showing it.
+        //
+        // TOUCHING THE SLIDER WILL pull it into range, and that is worth
+        // warning about before it happens rather than after.
+        if (field.ranged) {
+            const float value = field.type == eng::ScriptFieldType::Int
+                                    ? static_cast<float>(*field.AsInt())
+                                    : *field.AsFloat();
+            if (value < field.min || value > field.max) {
+                ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                                   "%.3g is outside %.3g to %.3g - the slider shows it "
+                                   "at the end, and moving it will bring it in",
+                                   static_cast<double>(value),
+                                   static_cast<double>(field.min),
+                                   static_cast<double>(field.max));
+            }
+        }
+
+        ImGui::PopID();
+    }
+
+    if (!fields.Empty()) {
+        ImGui::TextDisabled("ctrl-click a number to type it exactly");
+    }
+
+    // ---- values nothing is using -----------------------------------------
+    if (unused.empty()) {
+        return true;
+    }
+
+    ImGui::Spacing();
+
+    // THE TWO CAUSES ARE NOT THE SAME PROBLEM, so they do not get the same
+    // message. An unresolved script claims nothing, so everything saved looks
+    // unused and none of it is wrong - it is waiting. A running script with
+    // leftovers has had a variable renamed or removed.
+    if (script.IsResolved()) {
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "%zu saved value(s) this script has no variable for",
+                           unused.size());
+        ImGui::TextWrapped("Renamed or removed since they were saved. They are kept and "
+                           "still written to the scene file, so nothing is lost if the "
+                           "variable comes back under its old name.");
+    } else {
+        ImGui::TextDisabled("%zu saved value(s), kept until the script compiles",
+                            unused.size());
+    }
+
+    if (ImGui::TreeNode("Show them")) {
+        for (const std::string& key : unused) {
+            ImGui::BulletText("%s = %s", key.c_str(),
+                              script.SavedValues().at(key).dump().c_str());
+        }
+        ImGui::TreePop();
+    }
+
+    // NOT OFFERED WHILE THE SCRIPT IS UNRESOLVED, where "unused" means all of
+    // them and this button would be a one-click way to delete every setting
+    // the component was keeping safe. ForgetUnusedSavedValues refuses in that
+    // state as well; this is the half somebody can see.
+    if (script.IsResolved() && ImGui::Button("Forget them")) {
+        const std::size_t gone = script.ForgetUnusedSavedValues();
+        EditorState::Get().dirty = true;
+        ENGINE_LOG_INFO(eng::Channels::kEditor,
+                        "dropped {} saved value(s) that the script '{}' no longer has "
+                        "variables for", gone, script.ScriptName());
+    }
+    return true;
+}
+
 void DrawScript(eng::ScriptComponent& script) {
     if (script.IsResolved()) {
         DrawScriptNameLink(script, ImVec4(0.55f, 0.85f, 0.60f, 1.0f));
@@ -410,6 +1447,12 @@ void DrawScript(eng::ScriptComponent& script) {
                            "is attached and will be saved, but it does not run. Rebuild "
                            "the project and start the editor again - the connection is "
                            "by name, so nothing needs reattaching.");
+    }
+
+    // THE VARIABLES, above the attach controls below. Tuning a script is what
+    // somebody does repeatedly; choosing which script it is happens once.
+    if (DrawScriptFields(script)) {
+        ImGui::SeparatorText("Script");
     }
 
     // A list of what IS available, so a typo is one click from fixed rather
@@ -691,15 +1734,33 @@ void InspectorPanel::Draw() {
                 DrawTransform(static_cast<eng::TransformComponent&>(component), running);
             } else if (type == eng::SpriteComponent::kTypeName) {
                 DrawSprite(static_cast<eng::SpriteComponent&>(component));
-            } else if (type == eng::AABBColliderComponent::kTypeName ||
-                       type == eng::CircleColliderComponent::kTypeName) {
+            } else if (type == eng::BoxColliderComponent::kTypeName ||
+                       type == eng::CircleColliderComponent::kTypeName ||
+                       type == eng::CapsuleColliderComponent::kTypeName ||
+                       type == eng::PolygonColliderComponent::kTypeName ||
+                       type == eng::EdgeColliderComponent::kTypeName ||
+                       type == eng::TilemapColliderComponent::kTypeName) {
                 DrawCollider(static_cast<eng::ColliderComponent&>(component), scene);
+            } else if (type == eng::Rigidbody2DComponent::kTypeName) {
+                DrawRigidbody(static_cast<eng::Rigidbody2DComponent&>(component));
+            } else if (type == eng::TilemapComponent::kTypeName) {
+                DrawTilemap(static_cast<eng::TilemapComponent&>(component));
             } else if (type == eng::SpinComponent::kTypeName) {
                 DrawSpin(static_cast<eng::SpinComponent&>(component));
             } else if (type == eng::ScriptComponent::kTypeName) {
                 DrawScript(static_cast<eng::ScriptComponent&>(component));
             } else if (type == eng::CameraComponent::kTypeName) {
                 DrawCamera(static_cast<eng::CameraComponent&>(component));
+            } else if (type == eng::UIRectComponent::kTypeName) {
+                DrawUIRect(static_cast<eng::UIRectComponent&>(component));
+            } else if (type == eng::UITextComponent::kTypeName) {
+                DrawUIText(static_cast<eng::UITextComponent&>(component));
+            } else if (type == eng::UIImageComponent::kTypeName) {
+                DrawUIImage(static_cast<eng::UIImageComponent&>(component));
+            } else if (type == eng::UIButtonComponent::kTypeName) {
+                DrawUIButton(static_cast<eng::UIButtonComponent&>(component));
+            } else if (type == eng::UISliderComponent::kTypeName) {
+                DrawUISlider(static_cast<eng::UISliderComponent&>(component));
             } else {
                 // Not an error. Somebody may write their own component type,
                 // and the Inspector should say so rather than pretend it is

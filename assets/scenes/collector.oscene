@@ -25,7 +25,7 @@
         },
         {
           "layer": 5,
-          "texture": "textures/Blue/Blue_walk_1.png",
+          "texture": "textures/Sprites/Blue/Blue_walk_1.png",
           "tint": [
             255,
             255,
@@ -601,6 +601,156 @@
         }
       ],
       "name": "GameRules"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "anchor": "TopLeft",
+          "offset": [
+            16.0,
+            14.0
+          ],
+          "pivot": [
+            0.0,
+            0.0
+          ],
+          "size": [
+            260.0,
+            28.0
+          ],
+          "sortOrder": 10,
+          "space": "Screen",
+          "type": "UIRectComponent",
+          "visible": true
+        },
+        {
+          "align": "Left",
+          "color": [
+            235,
+            238,
+            245,
+            255
+          ],
+          "font": "",
+          "fontSize": 18.0,
+          "middle": true,
+          "text": "COLLECTED  0 / 0",
+          "type": "UITextComponent"
+        }
+      ],
+      "name": "HudScore"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "anchor": "TopLeft",
+          "offset": [
+            16.0,
+            40.0
+          ],
+          "pivot": [
+            0.0,
+            0.0
+          ],
+          "size": [
+            260.0,
+            28.0
+          ],
+          "sortOrder": 10,
+          "space": "Screen",
+          "type": "UIRectComponent",
+          "visible": true
+        },
+        {
+          "align": "Left",
+          "color": [
+            235,
+            238,
+            245,
+            255
+          ],
+          "font": "",
+          "fontSize": 18.0,
+          "middle": true,
+          "text": "TIME        0.0",
+          "type": "UITextComponent"
+        }
+      ],
+      "name": "HudTimer"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "anchor": "Center",
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "size": [
+            360.0,
+            56.0
+          ],
+          "sortOrder": 20,
+          "space": "Screen",
+          "type": "UIRectComponent",
+          "visible": false
+        },
+        {
+          "align": "Center",
+          "color": [
+            120,
+            230,
+            140,
+            255
+          ],
+          "font": "",
+          "fontSize": 28.0,
+          "middle": true,
+          "text": "YOU WIN",
+          "type": "UITextComponent"
+        }
+      ],
+      "name": "HudBanner"
     }
   ],
   "name": "Collector"

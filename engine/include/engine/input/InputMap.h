@@ -131,6 +131,22 @@ public:
     static void InjectAction(std::string_view action, bool down);
     static void ClearInjectedActions();
 
+    // ========================================================================
+    //  EVERY ACTION BACK TO IDLE, as though nothing had ever been touched.
+    //
+    //  Clears this frame's "down", LAST frame's "down", and the worked-out
+    //  state. All three, and the reason is the third one: the state is only
+    //  recomputed when Update runs, so clearing the flags alone would leave
+    //  IsHeld answering "yes" until the next frame. And clearing this
+    //  frame's flag while leaving last frame's set would make the very next
+    //  Update report a Released for a key nobody let go of.
+    //
+    //  Called when a play session starts and when it ends. A session must
+    //  not inherit whatever was held when the last one was stopped, and the
+    //  editor must not be left holding it either.
+    // ========================================================================
+    static void ResetState();
+
     // Every action and what it is bound to, for the editor to display.
     struct BindingInfo {
         std::string context;

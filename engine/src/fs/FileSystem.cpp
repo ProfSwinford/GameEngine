@@ -78,6 +78,33 @@ bool CouldBeArchived(std::string_view virtualPath) {
            virtualPath != ".editor";
 }
 
+// Joins a folder's virtual path to a name inside it.
+//
+// Written out rather than using operator/ because THE ASSETS ROOT IS THE
+// EMPTY STRING: "" + "/" + name would produce "/name", which is an absolute
+// path and means something entirely different.
+std::string JoinVirtual(std::string_view directory, std::string_view leaf) {
+    if (directory.empty()) {
+        return std::string(leaf);
+    }
+    return std::string(directory) + "/" + std::string(leaf);
+}
+
+// Is `child` the same as `parent`, or somewhere underneath it?
+//
+// Compared one path COMPONENT at a time rather than as text, because text
+// would say that "C:/work/assets2" is inside "C:/work/assets". Both paths
+// should already have been through weakly_canonical.
+bool IsInside(const fs::path& child, const fs::path& parent) {
+    auto c = child.begin();
+    for (auto p = parent.begin(); p != parent.end(); ++p, ++c) {
+        if (c == child.end() || *c != *p) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 bool FileSystem::Init(const BootConfig&) {
@@ -459,6 +486,145 @@ bool FileSystem::Rename(std::string_view virtualPath, std::string_view newName,
         return false;
     }
 
+    outError.clear();
+    return true;
+}
+
+bool FileSystem::Move(std::string_view virtualPath,
+                      std::string_view virtualTargetDirectory, std::string& outError) {
+    if (virtualPath.empty()) {
+        outError = "refusing to move the assets folder itself";
+        return false;
+    }
+
+    // ========================================================================
+    //  A FOLDER CANNOT GO INSIDE ITSELF, and this is checked before anything
+    //  touches the disk.
+    //
+    //  std::filesystem::rename does not stop you, and what you get is a
+    //  branch of the tree that no longer has a route to it. Dragging a folder
+    //  onto one of its own children is an easy slip to make with a mouse, so
+    //  the guard belongs here rather than at each call site.
+    //
+    //  IT IS A TEXT COMPARISON, which is what makes it exact. "textures" is
+    //  a prefix of both "textures/ui" and "textures2", and only the first of
+    //  those is inside it - so the character after the prefix has to be the
+    //  separator. Getting that wrong would refuse perfectly legal moves while
+    //  looking, in a quick reading, entirely correct.
+    // ========================================================================
+    if (virtualTargetDirectory == virtualPath ||
+        (virtualTargetDirectory.size() > virtualPath.size() &&
+         virtualTargetDirectory.starts_with(virtualPath) &&
+         virtualTargetDirectory[virtualPath.size()] == '/')) {
+        outError = "cannot move '" + std::string(virtualPath) + "' inside itself";
+        return false;
+    }
+
+    const fs::path    from = fs::path(Resolve(virtualPath));
+    const std::string leaf = from.filename().string();
+
+    std::error_code ec;
+    if (!fs::exists(from, ec)) {
+        outError = "'" + std::string(virtualPath) + "' is not there";
+        return false;
+    }
+
+    const fs::path targetDirectory = fs::path(Resolve(virtualTargetDirectory));
+    if (!fs::is_directory(targetDirectory, ec)) {
+        outError = "'" + std::string(virtualTargetDirectory) + "' is not a folder";
+        return false;
+    }
+
+    // Already where it is being asked to go. Said out loud rather than
+    // reported as a successful move that moved nothing.
+    if (fs::equivalent(from.parent_path(), targetDirectory, ec)) {
+        outError = "'" + leaf + "' is already in there";
+        return false;
+    }
+
+    const fs::path to = targetDirectory / from.filename();
+    if (fs::exists(to, ec)) {
+        outError = "there is already something called '" + leaf + "' in there";
+        return false;
+    }
+
+    fs::rename(from, to, ec);
+    if (ec) {
+        outError = "cannot move '" + std::string(virtualPath) + "': " + ec.message();
+        return false;
+    }
+
+    outError.clear();
+    return true;
+}
+
+bool FileSystem::Import(std::string_view realSourcePath,
+                        std::string_view virtualTargetDirectory,
+                        std::string& outVirtualPath, std::string& outError) {
+    outVirtualPath.clear();
+
+    const fs::path  source = fs::path(std::string(realSourcePath));
+    std::error_code ec;
+    if (!fs::exists(source, ec)) {
+        outError = "'" + std::string(realSourcePath) + "' is not there";
+        return false;
+    }
+
+    const fs::path targetDirectory = fs::path(Resolve(virtualTargetDirectory));
+    if (!fs::is_directory(targetDirectory, ec)) {
+        outError = "'" + std::string(virtualTargetDirectory) + "' is not a folder";
+        return false;
+    }
+
+    // ========================================================================
+    //  IS IT ALREADY IN THE PROJECT?
+    //
+    //  Opening assets/ in the file explorer and dragging something out of it
+    //  back into this panel asks for a file to be copied on top of itself. At
+    //  best that leaves a duplicate nobody wanted; the person was almost
+    //  certainly trying to MOVE it, which the panel can do directly.
+    //
+    //  Decided by comparing the real paths, not by any rule about names,
+    //  because that is the only test that is actually true. weakly_canonical
+    //  resolves ".." and symbolic links, so the same file reached two
+    //  different ways compares equal.
+    // ========================================================================
+    const fs::path assets         = fs::weakly_canonical(fs::path(Resolve("")), ec);
+    const fs::path realSource     = fs::weakly_canonical(source, ec);
+    if (IsInside(realSource, assets)) {
+        outError = "'" + source.filename().string() +
+                   "' is already in the project - drag it inside the Assets panel to "
+                   "move it";
+        return false;
+    }
+
+    // ---- a name nothing else is using --------------------------------------
+    //
+    // See the header: a second `tiles.png` becomes `tiles (2).png`. The count
+    // is bounded because a loop looking for a free name must terminate even
+    // if something outside is creating files as fast as we check.
+    const std::string stem      = source.stem().string();
+    const std::string extension = source.extension().string();
+    std::string       leaf      = source.filename().string();
+    for (int attempt = 2; attempt < 1000 && fs::exists(targetDirectory / leaf, ec);
+         ++attempt) {
+        leaf = stem + " (" + std::to_string(attempt) + ")" + extension;
+    }
+    if (fs::exists(targetDirectory / leaf, ec)) {
+        outError = "could not find an unused name for '" + source.filename().string() + "'";
+        return false;
+    }
+
+    // copy_options::recursive is what brings a dropped FOLDER's contents in
+    // with it. For a single file it makes no difference at all.
+    fs::copy(source, targetDirectory / leaf, fs::copy_options::recursive, ec);
+    if (ec) {
+        outError =
+            "cannot import '" + source.filename().string() + "': " + ec.message();
+        return false;
+    }
+
+    outVirtualPath = JoinVirtual(virtualTargetDirectory, leaf);
     outError.clear();
     return true;
 }

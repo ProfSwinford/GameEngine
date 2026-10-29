@@ -54,8 +54,10 @@
 //      1 - exp(-rate * dt)
 //
 //  is the same ease-in written as a RATE PER SECOND, so it behaves identically
-//  however often it runs. Raise kFollowRate to make the camera stiffer; a very
-//  large number is effectively a hard lock to the player.
+//  however often it runs. Raise `followRate` to make the camera stiffer; a very
+//  large number is effectively a hard lock to the player. It is a slider in the
+//  Inspector, so the right value is something to find by dragging it while the
+//  game runs rather than something to guess at.
 // =============================================================================
 
 #include <engine/Engine.h>
@@ -66,37 +68,6 @@ namespace {
 
 class CameraFollow final : public eng::ScriptBehaviour {
 public:
-    void OnStart() {
-        // Start ON the target rather than easing in from wherever the scene
-        // file left the camera, which otherwise looks like a swoop at the
-        // start of every single play session.
-        if (const eng::Transform2D* transform = Transform()) {
-            eng::Engine::Get().GetCamera().SetPosition(transform->WorldPosition());
-        }
-    }
-
-    void OnUpdate(float deltaSeconds) {
-        const eng::Transform2D* transform = Transform();
-        if (transform == nullptr) {
-            return;   // this entity is on its way out
-        }
-
-        eng::Camera&    camera  = eng::Engine::Get().GetCamera();
-        const eng::Vec2 target  = transform->WorldPosition();
-        const eng::Vec2 current = camera.Position();
-
-        // Frame-rate independent ease-in. See the note above.
-        const float t = 1.0f - std::exp(-kFollowRate * deltaSeconds);
-        camera.SetPosition(current + (target - current) * t);
-
-        // WORTH TRYING NEXT, if you want it: clamp the result so the camera
-        // never shows the outside of the level, or leave a dead zone in the
-        // middle of the screen that the player can move around in without the
-        // camera reacting at all. Both are a few lines here and neither needs
-        // anything from the engine.
-    }
-
-private:
     // How quickly the camera closes the gap, per second. About 8 is a gentle
     // follow you can feel; 50 is nearly rigid; 1 is dreamy and probably too
     // slow to play with.
@@ -111,7 +82,51 @@ private:
     // 8 the camera trails by about 27 units - a couple of percent of the
     // screen, which reads as weight rather than as lag. Want it half as far
     // behind? Double the rate.
-    static constexpr float kFollowRate = 8.0f;
+    float followRate = 8.0f;
+
+    // A SLIDER AND NOT A DRAG BOX, because this number has ends that mean
+    // something: below 1 the camera stops keeping up at all and above 50 it is
+    // already a hard lock, so there is nothing out there to find. Use
+    // fields.Var for a distance or a speed, where there is no such limit.
+    //
+    // The ends are the widget's, not the engine's - a scene file may hold
+    // anything, and nothing clamps it on load.
+    void OnExpose(eng::ScriptFields& fields) {
+        fields.Range("followRate", followRate, 1.0f, 50.0f,
+                     "how hard the camera pulls toward the player, per second. 8 is "
+                     "a gentle follow; 50 is nearly locked.");
+    }
+
+    void OnStart() {
+        // Start ON the target rather than easing in from wherever the scene
+        // file left the camera, which otherwise looks like a swoop at the
+        // start of every single play session.
+        if (const eng::Transform2D* transform = Transform()) {
+            eng::Engine::Get().GetCamera().SetPosition(transform->WorldPosition());
+        }
+    }
+
+    void OnFixedUpdate() {
+        const eng::Transform2D* transform = Transform();
+        if (transform == nullptr) {
+            return;   // this entity is on its way out
+        }
+
+        eng::Camera&    camera  = eng::Engine::Get().GetCamera();
+        const eng::Vec2 target  = transform->WorldPosition();
+        const eng::Vec2 current = camera.Position();
+
+        // Frame-rate independent ease-in. See the note above.
+        const float t = 1.0f - std::exp(-followRate * eng::Time::FixedDeltaTime());
+        camera.SetPosition(current + (target - current) * t);
+
+        // WORTH TRYING NEXT, if you want it: clamp the result so the camera
+        // never shows the outside of the level, or leave a dead zone in the
+        // middle of the screen that the player can move around in without the
+        // camera reacting at all. Both are a few lines here and neither needs
+        // anything from the engine.
+    }
+
 };
 
 } // namespace

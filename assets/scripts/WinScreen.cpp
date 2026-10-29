@@ -15,8 +15,8 @@
 //
 //  Request writes the name down and the engine acts on it at the end of the
 //  frame. Load does it immediately - and "immediately" means while this
-//  script's OnUpdate is still running. Loading a scene destroys every entity
-//  in the old one, which destroys every component, which destroys the script
+//  script's OnFixedUpdate is still running. Loading a scene destroys every
+//  entity in the old one, which destroys every component, which destroys the
 //  object whose code is on the stack at that moment. The call would return
 //  into an object that no longer exists.
 //
@@ -52,7 +52,7 @@ public:
                         "WinScreen: press Space or Enter to play again");
     }
 
-    void OnUpdate(float) {
+    void OnFixedUpdate() {
         DrawMessage();
 
         // IsPressed is true only on the frame the key goes down. IsDown would

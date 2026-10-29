@@ -10,7 +10,9 @@
 #include <engine/scene/Scene.h>
 
 #include <algorithm>
+#include <limits>
 #include <map>
+#include <set>
 
 namespace eng {
 namespace {
@@ -22,6 +24,15 @@ namespace {
 // types may try to register before it exists. A variable inside a function is
 // created the first time the function runs, which is by definition before
 // anybody can use it.
+// Type names that exist only so that older scene files still load. They can
+// be CREATED but are not OFFERED: the editor'"'"'s "Add component" list is
+// generated from the factory, and a renamed component would otherwise appear
+// twice under both names with no way to tell which to pick.
+std::set<std::string>& AliasNames() {
+    static std::set<std::string> aliases;
+    return aliases;
+}
+
 std::map<std::string, ComponentFactory::CreateFn>& FactoryTable() {
     static std::map<std::string, ComponentFactory::CreateFn> table;
     return table;
@@ -63,6 +74,11 @@ void ComponentFactory::Register(std::string_view typeName, CreateFn create) {
     FactoryTable()[std::string(typeName)] = create;
 }
 
+void ComponentFactory::RegisterAlias(std::string_view typeName, CreateFn create) {
+    FactoryTable()[std::string(typeName)] = create;
+    AliasNames().insert(std::string(typeName));
+}
+
 std::unique_ptr<Component> ComponentFactory::Create(std::string_view typeName) {
     const auto it = FactoryTable().find(std::string(typeName));
     if (it == FactoryTable().end()) {
@@ -77,6 +93,9 @@ bool ComponentFactory::IsRegistered(std::string_view typeName) {
 
 void ComponentFactory::ForEachType(const std::function<void(const char*)>& fn) {
     for (const auto& [name, create] : FactoryTable()) {
+        if (AliasNames().contains(name)) {
+            continue;   // loadable, but not something to offer
+        }
         fn(name.c_str());
     }
 }
@@ -225,6 +244,11 @@ void SpriteRenderSystem::Unregister(SpriteComponent& sprite) {
 }
 
 void SpriteRenderSystem::Render(Camera& camera) {
+    RenderRange(camera, std::numeric_limits<int>::min(),
+                std::numeric_limits<int>::max());
+}
+
+void SpriteRenderSystem::RenderRange(Camera& camera, int minLayer, int maxLayer) {
     if (g_sprites.empty()) {
         return;
     }
@@ -243,6 +267,15 @@ void SpriteRenderSystem::Render(Camera& camera) {
                      });
 
     for (const SpriteComponent* sprite : g_sprites) {
+        // The list is sorted by layer, so everything below the range is passed
+        // over and everything above it ends the walk.
+        if (sprite->Layer() < minLayer) {
+            continue;
+        }
+        if (sprite->Layer() >= maxLayer) {
+            break;
+        }
+
         Transform2D* transform = sprite->OwnerTransform();
         if (transform == nullptr || !sprite->GetTexture()) {
             continue;   // no position, or no picture assigned yet

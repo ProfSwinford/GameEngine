@@ -18,6 +18,7 @@ set(ENGINE_SOURCES
     src/core/GameClock.cpp            # the fixed timestep
     src/core/Json.cpp                 # safe JSON readers
     src/core/Log.cpp                  # the message log
+    src/core/Time.cpp                 # the clock, readable from any script
     src/core/LogBuffer.cpp            # the copy the Console window shows
     src/core/Subsystem.cpp            # ordered start-up and shutdown
 
@@ -32,12 +33,16 @@ set(ENGINE_SOURCES
     src/math/Transform2D.cpp
 
     src/physics/Collider.cpp          # collision shapes and events
+    src/physics/Physics2D.cpp         # raycasts, overlap queries, gravity
+    src/physics/Rigidbody.cpp         # mass, velocity, forces
 
     src/platform/EventPump.cpp        # reading input from the OS
     src/platform/SdlHandles.cpp       # automatic clean-up for SDL objects
     src/platform/Window.cpp           # the game window
 
     src/render/Camera.cpp
+    src/render/Font.cpp               # baking a .ttf into one texture
+    src/render/StbTrueType.cpp        # where stb_truetype is compiled
     src/render/Gizmos.cpp             # helper shapes drawn over the world
     src/render/Renderer.cpp           # lines, rectangles, text and sprites
 
@@ -52,9 +57,16 @@ set(ENGINE_SOURCES
     src/scene/Messaging.cpp           # entities talking to each other
     src/scene/Scene.cpp               # loading and saving levels
     src/scene/ScriptComponent.cpp     # your own behaviour classes
-    src/scene/SpinComponent.cpp       # a small worked example component
+    src/scene/ScriptFields.cpp        # the variables a script shows in the Inspector
+    src/scene/SpinComponent.cpp
+    src/scene/UI.cpp                  # the in-game interface
     src/scene/SystemOrder.cpp         # what updates, in what order
     src/scene/ScriptLibrary.cpp       # loading the project's compiled scripts
+
+    src/tilemap/AutoTile.cpp          # the five-band auto-tiling algorithm
+    src/tilemap/TileAsset.cpp         # one tile material, from a .otile file
+    src/tilemap/Tilemap.cpp           # the grid, and drawing it
+    src/tilemap/TilemapCollider.cpp   # solid cells merged into boxes
 
     src/tools/GuiHooks.cpp            # lets the editor see input first
 )
@@ -67,6 +79,7 @@ set(ENGINE_HEADERS
     include/engine/core/Log.h
     include/engine/core/LogBuffer.h
     include/engine/core/Subsystem.h
+    include/engine/core/Time.h
     include/engine/fs/FileSystem.h
     include/engine/input/InputMap.h
     include/engine/math/Mat3.h
@@ -75,6 +88,9 @@ set(ENGINE_HEADERS
     include/engine/math/Transform2D.h
     include/engine/math/Vec2.h
     include/engine/physics/Collider.h
+    include/engine/physics/Contact.h
+    include/engine/physics/Physics2D.h
+    include/engine/physics/Rigidbody.h
     include/engine/platform/EventPump.h
     include/engine/platform/SdlHandles.h
     include/engine/platform/Window.h
@@ -90,10 +106,15 @@ set(ENGINE_HEADERS
     include/engine/scene/Messaging.h
     include/engine/scene/Scene.h
     include/engine/scene/ScriptComponent.h
+    include/engine/scene/ScriptFields.h
     include/engine/scene/ScriptHooks.h
     include/engine/scene/SpinComponent.h
     include/engine/scene/SystemOrder.h
     include/engine/scene/ScriptLibrary.h
+    include/engine/tilemap/AutoTile.h
+    include/engine/tilemap/TileAsset.h
+    include/engine/tilemap/Tilemap.h
+    include/engine/tilemap/TilemapCollider.h
     include/engine/tools/GuiHooks.h
 )
 

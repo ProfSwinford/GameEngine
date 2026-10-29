@@ -42,7 +42,7 @@ namespace {
 // separate files with no header between them - and four lines repeated is a
 // smaller problem than a header that has to be kept in step.
 bool IsPickup(eng::Entity& entity) {
-    const auto* collider = entity.Find<eng::AABBColliderComponent>();
+    auto* collider = eng::FindCollider(entity);
     return collider != nullptr && collider->Layer() == "Pickup";
 }
 
@@ -55,8 +55,8 @@ public:
                         Owner() != nullptr ? Owner()->Name() : "<none>");
     }
 
-    void OnUpdate(float deltaSeconds) {
-        (void)deltaSeconds;   // steering is a direction, not a distance
+    void OnFixedUpdate() {
+        // Steering is a direction, not a distance, so this one needs no delta.
 
         eng::Scene*       scene     = GetScene();
         eng::Transform2D* transform = Transform();

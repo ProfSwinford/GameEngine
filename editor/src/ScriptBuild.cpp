@@ -174,6 +174,91 @@ fs::path EngineLinkLibrary() {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+//  Is the engine library older than the engine headers beside it?
+//
+//  THE FAILURE THIS EXISTS TO EXPLAIN, because it is a genuinely confusing one.
+//
+//  A script calls eng::Physics2D::Raycast. The header declares it, so the
+//  script COMPILES. The link then fails with "unresolved external symbol"
+//  naming a dozen eng:: functions, and the editor reports it as "the scripts
+//  did not compile" - so it reads like broken script code, or a broken engine.
+//
+//  Nothing is wrong with either. The library was simply built before those
+//  functions existed. It happens every time the engine is changed and only ONE
+//  configuration is rebuilt: Debug and Release have their own engine.lib, and
+//  building one leaves the other behind without anything saying so.
+//
+//  CurrentBuildStamp already catches "you have switched configuration", which
+//  is a different question - it compares WHICH library, not HOW OLD it is.
+// ---------------------------------------------------------------------------
+
+// The most recently written header anywhere the scripts include from.
+bool NewestEngineHeader(fs::path& outPath, fs::file_time_type& outTime) {
+    bool            found = false;
+    std::error_code ec;
+
+    for (const fs::path& root : IncludeDirectories()) {
+        if (!fs::is_directory(root, ec)) {
+            continue;
+        }
+        for (fs::recursive_directory_iterator it(root, ec), end; it != end;
+             it.increment(ec)) {
+            if (ec) {
+                break;
+            }
+            if (!it->is_regular_file(ec)) {
+                continue;
+            }
+            const fs::path&   path = it->path();
+            const std::string ext  = path.extension().string();
+            if (ext != ".h" && ext != ".hpp") {
+                continue;
+            }
+            const auto when = fs::last_write_time(path, ec);
+            if (ec) {
+                ec.clear();
+                continue;
+            }
+            if (!found || when > outTime) {
+                outPath = path;
+                outTime = when;
+                found   = true;
+            }
+        }
+        ec.clear();
+    }
+    return found;
+}
+
+// True when the library scripts link against predates the headers they are
+// compiled against. `outDetail` names both files, because "rebuild the engine"
+// is not actionable without knowing WHICH build of it is behind.
+bool EngineLibraryIsStale(std::string& outDetail) {
+    const fs::path  library = EngineLinkLibrary();
+    std::error_code ec;
+    if (library.empty() || !fs::exists(library, ec)) {
+        return false;
+    }
+
+    const auto libraryTime = fs::last_write_time(library, ec);
+    if (ec) {
+        return false;
+    }
+
+    fs::path           header;
+    fs::file_time_type headerTime{};
+    if (!NewestEngineHeader(header, headerTime)) {
+        return false;
+    }
+    if (headerTime <= libraryTime) {
+        return false;
+    }
+
+    outDetail = header.string() + "' is newer than '" + library.string();
+    return true;
+}
+
 fs::path BuildDirectory() {
     return fs::path(eng::FileSystem::Resolve(".build"));
 }
@@ -746,6 +831,37 @@ ScriptBuild::Result ScriptBuild::Compile() {
     if (exitCode != 0) {
         result.ok      = false;
         result.summary = "the scripts did not compile";
+
+        // ---- a likely explanation, printed BEFORE the evidence ------------
+        //
+        // First, so it is read rather than scrolled past after fifty lines of
+        // mangled symbol names. The compiler's own output still follows in
+        // full - this adds a hint, it does not replace anything.
+        //
+        // DELIBERATELY WORDED AS A POSSIBILITY. The check is two file
+        // timestamps, and a header can be newer than the library without the
+        // library being wrong: switching branches rewrites timestamps, and
+        // ninja will not relink when a rebuilt object turns out identical. So
+        // this can appear beside a genuine mistake in a script, and must not
+        // tell anybody their code is fine when it is not.
+        const bool unresolved =
+            g_lastOutput.find("unresolved external symbol") != std::string::npos;
+        const bool mentionsEngine = g_lastOutput.find("eng::") != std::string::npos;
+
+        std::string staleDetail;
+        if (unresolved && mentionsEngine && EngineLibraryIsStale(staleDetail)) {
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "NOTE: the link failed on eng:: symbols, and the engine "
+                             "library is OLDER than the engine headers. If those "
+                             "symbols are functions you did not write, the library "
+                             "simply does not have them yet:");
+            ENGINE_LOG_ERROR(eng::Channels::kEditor, "  '{}'", staleDetail);
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "  Rebuild the engine in THIS configuration ({}) and try "
+                             "again - Debug and Release have their own engine library, "
+                             "and building one leaves the other behind.",
+                             ENGINE_SCRIPT_IS_DEBUG ? "Debug" : "Release");
+        }
 
         ENGINE_LOG_ERROR(eng::Channels::kEditor,
                          "the scripts did not compile. The compiler said:");

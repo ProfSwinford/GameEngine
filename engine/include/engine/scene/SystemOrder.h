@@ -51,6 +51,7 @@ namespace SystemStage {
 inline constexpr int kInput             = 100;
 inline constexpr int kGameplay          = 200;
 inline constexpr int kMovement          = 300;
+inline constexpr int kPhysics           = 350;
 inline constexpr int kCollision         = 400;
 inline constexpr int kCollisionResponse = 500;
 inline constexpr int kDeferred          = 600;

@@ -1,6 +1,11 @@
 // =============================================================================
 //  Pickup - one collectible. Touch it with the player and it disappears.
 //
+//  ITS COLLIDER MUST BE A TRIGGER, which is what a collectible is: the player
+//  walks through it rather than bumping into it. That is why the hook here is
+//  OnTriggerEnter and not OnCollisionEnter - a trigger pair sends one and not
+//  the other. See physics/Collider.h.
+//
 //  Attach it by dragging this file from the Assets panel onto an entity in the
 //  Hierarchy or the Inspector.
 //
@@ -21,7 +26,7 @@
 //  -----------------------------------------------------------------------------
 //  WHY QueueDestroy AND NOT A PLAIN DESTROY
 //
-//  OnCollisionEnter runs during message delivery, while the collision system is
+//  OnTriggerEnter runs during message delivery, while the collision system is
 //  part way through its list of touching pairs and the render system is part
 //  way through its list of sprites. Removing an entity at that moment pulls the
 //  ground out from under both of them.
@@ -38,7 +43,7 @@ namespace {
 
 class Pickup final : public eng::ScriptBehaviour {
 public:
-    void OnCollisionEnter(eng::EntityId other) {
+    void OnTriggerEnter(eng::EntityId other) {
         eng::Scene* scene = GetScene();
         if (scene == nullptr) {
             return;
@@ -56,7 +61,7 @@ public:
         // layer on its collider - rather than its name, so a second player or
         // a renamed one still works and nothing here has a list of names in
         // it.
-        const auto* collider = partner->Find<eng::AABBColliderComponent>();
+        const auto* collider = eng::FindCollider(*partner);
         if (collider == nullptr || collider->Layer() != "Player") {
             return;
         }

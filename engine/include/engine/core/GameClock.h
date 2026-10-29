@@ -97,6 +97,13 @@ public:
     // How many simulation steps have run since the program started.
     unsigned long long TickCount() const { return m_ticks; }
 
+    // How many frames have been DRAWN since the program started.
+    //
+    // Counted separately from the steps above, and the two deliberately do
+    // not match: that gap is the difference between how often the game is
+    // drawn and how often it is simulated.
+    unsigned long long FrameCount() const { return m_frames; }
+
     int  MaxStepsPerFrame() const { return m_maxSteps; }
     void SetMaxStepsPerFrame(int steps);
 
@@ -110,7 +117,8 @@ private:
     double m_gameSeconds = 0.0;
     float  m_realDelta   = 0.0f;
 
-    unsigned long long m_ticks = 0;
+    unsigned long long m_ticks  = 0;
+    unsigned long long m_frames = 0;
 
     bool m_paused              = false;
     bool m_singleStepRequested = false;

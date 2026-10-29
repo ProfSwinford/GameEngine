@@ -12,6 +12,12 @@
 //
 //  Attach it by dragging Orbiter.cpp from the Assets panel onto an entity in
 //  the Hierarchy or the Inspector.
+//
+//  IT IS ALSO THE EXAMPLE OF A TUNABLE SCRIPT. `radius` and
+//  `degreesPerSecond` below appear in the Inspector, can be dragged while the
+//  game runs, and are saved per entity - so two Orbiters can circle at
+//  different speeds from one script. OnExpose is what puts them there; see
+//  engine/scene/ScriptFields.h.
 // ============================================================================
 
 //#include <engine/core/Log.h>
@@ -27,6 +33,44 @@ namespace {
 
 class Orbiter final : public eng::ScriptBehaviour {
 public:
+    // ========================================================================
+    //  THE TWO NUMBERS WORTH TUNING, which the Inspector can turn.
+    //
+    //  ORDINARY MEMBERS WITH THEIR DEFAULTS WRITTEN HERE, and not the
+    //  `static constexpr` constants these used to be. That is the whole
+    //  difference between a number you can change and one you cannot: a
+    //  constant is fixed when the script compiles, so the Inspector could at
+    //  best show it greyed out.
+    //
+    //  CHANGING THIS LINE STILL CHANGES EVERY ENTITY that has not been given
+    //  its own value, because the scene file stores only what somebody
+    //  actually edited. See engine/scene/ScriptFields.h for why that is the
+    //  way round it is.
+    // ========================================================================
+    float radius = 90.0f;
+
+    // IN DEGREES, like every angle anybody sees in this editor; the engine
+    // holds radians and the conversion happens where it is used, once. 68.75
+    // is the 1.2 radians a second this did before it was tunable.
+    float degreesPerSecond = 68.75f;
+
+    // ------------------------------------------------------------------------
+    //  Which of them the Inspector shows. Nothing finds these by itself: C++
+    //  can ask whether a name exists but not what names exist, so a variable
+    //  is on screen because this function named it.
+    //
+    //  THE NAMES ARE ALSO THE KEYS IN THE SCENE FILE, so renaming one orphans
+    //  whatever was saved under the old spelling. The Inspector says so when
+    //  it finds a value nothing claims.
+    // ------------------------------------------------------------------------
+    void OnExpose(eng::ScriptFields& fields) {
+        fields.Var("radius", radius,
+                   "how far from its starting point it circles, in pixels");
+        fields.Var("degreesPerSecond", degreesPerSecond,
+                   "how fast it goes round. 360 is one full turn a second; a "
+                   "negative number turns the other way.");
+    }
+
     void OnStart() {
         // The centre of the circle is remembered HERE rather than in a
         // constructor, because a constructor runs before the script is
@@ -37,15 +81,20 @@ public:
         }
     }
 
-    void OnUpdate(float deltaSeconds) {
+    void OnFixedUpdate() {
         eng::Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;
         }
 
-        // Multiplied by deltaSeconds, always. Without that the speed would
+        // Multiplied by the step length, always. Without that the speed would
         // depend on how often this happens to be called.
-        m_angle += kRadiansPerSecond * deltaSeconds;
+        //
+        // The variable is READ HERE, every step, rather than copied into
+        // something at OnStart. That is what makes turning the knob in the
+        // Inspector take effect while the game is running - nothing has to be
+        // told that it changed, because nothing cached it.
+        m_angle += degreesPerSecond * eng::kDegToRad * eng::Time::FixedDeltaTime();
 
         // Wrapped rather than left to grow forever. An angle accumulating for
         // an hour at 60 steps a second reaches about 13,000 radians, at which
@@ -57,8 +106,8 @@ public:
 
         // cos and sin turn an angle into a position on a circle.
         transform->SetLocalPosition(
-            m_centre + eng::Vec2{std::cos(m_angle) * kRadius,
-                                 std::sin(m_angle) * kRadius});
+            m_centre + eng::Vec2{std::cos(m_angle) * radius,
+                                 std::sin(m_angle) * radius});
     }
 
     void OnCollisionEnter(eng::EntityId other) {
@@ -76,9 +125,6 @@ public:
     }
 
 private:
-    static constexpr float kRadius           = 90.0f;
-    static constexpr float kRadiansPerSecond = 1.2f;
-
     eng::Vec2 m_centre{};
     float     m_angle = 0.0f;
 };

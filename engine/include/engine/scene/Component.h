@@ -106,6 +106,12 @@ public:
     using CreateFn = std::unique_ptr<Component> (*)();
 
     static void Register(std::string_view typeName, CreateFn create);
+
+    // Registers a name that can be CREATED but is not OFFERED - see the note
+    // in Component.cpp. For a component that has been renamed: the old name
+    // keeps loading old scene files, without the editor showing the same
+    // component twice under two names.
+    static void RegisterAlias(std::string_view typeName, CreateFn create);
     static std::unique_ptr<Component> Create(std::string_view typeName);
     static bool IsRegistered(std::string_view typeName);
 
@@ -153,6 +159,15 @@ public:
 
     // Draws every registered sprite, lowest layer first.
     static void Render(Camera& camera);
+
+    // The same, limited to sprites whose layer is in [minLayer, maxLayer).
+    //
+    // WHY A RANGE EXISTS: tilemaps draw from a different system but share this
+    // layer ordering, so the engine draws the sprites below a tilemap's layer,
+    // then that tilemap, then the sprites above it. Without a range a
+    // foreground tilemap could never be in front of a sprite. See
+    // Engine::RenderWorld and tilemap/Tilemap.h.
+    static void RenderRange(Camera& camera, int minLayer, int maxLayer);
 
     static std::size_t Count();
     static void        Clear();

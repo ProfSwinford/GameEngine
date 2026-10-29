@@ -386,6 +386,56 @@ std::set<std::string> CollectReferencedAssets(const fs::path& assetsDir, int& ou
         });
     }
 
+    // ---- assets that refer to further assets -------------------------------
+    //
+    // A scene names "tiles/grass.otile". THAT file names the sheet it draws
+    // from, and may name other .otile files it connects to - and nothing above
+    // reads it, because only scenes are walked. Without this an exported game
+    // ships every tile definition and none of their pictures, and the whole
+    // level comes out as magenta placeholder squares.
+    //
+    // A WORKLIST rather than a second pass, because these files can refer to
+    // each other: following one can reveal another. `needed` is a set and only
+    // new entries are queued, so two tiles that name each other terminate by
+    // themselves.
+    //
+    // Only .otile is followed, deliberately. The scene walk above is a dumb
+    // "does this string name a real file" test precisely so it needs no list
+    // of which fields hold paths; this is the narrow exception for an asset
+    // that is itself a document, and it should stay narrow.
+    std::vector<std::string> toFollow(needed.begin(), needed.end());
+    while (!toFollow.empty()) {
+        const std::string path = std::move(toFollow.back());
+        toFollow.pop_back();
+
+        if (!eng::FileSystem::HasExtension(path, ".otile")) {
+            continue;
+        }
+
+        std::string text;
+        std::string error;
+        if (!eng::FileSystem::ReadTextFile(path, text, error)) {
+            ENGINE_LOG_WARN(eng::Channels::kEditor, "could not read '{}': {}", path,
+                            error);
+            continue;
+        }
+        const eng::Json document = eng::ParseJson(text, error);
+        if (!error.empty()) {
+            ENGINE_LOG_WARN(eng::Channels::kEditor,
+                            "'{}' is not valid JSON ({}), so its tile sheet could not "
+                            "be found and the exported game would draw it as the "
+                            "magenta placeholder",
+                            path, error);
+            continue;
+        }
+
+        ForEachString(document, [&](const std::string& value) {
+            if (IsAssetUnderAssets(value, assetsDir) && needed.insert(value).second) {
+                toFollow.push_back(value);
+            }
+        });
+    }
+
     AddManifestIncludes(assetsDir, needed, outFromManifest);
     return needed;
 }

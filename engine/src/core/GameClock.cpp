@@ -15,6 +15,7 @@ void GameClock::Init() {
     m_realSeconds = 0.0;
     m_gameSeconds = 0.0;
     m_ticks       = 0;
+    m_frames      = 0;
 }
 
 void GameClock::SetFixedStepSeconds(float seconds) {
@@ -36,6 +37,7 @@ int GameClock::BeginFrame(double realDeltaSeconds) {
     // time scale, or by the limit below. That is what makes it the timeline
     // you can trust when measuring how long something took.
     m_realDelta    = static_cast<float>(realDeltaSeconds);
+    ++m_frames;
     m_realSeconds += realDeltaSeconds;
 
     if (m_paused) {

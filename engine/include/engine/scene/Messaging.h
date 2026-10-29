@@ -82,6 +82,13 @@ namespace MessageTypes {
 inline constexpr const char* kCollisionEnter = "CollisionEnter";
 inline constexpr const char* kCollisionStay  = "CollisionStay";
 inline constexpr const char* kCollisionExit  = "CollisionExit";
+
+// The trigger half. A pair where EITHER side is a trigger sends these instead
+// of the three above - see the note in physics/Collider.h about why they are
+// different events rather than one event with a flag.
+inline constexpr const char* kTriggerEnter = "TriggerEnter";
+inline constexpr const char* kTriggerStay  = "TriggerStay";
+inline constexpr const char* kTriggerExit  = "TriggerExit";
 } // namespace MessageTypes
 
 class MessageBus : public Subsystem {

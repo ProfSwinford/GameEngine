@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 
 namespace eng {
 
@@ -126,8 +127,11 @@ bool Engine::SceneSubsystem::Init(const BootConfig&) {
     // run, nothing in a scene file means anything.
     ComponentFactory::RegisterBuiltins();
     CollisionSystem::RegisterComponentTypes();
+    RigidbodySystem::RegisterComponentTypes();
+    TilemapRenderSystem::RegisterComponentTypes();
     SpinSystem::RegisterComponentTypes();
     ScriptSystem::RegisterComponentTypes();
+    UISystem::RegisterComponentTypes();
 
     // The camera is a component like any other - see CameraComponent.h.
     ComponentFactory::Register(CameraComponent::kTypeName,
@@ -168,6 +172,8 @@ void Engine::SceneSubsystem::Shutdown() {
     SpinSystem::Clear();
     ScriptSystem::Clear();
     SpriteRenderSystem::Clear();
+    TilemapRenderSystem::Clear();
+    TileLibrary::Clear();
     CameraSystem::Clear();
     Scene::SetActive(nullptr);
     engine.m_scene.reset();
@@ -177,7 +183,12 @@ void Engine::SceneSubsystem::Shutdown() {
 bool Engine::CollisionSubsystem::Init(const BootConfig&) {
     Engine& engine = Engine::Get();
 
+    engine.m_rigidbodySystem = std::make_unique<RigidbodySystem>();
     engine.m_collisionSystem = std::make_unique<CollisionSystem>();
+
+    // Integration at stage 350 BEFORE collision at 400, so the overlap being
+    // resolved is the one the body actually moved into this step.
+    SystemScheduler::Register(engine.m_rigidbodySystem.get());
     SystemScheduler::Register(engine.m_collisionSystem.get());
 
     // Scripts hear about collisions through the message bus, so this
@@ -192,6 +203,12 @@ void Engine::CollisionSubsystem::Shutdown() {
     if (engine.m_collisionSystem != nullptr) {
         SystemScheduler::Unregister(engine.m_collisionSystem.get());
     }
+    if (engine.m_rigidbodySystem != nullptr) {
+        SystemScheduler::Unregister(engine.m_rigidbodySystem.get());
+    }
+    RigidbodySystem::Clear();
+    engine.m_rigidbodySystem.reset();
+
     CollisionSystem::Clear();
     engine.m_collisionSystem.reset();
 }
@@ -277,6 +294,11 @@ bool Engine::Init(const Options& options) {
 
     m_clock.Init();
     m_clock.SetFixedStepSeconds(m_config.fixedTimestepSeconds);
+
+    // The world's gravity and how hard the contact solver works, both from
+    // config/engine.json so they can be tuned without a rebuild.
+    Physics2D::SetGravity(m_config.gravity);
+    CollisionSystem::SetSolverIterations(m_config.solverIterations);
     m_clock.SetMaxStepsPerFrame(m_config.maxStepsPerFrame);
 
     SystemScheduler::LogOrder();
@@ -478,6 +500,12 @@ bool Engine::EnterPlayMode(std::string& outError) {
     }
     m_inPlayMode = true;
     m_clock.SetPaused(false);
+
+    // A SESSION STARTS WITH NOTHING HELD. Whatever the keyboard was doing
+    // while you were editing is not the game's business, and a key that was
+    // somehow left down would have the player moving before the first frame.
+    InputMap::ResetState();
+
     ENGINE_LOG_INFO(Channels::kEditor, "play mode started");
     return true;
 }
@@ -488,6 +516,12 @@ void Engine::ExitPlayMode() {
     }
     m_inPlayMode = false;
     m_clock.SetPaused(true);
+
+    // AND IT ENDS WITH NOTHING HELD EITHER. Clearing it here as well as on
+    // the way in is not belt and braces: pressing Stop with a key down is
+    // precisely how the key gets stuck, and the editor itself should not be
+    // left believing something is held while the game is not even running.
+    InputMap::ResetState();
 
     // Anything still queued belongs to the play session and must not be
     // applied to the restored scene - a destroy queued on the last frame of
@@ -546,8 +580,24 @@ bool Engine::BeginFrame() {
 }
 
 void Engine::Simulate() {
+    // Everything inside this bracket is a fixed simulation step, which is
+    // what makes Time::DeltaTime() return the fixed step rather than the
+    // frame time while a script's OnFixedUpdate is running. See core/Time.h.
+    Time::BeginFixedStep();
+
     for (int step = 0; step < m_stepsThisFrame; ++step) {
         const float fixedStep = m_clock.FixedStepSeconds();
+
+        // THE INTERFACE FIRST, before gameplay. A script asking
+        // button->WasClicked() in its OnFixedUpdate has to be told about a click
+        // that happened before this step, not after it - otherwise every
+        // button would respond one step late. See scene/UI.h.
+        if (m_scene != nullptr) {
+            UISystem::UpdateWindowPointer(
+                Vec2{m_events.MouseX(), m_events.MouseY()}, Renderer::OutputSize(),
+                m_events.MouseLeftDown());
+            UISystem::Update(*m_scene, m_camera);
+        }
 
         // Stages 100 to 500: gameplay, movement, collision. See SystemOrder.h.
         SystemScheduler::UpdateRange(0, SystemStage::kCollisionResponse, fixedStep);
@@ -565,6 +615,46 @@ void Engine::Simulate() {
                                      SystemStage::kFirstRenderStage, fixedStep);
 
         m_clock.OnStepConsumed();
+    }
+
+    Time::EndFixedStep();
+
+    // ======================================================================
+    //  THE PER-FRAME UPDATE - every script's OnUpdate, exactly once.
+    //
+    //  ONCE PER FRAME, FROM HERE, and not as a render-stage system. Stages
+    //  800 and up already run per drawn frame, but they run from
+    //  Engine::RenderWorld - which the EDITOR CALLS TWICE, once for the Game
+    //  view and once for the Scene view. A script run from there would update
+    //  twice per frame in the editor and once in the player. See the note
+    //  above ScriptSystem in scene/ScriptComponent.h.
+    //
+    //  ----------------------------------------------------------------------
+    //  THE GATE, which is Unity's and not an approximation of it:
+    //
+    //    editor, not playing   the clock is PAUSED, so this does not run.
+    //                          An entity sitting in a scene you are editing
+    //                          is not a running game, and a script quietly
+    //                          ticking while you drag things around would be
+    //                          a genuinely nasty surprise.
+    //
+    //    Step button           the clock is paused but asked for one step, so
+    //                          m_stepsThisFrame is 1 and this DOES run. One
+    //                          press is one whole frame, update included.
+    //
+    //    time scale of zero    the clock is NOT paused, so this runs - while
+    //                          the loop above ran no steps at all, because no
+    //                          simulated time was collected.
+    //
+    //  That last line is the entire reason the two updates are separate
+    //  things. A pause menu built on a time scale of zero still gets its
+    //  OnUpdate, so it can animate, read input and let go of the pause, while
+    //  every OnFixedUpdate in the game is frozen solid. Such a script asks
+    //  Time::UnscaledDeltaTime(), because DeltaTime() is scaled and is
+    //  therefore 0 for exactly as long as the game is stopped.
+    // ======================================================================
+    if (!m_clock.IsPaused() || m_stepsThisFrame > 0) {
+        ScriptSystem::FrameUpdate();
     }
 
     // AND ONCE MORE, OUTSIDE THE LOOP.
@@ -589,7 +679,7 @@ void Engine::Simulate() {
     //
     // Right here: after the step loop, so no system is mid-update; after the
     // deferred queue, so nothing is still owed against the scene being
-    // replaced. A script asked for this during its OnUpdate, where carrying
+    // replaced. A script asked for this during an update, where carrying
     // it out would have destroyed the script while it was running. See
     // Engine::RequestScene.
     //
@@ -610,7 +700,7 @@ void Engine::Simulate() {
     CameraSystem::Apply();
 }
 
-void Engine::RenderWorld(Camera& camera, bool includeGizmos) {
+void Engine::RenderWorld(Camera& camera, bool includeGizmos, bool editorTints) {
     // The camera sizes itself from whatever is currently being drawn into, so
     // this same call frames the world correctly whether it is filling the
     // whole window or a small panel in the editor.
@@ -618,13 +708,55 @@ void Engine::RenderWorld(Camera& camera, bool includeGizmos) {
 
     Renderer::Clear(Color{18, 18, 22, 255});
 
-    SpriteRenderSystem::Render(camera);
+    // ---- TILEMAPS AND SPRITES SHARE ONE LAYER ORDERING --------------------
+    //
+    // Drawing all tilemaps and then all sprites would be simpler and would be
+    // wrong: a foreground tilemap - a bridge the player walks under, the tops
+    // of trees, a wall in front of the room - has to come out ON TOP of
+    // sprites, while the ground it is painted over has to stay behind them.
+    // One ordering is the only way both can be true.
+    //
+    // So the layers that tilemaps occupy are walked in order, and the sprites
+    // in the gaps between them are drawn in between. With no tilemaps in the
+    // scene this is a single full-range call, which is exactly what it used to
+    // be.
+    //
+    // Within a layer, tilemaps go first: a tilemap is scenery, and a sprite on
+    // the same layer is standing on it.
+    static std::vector<int> tilemapLayers;
+    TilemapRenderSystem::ResetCounters();
+    TilemapRenderSystem::CollectLayers(tilemapLayers);
+
+    int spritesFrom = std::numeric_limits<int>::min();
+    for (const int layer : tilemapLayers) {
+        SpriteRenderSystem::RenderRange(camera, spritesFrom, layer);
+        TilemapRenderSystem::RenderRange(camera, layer, layer + 1, editorTints);
+        spritesFrom = layer;
+    }
+    SpriteRenderSystem::RenderRange(camera, spritesFrom,
+                                    std::numeric_limits<int>::max());
 
     // Stages 800 and above, for anything a game wants drawn between the
     // sprites and the gizmos.
     SystemScheduler::RenderPass(m_clock.RealDeltaSeconds());
 
-    // Gizmos last, so they land on top of everything else.
+    // ---- THE INTERFACE, and note where it is: OUTSIDE the gizmo switch ----
+    //
+    // This is the whole reason the UI is a system of its own rather than a
+    // few Gizmos::Text calls. Gizmos are a DEBUG overlay - the grid, the
+    // origin arrows, the collider outlines - and the Game view asks for the
+    // world without them, because none of that ships with a game. A score
+    // drawn as a gizmo went with them, and the interface disappeared from
+    // the one view that shows what a player sees.
+    //
+    // A UI is part of the game, so it draws whether gizmos are on or not.
+    // See scene/UI.h.
+    if (m_scene != nullptr) {
+        UISystem::Render(*m_scene, camera, Renderer::OutputSize());
+    }
+
+    // Gizmos last, so they land on top of everything else - including the
+    // interface, which is right for a debug overlay.
     if (includeGizmos) {
         Gizmos::Render(camera);
     }

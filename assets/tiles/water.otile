@@ -1,0 +1,11 @@
+{
+  "_comment": "An ANIMATED tile. Frames go SIDEWAYS in the sheet, so this one is 128x160: four 32px frames of five bands. Each cell picks its own speed between the two below and its own starting point, so a lake ripples rather than pulsing in unison.",
+  "animationMaxSpeed": 5.0,
+  "animationMinSpeed": 3.0,
+  "collision": "None",
+  "connectsTo": [
+    "tiles/stone.otile"
+  ],
+  "frameMode": "Animation",
+  "sheet": "textures/tiles/overworld_anim_autotile_1.png"
+}

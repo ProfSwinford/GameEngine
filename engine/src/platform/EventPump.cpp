@@ -35,6 +35,7 @@ void EventPump::Poll() {
     // this function stops asking the system for memory after the first frame.
     m_events.clear();
     m_consumed.clear();
+    m_dropped.clear();
     m_quitRequested = false;
     m_focusGained   = false;
     m_focusLost     = false;
@@ -135,6 +136,62 @@ void EventPump::Poll() {
                 m_focusLost = true;
                 break;
 
+            // ================================================================
+            //  FILES DRAGGED IN FROM THE DESKTOP.
+            //
+            //  Four event types for one gesture, and each of them matters:
+            //
+            //    BEGIN     the cursor entered the window carrying something
+            //    POSITION  it moved, and this is where it is now
+            //    FILE      one file was let go of - sent once PER FILE
+            //    COMPLETE  the drop is finished, or the cursor left again
+            //
+            //  They are recorded and then dropped out of the RawEvent list
+            //  rather than added to it, because a RawEvent has nowhere to put
+            //  a file name. See DroppedFile in the header.
+            //
+            //  THE POSITION IS STAMPED ON THE FILE EVENTS TOO, by SDL, from
+            //  the last POSITION it saw. That is the only reason a panel can
+            //  tell a file dropped on IT from one dropped on the panel next
+            //  door: the mouse does not move during somebody else's drag, so
+            //  asking where the cursor is afterwards answers a different
+            //  question entirely.
+            // ================================================================
+            case SDL_EVENT_DROP_BEGIN:
+                m_dragHovering = true;
+                recognised     = false;
+                break;
+
+            case SDL_EVENT_DROP_POSITION:
+                m_dragHovering = true;
+                m_dragX        = sdlEvent.drop.x;
+                m_dragY        = sdlEvent.drop.y;
+                recognised     = false;
+                break;
+
+            case SDL_EVENT_DROP_FILE:
+                // COPIED, not pointed at. SDL owns that string and frees it
+                // once the event has been dealt with, so keeping the pointer
+                // would leave the list full of dangling ones by the time a
+                // panel got round to reading it - and a dangling pointer that
+                // usually still happens to hold the right text is about the
+                // worst kind there is.
+                if (sdlEvent.drop.data != nullptr) {
+                    m_dropped.push_back(DroppedFile{std::string(sdlEvent.drop.data),
+                                                    sdlEvent.drop.x, sdlEvent.drop.y});
+                }
+                recognised = false;
+                break;
+
+            case SDL_EVENT_DROP_COMPLETE:
+                // Sent both when the user lets go AND when they drag back out
+                // without dropping anything, which is what makes this the one
+                // safe place to turn the highlight off. Missing it would leave
+                // a panel glowing for the rest of the session.
+                m_dragHovering = false;
+                recognised     = false;
+                break;
+
             default:
                 // Plenty of SDL event types are of no interest here. Ignoring
                 // them keeps the list short and meaningful.
@@ -153,12 +210,38 @@ void EventPump::Poll() {
         bool consumed = false;
         switch (event.kind) {
             case RawEventKind::KeyDown:
-            case RawEventKind::KeyUp:
                 consumed = guiHandled && gui.WantsKeyboard != nullptr &&
                            gui.WantsKeyboard();
                 break;
-            case RawEventKind::MouseButtonDown:
+
+            // ================================================================
+            //  A RELEASE IS NEVER CLAIMED. Not by the GUI, not by anything.
+            //
+            //  Claiming an input means "I am acting on this instead of the
+            //  game". That makes sense for a press, which starts something.
+            //  It makes no sense for a release, which can only ever END
+            //  something that has already started.
+            //
+            //  The bug this fixes: hold a key while play-testing, click Stop,
+            //  then let go. Clicking Stop puts the keyboard focus in the GUI,
+            //  so the key-up was claimed and never reached the input map -
+            //  which only ever clears a key on seeing its release. The action
+            //  stayed down forever, and the next play session began with the
+            //  player already walking.
+            //
+            //  Delivering it unconditionally is safe in the other direction
+            //  too. If the GUI claimed the PRESS - somebody typing in a text
+            //  box - the action was never marked down, so the release finds
+            //  it already up and changes nothing. No phantom Released is
+            //  produced, because that state is worked out by comparing this
+            //  frame with the last and both are false.
+            // ================================================================
+            case RawEventKind::KeyUp:
             case RawEventKind::MouseButtonUp:
+                consumed = false;
+                break;
+
+            case RawEventKind::MouseButtonDown:
             case RawEventKind::MouseMove:
             case RawEventKind::MouseWheel:
                 consumed = guiHandled && gui.WantsMouse != nullptr && gui.WantsMouse();
@@ -176,9 +259,16 @@ void EventPump::Poll() {
     // anything reading MouseX/MouseY always gets a current answer.
     float x = 0.0f;
     float y = 0.0f;
-    SDL_GetMouseState(&x, &y);
+    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&x, &y);
     m_mouseX = x;
     m_mouseY = y;
+
+    // The same reasoning for the BUTTON: an interface asks "is it held down
+    // right now", which is a state rather than an event. Reconstructing it by
+    // counting Down and Up events would drift the first time one was missed -
+    // which is exactly the stuck-input bug that the key-release rule above
+    // exists to prevent. Asking the system is immune to it.
+    m_mouseLeftDown = (buttons & SDL_BUTTON_LMASK) != 0;
 }
 
 std::size_t EventPump::Count() const {

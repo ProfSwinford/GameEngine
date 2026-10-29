@@ -61,6 +61,19 @@ AssetKind ClassifyAsset(std::string_view virtualPath) {
     if (EndsWithNoCase(virtualPath, eng::kSceneExtension)) {
         return AssetKind::Scene;
     }
+    // A font, which a UI label can be given. .otf is listed because stb reads
+    // the TrueType outlines inside one; an OpenType file that uses CFF curves
+    // instead is refused when it is baked, and says so rather than drawing
+    // nothing.
+    if (EndsWithNoCase(virtualPath, ".ttf") || EndsWithNoCase(virtualPath, ".otf")) {
+        return AssetKind::Font;
+    }
+    // A tile material. Its own extension for the same reason .oscene has one:
+    // it is JSON, and telling it apart from every other .json under assets/ by
+    // folder would mean tiles could only live in one place.
+    if (EndsWithNoCase(virtualPath, ".otile")) {
+        return AssetKind::Tile;
+    }
     return AssetKind::Unknown;
 }
 
@@ -69,9 +82,13 @@ const char* PayloadIdFor(AssetKind kind) {
         case AssetKind::Texture: return kPayloadTexture;
         case AssetKind::Scene:   return kPayloadScene;
         case AssetKind::Script:  return kPayloadScript;
+        case AssetKind::Font:    return kPayloadFont;
+        case AssetKind::Tile:    return kPayloadTile;
         case AssetKind::Unknown: break;
     }
-    return nullptr;
+    // Not nullptr. See the header: an unrecognised file is still a file that
+    // belongs somewhere, and the Assets panel moves things by dragging them.
+    return kPayloadAssetItem;
 }
 
 std::string ScriptNameFromPath(std::string_view virtualPath) {

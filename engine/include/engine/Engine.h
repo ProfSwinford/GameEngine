@@ -29,6 +29,7 @@
 #include <engine/core/Log.h>
 #include <engine/core/LogBuffer.h>
 #include <engine/core/Subsystem.h>
+#include <engine/core/Time.h>
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/input/InputMap.h>
@@ -38,6 +39,8 @@
 #include <engine/math/Transform2D.h>
 #include <engine/math/Vec2.h>
 #include <engine/physics/Collider.h>
+#include <engine/physics/Physics2D.h>
+#include <engine/physics/Rigidbody.h>
 #include <engine/platform/EventPump.h>
 #include <engine/platform/Window.h>
 #include <engine/render/Camera.h>
@@ -54,14 +57,25 @@
 #include <engine/scene/Messaging.h>
 #include <engine/scene/Scene.h>
 #include <engine/scene/ScriptComponent.h>
+#include <engine/scene/ScriptFields.h>
 #include <engine/scene/ScriptLibrary.h>
 #include <engine/scene/SpinComponent.h>
 #include <engine/scene/SystemOrder.h>
+#include <engine/scene/UI.h>
+#include <engine/tilemap/AutoTile.h>
+#include <engine/tilemap/TileAsset.h>
+#include <engine/tilemap/Tilemap.h>
+#include <engine/tilemap/TilemapCollider.h>
 #include <engine/tools/GuiHooks.h>
 
 #include <functional>
 #include <memory>
 #include <string>
+
+typedef eng::ScriptBehaviour MyScriptBehaviour;
+
+//Internal Component Definitions
+typedef eng::Rigidbody2DComponent* Ridigbody2D;
 
 namespace eng {
 
@@ -112,7 +126,13 @@ public:
     // `includeGizmos` is the difference between the two: the Scene view wants
     // the grid, the collider outlines and the selection highlight; the Game
     // view wants only what a player would see.
-    void RenderWorld(Camera& camera, bool includeGizmos);
+    //
+    // `editorTints` is a SEPARATE question, and it is separate because the
+    // standalone player draws gizmos too - they simply have nothing queued in
+    // a shipped game. Editor tints mark things that are deliberately invisible
+    // at runtime, most of all a tilemap's connector tiles, and showing those
+    // to a player would put magenta squares along the seam between two rooms.
+    void RenderWorld(Camera& camera, bool includeGizmos, bool editorTints = false);
 
     // The standalone game's loop: the four calls above, until BeginFrame says
     // to stop.
@@ -148,7 +168,7 @@ public:
     // script's mistake belongs in the Console.
     //
     // CAUTION: loading destroys every entity in the current scene. Calling
-    // this from inside a script's OnUpdate pulls the ground out from under
+    // this from inside a script's update pulls the ground out from under
     // the system that is part way through calling it - including the script
     // object itself. A SCRIPT SHOULD CALL RequestScene INSTEAD; see below.
     bool LoadSceneByIndex(std::size_t index, std::string& outError);
@@ -165,7 +185,7 @@ public:
     //
     //  WHY A SCRIPT MUST NOT CALL LoadScene DIRECTLY. Loading unloads the old
     //  scene, which destroys every entity, which detaches every component,
-    //  which destroys the behaviour object whose OnUpdate is RUNNING AT THAT
+    //  which destroys the behaviour object whose update is RUNNING AT THAT
     //  MOMENT. The call returns into a `this` that no longer exists, and the
     //  next line to touch a member reads freed memory. It will often appear
     //  to work, which is the worst property a bug of this kind can have.
@@ -292,6 +312,7 @@ private:
     std::unique_ptr<Scene>  m_scene;
 
     std::unique_ptr<CollisionSystem> m_collisionSystem;
+    std::unique_ptr<RigidbodySystem> m_rigidbodySystem;
     std::unique_ptr<SpinSystem>      m_spinSystem;
     std::unique_ptr<ScriptSystem>    m_scriptSystem;
 

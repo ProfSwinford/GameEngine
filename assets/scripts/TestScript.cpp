@@ -24,28 +24,82 @@
 //                         attached one at a time, so another component you look
 //                         for at attach time may not exist yet.
 //
-//    OnUpdate(dt)         Every FIXED simulation step. NOT once per drawn frame -
-//                         this engine simulates at a steady rate and draws
-//                         separately, so this runs a whole number of times per
-//                         frame, sometimes twice and sometimes not at all. That
-//                         is what makes the game behave the same on every
-//                         machine, and it is why you multiply by dt instead of
-//                         assuming a frame rate.
+//    OnFixedUpdate()      Every FIXED simulation step. NOT once per drawn
+//                         frame - this engine simulates at a steady rate and
+//                         draws separately, so this runs a whole number of
+//                         times per frame, sometimes twice and sometimes not
+//                         at all. That is what makes the game behave the same
+//                         on every machine, and it is where movement, physics
+//                         and anything timed belongs.
+//
+//                         It takes no argument: ask Time::FixedDeltaTime().
+//
+//    OnUpdate()           Once per DRAWN frame, so however often that happens
+//                         to be on this machine. For things tied to the
+//                         screen rather than to the world - a fade, a menu, a
+//                         camera that should move as smoothly as the display
+//                         allows. NOT for movement or physics: it runs at a
+//                         different rate on every machine, which is the whole
+//                         thing the fixed step exists to avoid.
+//
+//                         Ask Time::DeltaTime() here, or
+//                         Time::UnscaledDeltaTime() for something that must
+//                         keep moving while the game is paused.
 //
 //    OnDestroy()          The entity is going away. It is still safe to touch
 //                         here and not afterwards.
 //
-//    OnCollisionEnter     ENTER fires once when an overlap begins, STAY every
-//    OnCollisionStay      step it continues, and EXIT once when it ends -
-//    OnCollisionExit      including when the other entity is destroyed while
-//                         still overlapping.
+//    OnExpose(fields)     NOT AN EVENT - the odd one out. It lists the
+//                         variables this script wants in the Inspector, and
+//                         runs once when the script is bound:
+//
+//                             float speed = 200.0f;
+//
+//                             void OnExpose(eng::ScriptFields& fields) {
+//                                 fields.Var("speed", speed);
+//                             }
+//
+//                         Those are then editable WHILE THE GAME RUNS and
+//                         saved per entity, so one script can drive two
+//                         entities that behave differently. Orbiter.cpp is the
+//                         worked example.
+//
+//                         Only a float, int, bool, std::string, Vec2 or Color,
+//                         and only an ordinary member - a `static constexpr`
+//                         constant cannot be changed, so it cannot be one of
+//                         these. See engine/scene/ScriptFields.h.
+//
+//    OnCollisionEnter     A SOLID contact: neither side is a trigger. ENTER
+//    OnCollisionStay      fires once when the overlap begins, STAY every step
+//    OnCollisionExit      it continues, and EXIT once when it ends - including
+//                         when the other entity is destroyed while still
+//                         overlapping.
+//
+//                         Takes EITHER the other entity or the whole contact:
+//
+//                             void OnCollisionEnter(eng::EntityId other)
+//                             void OnCollisionEnter(const eng::Collision2D& hit)
+//
+//                         The second form carries hit.normal, hit.point and
+//                         hit.relativeVelocity - which is how "I landed on
+//                         something" is told from "I walked into a wall".
+//
+//    OnTriggerEnter       The same three events for a TRIGGER contact, where
+//    OnTriggerStay        either side has "trigger" ticked. A trigger reports
+//    OnTriggerExit        overlaps and nothing is pushed apart.
+//
+//                         A PAIR SENDS ONE SET OR THE OTHER, NEVER BOTH. A
+//                         script with OnCollisionEnter on a trigger collider
+//                         is never called - so the engine reports that in the
+//                         Console rather than leaving it silent.
 //
 //                         `other` is an EntityId, not a pointer, and the thing
 //                         it refers to may already be gone. Look it up through
 //                         the scene every time; never keep a pointer to it.
 //
-//                         These need a collider on BOTH entities, and each one's
-//                         "collides with" list has to include the other's layer.
+//                         These need a collider on BOTH entities, and each
+//                         one's "collides with" list has to include the
+//                         other's layer.
 //
 //  -----------------------------------------------------------------------------
 //  WHAT YOU CAN REACH from inside any of them:
@@ -75,7 +129,7 @@ public:
                         Owner() != nullptr ? Owner()->Name() : "<none>");
     }
 
-    void OnUpdate(float deltaSeconds) {
+    void OnFixedUpdate() {
         eng::Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;
@@ -85,7 +139,7 @@ public:
         // a brand new script does something visible the first time you press
         // Play - a template that compiles and then appears to do nothing is
         // indistinguishable from one that failed to attach.
-        m_secondsAlive += deltaSeconds;
+        m_secondsAlive += eng::Time::FixedDeltaTime();
     }
 
     void OnDestroy() {
