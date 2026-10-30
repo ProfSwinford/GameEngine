@@ -68,23 +68,26 @@
 //  that says to check both the spelling and the `public:`.
 //
 //  ==========================================================================
-//  VARIABLES IN THE INSPECTOR
+//  VARIABLES IN THE INSPECTOR, which take no code at all
 //
-//  A script can also offer up the numbers worth tuning, and those appear in
-//  the Inspector, can be changed while the game runs, and are saved on each
-//  entity separately:
+//  A PUBLIC variable of a supported type is on screen, editable while the game
+//  runs, and saved on each entity separately:
 //
-//      float speed = 200.0f;
+//      float speed = 200.0f;      // how fast it goes
+//      float blend = 0.5f;        // [0..1] how much to mix
+//      eng::EntityRef target;     // [Rigidbody2DComponent] what to push
 //
-//      void OnExpose(eng::ScriptFields& fields) {
-//          fields.Var("speed", speed);
-//      }
+//  THE HOOKS ABOVE ARE FOUND BY THE COMPILER; THESE ARE NOT, and cannot be. A
+//  `requires` expression can ask whether a NAMED member exists, and no C++
+//  construct can ask what members exist at all - so the editor reads the
+//  script's SOURCE when it builds it and generates the registration. See
+//  tools/ScriptVars.h for how, and what it deliberately does not understand.
 //
-//  THIS ONE IS WRITTEN OUT RATHER THAN FOUND, which is the opposite of how
-//  the hooks above work, and it is not an inconsistency: a `requires`
-//  expression can ask whether a NAMED member exists, and no C++ construct can
-//  ask what members exist at all. See ScriptFields.h for that and for why the
-//  scene file deliberately stores only the values somebody changed.
+//  A script can still write the list itself with OnExpose, and the
+//  hand-written one wins. ScriptFields.h has that and the reason the scene
+//  file stores only the values somebody changed; EntityRef.h has what a
+//  reference to another entity is, and FindScriptOn further down this file is
+//  how to reach another script through one.
 //
 //  ==========================================================================
 //  ONE HONEST DIFFERENCE FROM UNITY
@@ -124,7 +127,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
 namespace eng {
 
 class ScriptComponent;
@@ -184,6 +186,22 @@ public:
     static void Register(std::string_view scriptName, CreateFn create,
                          const ScriptHooks& hooks, std::string_view sourceFile);
 
+    // ---- the variable list a BUILD STEP worked out ------------------------
+    //
+    // Installs an exposer for a script that did not write OnExpose, which is
+    // how a plain `float radius = 90.0f;` reaches the Inspector with nothing
+    // written down. The editor reads the script's source, generates a
+    // translation unit that calls this, and compiles that instead of the
+    // original. See engine/tools/ScriptVars.h.
+    //
+    // A HAND-WRITTEN OnExpose IS NEVER OVERWRITTEN, and the function says so
+    // by returning false. Somebody who wrote that function stated exactly what
+    // they wanted; a guess read out of the source has no business arguing with
+    // it. Checking here rather than in the generator means it holds however
+    // the call arrives.
+    static bool SetExposer(std::string_view scriptName,
+                           void (*expose)(ScriptBehaviour*, ScriptFields&));
+
     static bool         IsRegistered(std::string_view scriptName);
     static const Entry* Find(std::string_view scriptName);
 
@@ -203,6 +221,15 @@ public:
     // full of addresses that no longer exist - and the crash would happen
     // later, somewhere else, the next time somebody attached a script.
     static void Clear();
+
+    // Forgets ONE script. True if there was one to forget.
+    //
+    // WHY ONE AT A TIME IS NEEDED AT ALL: the editor compiles each script into
+    // its own library, so unloading them is no longer a single event. Each has
+    // to take exactly its own entries out of this table and leave everybody
+    // else's alone - Clear() would take down ten working scripts to reload
+    // one. See ScriptLibrary.h.
+    static bool Remove(std::string_view scriptName);
 };
 
 // ---------------------------------------------------------------------------
@@ -239,6 +266,15 @@ public:
     // False when the name is not compiled into this build - the "written but
     // not built yet" case. The Inspector shows it in red.
     bool IsResolved() const { return m_behaviour != nullptr; }
+
+    // The running behaviour, or null when the script is not compiled in.
+    //
+    // HANDED OUT FOR ONE PURPOSE: so FindScriptOn below can ask "is this a
+    // Chaser?" about a script on some other entity. Nothing should KEEP what
+    // comes back - the object dies with its entity and is replaced wholesale
+    // every time scripts are rebuilt, which in the editor is whenever you
+    // save a file. Ask again rather than remember, exactly as with an entity.
+    ScriptBehaviour* Behaviour() const { return m_behaviour.get(); }
 
     // Which hooks the bound script turned out to have. The Inspector shows
     // them, because "this script has no update" is the answer to "why is
@@ -297,6 +333,11 @@ public:
     // unresolved, where "unused" means "all of them" and this would be a
     // quiet way to delete everything the component was keeping safe.
     std::size_t ForgetUnusedSavedValues();
+
+    // Points every entity reference that named `oldName` at `newName`, and
+    // says how many moved. Called by Scene::RenameEntity; see the note there.
+    std::size_t RetargetReferences(std::string_view oldName,
+                                   std::string_view newName);
 
     // Does this component need to be in either update list?
     //
@@ -375,6 +416,77 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+//  Reaching another entity's SCRIPT.
+//
+//  EntityRef::Find<T> covers every component the engine defines - a rigidbody,
+//  a sprite, a collider - because those are found by their type name and the
+//  type is in a header everything can see. A script is neither:
+//
+//      Entity::Find<T> looks up T::kTypeName, and every script's component is
+//      called "ScriptComponent". Asking for "Chaser" finds nothing however
+//      many Chasers are attached.
+//
+//  So these walk the entity's scripts instead. The typed one asks each
+//  behaviour whether it is really a T, which is a question only a compiler
+//  can answer - hence dynamic_cast, the one place in the engine that uses it.
+//
+//  ==========================================================================
+//  WHY THESE ARE HERE AND NOT IN EntityRef.h
+//
+//  dynamic_cast needs the COMPLETE ScriptBehaviour, and ScriptBehaviour lives
+//  in this file. EntityRef.h is included BY this file - ScriptFields.h pulls
+//  it in - so it cannot include this one back. The reference knows nothing
+//  about scripts; scripts know about the reference.
+//
+//  ==========================================================================
+//  THE TYPED FORM NEEDS THE CLASS TO BE NAMEABLE, which most are not.
+//
+//  Every script in assets/scripts sits in an `namespace { }`, so no other file
+//  can mention its type at all - that is what keeps two scripts from colliding
+//  and it is the right default. To point at a script's own members from
+//  another script, that class has to move into a header both files include;
+//  the registry already supports it (see Entry::sourceFile).
+//
+//  MOST REFERENCES DO NOT NEED IT. "Which entity, and does it have a Chaser on
+//  it" is answered by a reference constrained to "Chaser" plus a transform or
+//  a message, and that needs no headers at all.
+// ---------------------------------------------------------------------------
+
+// Any script on `entity` that is really a T, or null.
+template <class T>
+T* FindScriptOn(Entity& entity) {
+    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+        Component* component = entity.ComponentAt(i);
+        if (component == nullptr) {
+            continue;
+        }
+        // As TEXT, because the two literals live in engine.dll and in the
+        // compiled scripts and nothing folded them to one address.
+        if (std::string_view(component->TypeName()) != ScriptComponent::kTypeName) {
+            continue;
+        }
+        if (T* found = dynamic_cast<T*>(
+                static_cast<ScriptComponent*>(component)->Behaviour())) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+// The same, through a reference - which is the spelling a script actually
+// writes: FindScriptOn<Chaser>(ref).
+template <class T>
+T* FindScriptOn(const EntityRef& ref) {
+    Entity* entity = ref.Target();
+    return entity != nullptr ? FindScriptOn<T>(*entity) : nullptr;
+}
+
+// Untyped, by the name the registry knows it under. This is what the editor
+// uses to check a reference's constraint, and what a script can use when it
+// only needs to know whether something is there.
+ScriptComponent* FindScriptNamedOn(Entity& entity, std::string_view scriptName);
+
+// ---------------------------------------------------------------------------
 //  The system that runs them, and it runs them at TWO different rates.
 //
 //  OnFixedUpdate goes through the System interface below, at stage 200
@@ -445,6 +557,14 @@ public:
     // How many attached components are using this script name. Lets the editor
     // report a rename in terms of what it actually costs you.
     static std::size_t CountUsing(std::string_view scriptName);
+
+    // Points every entity reference in every attached script at an entity's
+    // new name. The sibling of RebindRenamed above - that one follows a script
+    // CLASS being renamed, this one follows an ENTITY being renamed - and
+    // called from Scene::RenameEntity rather than from the editor, because a
+    // reference has to track the name wherever the rename came from.
+    static std::size_t RetargetRenamed(std::string_view oldName,
+                                       std::string_view newName);
 
     static void RegisterComponentTypes();
 

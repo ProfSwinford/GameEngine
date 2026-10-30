@@ -169,6 +169,32 @@ void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
     table[name]      = entry;
 }
 
+bool ScriptRegistry::SetExposer(std::string_view scriptName,
+                                void (*expose)(ScriptBehaviour*, ScriptFields&)) {
+    if (expose == nullptr) {
+        return false;
+    }
+
+    const auto it = Table().find(std::string(scriptName));
+    if (it == Table().end()) {
+        // Cannot happen from generated code, which is compiled into the same
+        // translation unit as the registration and runs after it. Reported
+        // rather than ignored, because if it ever does happen the symptom
+        // would be an Inspector that is mysteriously empty.
+        ENGINE_LOG_WARN(Channels::kScene,
+                        "an exposer arrived for '{}', which is not a registered script",
+                        scriptName);
+        return false;
+    }
+
+    if (it->second.hooks.expose != nullptr) {
+        return false;   // the script wrote its own OnExpose, and it wins
+    }
+
+    it->second.hooks.expose = expose;
+    return true;
+}
+
 bool ScriptRegistry::IsRegistered(std::string_view scriptName) {
     return Table().contains(std::string(scriptName));
 }
@@ -202,6 +228,10 @@ void ScriptRegistry::ForEachEntry(
 std::size_t ScriptRegistry::Count() { return Table().size(); }
 
 void ScriptRegistry::Clear() { Table().clear(); }
+
+bool ScriptRegistry::Remove(std::string_view scriptName) {
+    return Table().erase(std::string(scriptName)) > 0;
+}
 
 // ---------------------------------------------------------------------------
 //  ScriptComponent
@@ -687,6 +717,92 @@ void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId
     }
 }
 
+std::size_t ScriptComponent::RetargetReferences(std::string_view oldName,
+                                                std::string_view newName) {
+    if (oldName.empty() || oldName == newName) {
+        return 0;
+    }
+
+    std::size_t moved = 0;
+    for (const ScriptField& field : m_fields.All()) {
+        EntityRef* ref = field.AsEntityRef();
+        if (ref == nullptr || ref->TargetName() != oldName) {
+            continue;
+        }
+
+        ref->Set(newName);
+        ++moved;
+
+        // ==================================================================
+        //  BOTH HALVES, ALWAYS - AND THE "ALWAYS" IS THE CORRECTION.
+        //
+        //  The live reference is what the game reads; the saved value is what
+        //  the scene file gets. Moving the first and not the second works
+        //  perfectly until the level is loaded again.
+        //
+        //  This was once guarded by "only if it was already overridden", on
+        //  the reasoning that a rename should not invent an edit to a field
+        //  nobody touched. That reasoning is wrong, and a mutation test is
+        //  what showed it:
+        //
+        //      eng::EntityRef scoreLabel{"HudScore"};
+        //
+        //  is a reference whose default is a NAME, written in the code - see
+        //  GameRules.cpp. Rename HudScore and the live reference follows, the
+        //  default still says "HudScore", and with nothing saved the next
+        //  load puts the old name back and the HUD is silently broken.
+        //
+        //  There is no spurious case to protect against. Getting here means
+        //  the reference WAS pointing at the renamed entity, so it now
+        //  differs from whatever the code says - which is exactly what a
+        //  saved value is for. A reference that was unset, or pointed
+        //  somewhere else, never reaches this line.
+        // ==================================================================
+        SaveFieldValue(field.name);
+    }
+
+    // ======================================================================
+    //  AN UNRESOLVED SCRIPT'S REFERENCES CANNOT BE MOVED, and guessing would
+    //  be worse than leaving them.
+    //
+    //  With no script bound there are no fields, so there is nothing to say
+    //  which of the saved values are entity references. Patching every saved
+    //  STRING that happens to equal the old name would also rewrite a
+    //  `std::string label` that legitimately read "Player" - silently, in a
+    //  file, as a side effect of renaming something else.
+    //
+    //  So a rename while a script is not compiled in can orphan that script's
+    //  reference. The Inspector shows it in red against the name it still
+    //  holds, which is enough to put right by hand, and nothing is lost.
+    // ======================================================================
+    return moved;
+}
+
+// ---------------------------------------------------------------------------
+//  Finding a script on another entity. See the note in ScriptComponent.h for
+//  why Entity::Find<T> cannot answer this.
+// ---------------------------------------------------------------------------
+
+ScriptComponent* FindScriptNamedOn(Entity& entity, std::string_view scriptName) {
+    if (scriptName.empty()) {
+        return nullptr;
+    }
+    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+        Component* component = entity.ComponentAt(i);
+        if (component == nullptr) {
+            continue;
+        }
+        if (std::string_view(component->TypeName()) != ScriptComponent::kTypeName) {
+            continue;
+        }
+        auto* script = static_cast<ScriptComponent*>(component);
+        if (script->ScriptName() == scriptName) {
+            return script;
+        }
+    }
+    return nullptr;
+}
+
 // ---------------------------------------------------------------------------
 //  ScriptSystem
 // ---------------------------------------------------------------------------
@@ -747,6 +863,18 @@ std::size_t ScriptSystem::RebindRenamed(std::string_view oldName,
             script->SetScriptName(newName);
             ++moved;
         }
+    }
+    return moved;
+}
+
+std::size_t ScriptSystem::RetargetRenamed(std::string_view oldName,
+                                          std::string_view newName) {
+    std::size_t moved = 0;
+    // Walked directly rather than through a copy, unlike RebindRenamed: this
+    // changes a string inside each component and cannot add or remove one, so
+    // the list is not touched while it is being read.
+    for (ScriptComponent* script : g_scripts) {
+        moved += script->RetargetReferences(oldName, newName);
     }
     return moved;
 }

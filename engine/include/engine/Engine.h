@@ -54,6 +54,7 @@
 #include <engine/scene/DeferredOps.h>
 #include <engine/scene/Entity.h>
 #include <engine/scene/EntityId.h>
+#include <engine/scene/EntityRef.h>
 #include <engine/scene/Messaging.h>
 #include <engine/scene/Scene.h>
 #include <engine/scene/ScriptComponent.h>
@@ -67,21 +68,46 @@
 #include <engine/tilemap/Tilemap.h>
 #include <engine/tilemap/TilemapCollider.h>
 #include <engine/tools/GuiHooks.h>
+#include <engine/tools/ScriptVars.h>
 
 #include <functional>
 #include <memory>
 #include <string>
 
 typedef eng::ScriptBehaviour MyScriptBehaviour;
+typedef eng::Vec2 Vector2;
 
 //Internal Component Definitions
 typedef eng::Rigidbody2DComponent* Ridigbody2D;
+using Transform = eng::Transform2D*;
 
+typedef eng::InputMap Input;
+
+using namespace eng;
 namespace eng {
 
 class Engine {
 public:
     struct Options {
+        // ------------------------------------------------------------------
+        //  WHICH PROJECT TO OPEN, as a real folder on this machine.
+        //
+        //  Empty means "work it out", which is the original behaviour and
+        //  what the player and the tests use: look at ENGINE_ASSET_ROOT, then
+        //  walk up from the executable until a project turns up.
+        //
+        //  Set, it is an instruction rather than a hint, and a folder that is
+        //  not a project makes Init fail instead of falling back to the
+        //  search. See FileSystem::UseRoot for why that asymmetry is
+        //  deliberate.
+        //
+        //  This is the whole of what lets a project live anywhere on disk.
+        //  Everything else - config/engine.json, logs/, .build/, .editor/ and
+        //  assets/ itself - is already resolved against the root, so moving
+        //  the root moves all of them with it.
+        // ------------------------------------------------------------------
+        std::string projectRoot;
+
         std::string configPath = "config/engine.json";
 
         // Overrides the scene named in the config file. Empty means "use the

@@ -96,50 +96,54 @@
 #include <engine/Engine.h>
 
 namespace {
+using namespace eng;
 
 class PlayerMovement final : public MyScriptBehaviour {
 public:
+
     float movementSpeed = 1;
+    float jumpHeight = 10;
+    float msecondsAlive = 0.0f;
+
     void OnStart() {
         ENGINE_LOG_INFO(eng::Channels::kGame, "PlayerMovement started on '{}'",
                         Owner() != nullptr ? Owner()->Name() : "<none>");
     }
 
+    void OnUpdate()
+    {
+        direction =
+            eng::InputMap::GetAxis2D("MoveLeft", "MoveRight", "MoveDown", "MoveUp");
+    }
+
     void OnFixedUpdate() {
-        eng::Transform2D* transform = Transform();
+        ::Transform transform = Transform();
         if (transform == nullptr) {
             return;
         }
 
-        const eng::Vec2 direction =
-        eng::InputMap::GetAxis2D("MoveLeft", "MoveRight", "MoveDown", "MoveUp");
-
-        // Multiply by the step length, always - that is what makes the speed a
-        // speed rather than "however fast this machine happens to run".
-        transform->Translate(direction * (kSpeed * eng::Time::FixedDeltaTime()));
-
+        transform->Translate(direction * (movementSpeed * eng::Time::FixedDeltaTime()));
     }
 
     void OnDestroy() {
         ENGINE_LOG_INFO(eng::Channels::kGame, "PlayerMovement lived {:.2f} seconds",
-                        m_secondsAlive);
+                        msecondsAlive);
     }
 
-    void OnCollisionEnter(eng::EntityId other) {
-        // The other entity is looked up fresh rather than remembered, because
-        // it may already have been destroyed this step.
-        eng::Scene* scene = GetScene();
-        if (scene == nullptr) {
-            return;
-        }
-        const eng::Entity* partner = scene->Get(other);
-        ENGINE_LOG_INFO(eng::Channels::kGame, "PlayerMovement touched '{}'",
-                        partner != nullptr ? partner->Name() : "<already gone>");
-    }
+    //void OnCollisionEnter(eng::EntityId other) {
+    //    // The other entity is looked up fresh rather than remembered, because
+    //    // it may already have been destroyed this step.
+    //    eng::Scene* scene = GetScene();
+    //    if (scene == nullptr) {
+    //        return;
+    //    }
+    //    const eng::Entity* partner = scene->Get(other);
+    //    ENGINE_LOG_INFO(eng::Channels::kGame, "PlayerMovement touched '{}'",
+    //                    partner != nullptr ? partner->Name() : "<already gone>");
+    //}
 
 private:
-    float m_secondsAlive = 0.0f;
-    static constexpr float kSpeed = 220.0f;
+    eng::Vec2 direction;
 };
 
 } // namespace

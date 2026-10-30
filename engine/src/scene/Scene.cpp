@@ -12,6 +12,7 @@
 #include <engine/resource/ResourceManager.h>
 #include <engine/scene/Component.h>
 #include <engine/scene/Scene.h>
+#include <engine/scene/ScriptComponent.h>
 
 #include <unordered_map>
 
@@ -511,12 +512,41 @@ bool Scene::RenameEntity(EntityId id, std::string_view newName) {
         return false;
     }
 
+    // Taken before the rename, because it is about to stop being true and two
+    // things below still need it.
+    const std::string oldName = entity->Name();
+
     // The lookup table is keyed on the name, so both the old and the new key
     // have to be fixed. Calling Entity::SetName on its own would leave Find()
     // answering for a name that no longer exists.
-    m_byName.erase(entity->Name());
+    m_byName.erase(oldName);
     entity->SetName(newName);
     m_byName[std::string(newName)] = id;
+
+    // ======================================================================
+    //  EVERY REFERENCE TO THIS ENTITY MOVES WITH IT.
+    //
+    //  A script's entity reference stores a NAME - see EntityRef.h for why -
+    //  so without this, renaming something in the Hierarchy would quietly
+    //  disconnect every script pointing at it. Renaming a thing is an
+    //  ordinary act, and a feature that breaks when you do ordinary things is
+    //  not finished.
+    //
+    //  DONE HERE AND NOT IN THE EDITOR, because this function is the only way
+    //  a name changes - Entity::SetName alone would desync the index above,
+    //  which is why that is not the path anything uses. Game code that renames
+    //  an entity gets the same fix-up for free.
+    //
+    //  The one case it cannot reach is a script that is not compiled into this
+    //  build; ScriptComponent::RetargetReferences says why, and what happens
+    //  instead.
+    // ======================================================================
+    if (const std::size_t moved = ScriptSystem::RetargetRenamed(oldName, newName);
+        moved > 0) {
+        ENGINE_LOG_INFO(Channels::kScene,
+                        "renamed '{}' to '{}', and moved {} script reference(s) with it",
+                        oldName, newName, moved);
+    }
     return true;
 }
 

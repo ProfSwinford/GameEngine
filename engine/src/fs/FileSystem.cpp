@@ -26,6 +26,7 @@
 #include <engine/core/Log.h>
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
+#include <engine/project/Project.h>
 
 #include <cctype>
 
@@ -45,16 +46,31 @@ namespace fs = std::filesystem;
 
 std::string g_root;
 
-// How the project folder is recognised: it is the one containing `assets`.
-// That folder is committed and exists in every copy of the project, so there
-// is no extra marker file for anyone to forget.
+// ---------------------------------------------------------------------------
+//  THE ROOT THE PROCESS WAS TOLD TO USE, if it was told one.
+//
+//  Set once from the command line - `editor --project D:/games/orbit` - and
+//  consulted before everything else in Init. Empty means "nobody said", which
+//  is the case for the player, for the tests, and for an editor launched with
+//  no arguments, and makes Init behave exactly as it always has.
+//
+//  DELIBERATELY NOT CLEARED BY Shutdown. This is the PROCESS'S INTENT rather
+//  than the file system's state: Init and Shutdown run more than once in a
+//  single process - twice during every Engine::Init, and once per test
+//  sandbox - and the answer to "which project did the user ask for?" does not
+//  change when the file system is torn down and brought back up. Clearing it
+//  would mean the second Init of a pair quietly searching for a different
+//  project than the first one found.
+// ---------------------------------------------------------------------------
+std::string g_rootOverride;
+
+// How the project folder is recognised. ONE definition, shared with the
+// editor and the launcher - see engine/include/engine/project/Project.h. A
+// folder is a project when it holds a project.oproj or an `assets` folder;
+// the second half is why every project made before manifests existed, this
+// repository included, still opens with nothing added to it.
 bool LooksLikeRoot(const fs::path& directory) {
-    // The std::error_code overloads are used throughout this file. They report
-    // problems by setting a code instead of throwing an exception, which suits
-    // questions like "does this exist?" where a missing folder is a perfectly
-    // normal answer rather than an emergency.
-    std::error_code ec;
-    return fs::is_directory(directory / "assets", ec);
+    return Project::Looks(directory.generic_string());
 }
 
 // Could this virtual path live inside an archive?
@@ -95,20 +111,128 @@ std::string JoinVirtual(std::string_view directory, std::string_view leaf) {
 // Compared one path COMPONENT at a time rather than as text, because text
 // would say that "C:/work/assets2" is inside "C:/work/assets". Both paths
 // should already have been through weakly_canonical.
+// Are these two path components the same name?
+//
+// CASE-INSENSITIVELY ON WINDOWS, because the file system is: `C:/Dev/Game`
+// and `c:/dev/game` are one folder there, and a containment check that said
+// otherwise would refuse operations inside the project whenever a root
+// arrived with different capitalisation - which is exactly what happens when
+// one comes from a file dialog, a saved launcher list, or a typed command
+// line rather than from the engine's own search.
+bool SameComponent(const fs::path& a, const fs::path& b) {
+#if defined(_WIN32)
+    const std::string left  = a.string();
+    const std::string right = b.string();
+    if (left.size() != right.size()) {
+        return false;
+    }
+    return std::equal(left.begin(), left.end(), right.begin(),
+                      [](unsigned char l, unsigned char r) {
+                          return std::tolower(l) == std::tolower(r);
+                      });
+#else
+    return a == b;
+#endif
+}
+
 bool IsInside(const fs::path& child, const fs::path& parent) {
     auto c = child.begin();
     for (auto p = parent.begin(); p != parent.end(); ++p, ++c) {
-        if (c == child.end() || *c != *p) {
+        if (c == child.end() || !SameComponent(*c, *p)) {
             return false;
         }
     }
     return true;
 }
 
+// ===========================================================================
+//  DOES THIS VIRTUAL PATH STILL NAME SOMEWHERE INSIDE THE PROJECT?
+//
+//  Resolve finishes with lexically_normal(), which collapses `..` PURELY
+//  TEXTUALLY and does not clamp at the root. So `Resolve("../../etc")` is a
+//  perfectly well-formed real path pointing outside the project, and the
+//  three operations that write - Remove, Rename and Move - would have carried
+//  it out.
+//
+//  That was survivable while the root was always guessed from the
+//  executable's own location, because then it was somewhere inside this
+//  source tree. It stops being survivable the moment a launcher can point
+//  the editor at any folder on the machine, which is what this whole feature
+//  does: the blast radius moves from "the engine's own build folder" to
+//  "wherever the user keeps their projects, and its parents".
+//
+//  COMPARED AGAINST THE ROOT, NOT AGAINST assets/. config/, logs/, .build/
+//  and .editor/ all live beside assets/ rather than inside it, and the Assets
+//  panel legitimately deletes things in .build/. Checking against assets/
+//  would refuse those, which is why there is a test pinning that they are
+//  still allowed.
+// ===========================================================================
+bool StaysInsideProject(std::string_view virtualPath, std::string& outError) {
+    const std::string real = FileSystem::Resolve(virtualPath);
+    if (real.empty()) {
+        // Resolve says nothing when there is no project. Reported here rather
+        // than as a path problem, because it is a different mistake.
+        outError = "no project is open";
+        return false;
+    }
+
+    const fs::path resolved = fs::path(real).lexically_normal();
+    const fs::path root     = fs::path(g_root).lexically_normal();
+
+    if (!IsInside(resolved, root)) {
+        outError = "'" + std::string(virtualPath) +
+                   "' is outside the project, so nothing was changed";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
+void FileSystem::UseRoot(std::string_view realDirectory) {
+    g_rootOverride = std::string(realDirectory);
+}
+
+bool FileSystem::HasRoot() {
+    return !g_root.empty();
+}
+
 bool FileSystem::Init(const BootConfig&) {
-    // An explicit override, checked FIRST.
+    // ======================================================================
+    //  THE PROJECT THE PROCESS WAS TOLD TO OPEN, ahead of everything else.
+    //
+    //  `editor --project D:/games/orbit`. This is the whole reason a project
+    //  no longer has to live beside the executable, and it is checked first
+    //  because an instruction beats a guess.
+    //
+    //  IT FAILS RATHER THAN FALLING THROUGH TO THE SEARCH, which is the one
+    //  place this differs from the environment variable below. A wrong
+    //  ENGINE_ASSET_ROOT is a stale setting in somebody's shell and carrying
+    //  on is kind; a wrong --project came from a launcher or a typed command
+    //  about one particular folder, and quietly opening a DIFFERENT project
+    //  than the one that was named is worse than opening nothing. Somebody
+    //  who asked for D:/games/orbit and got the engine's own sample project
+    //  would start editing the wrong files.
+    // ======================================================================
+    if (!g_rootOverride.empty()) {
+        std::error_code ec;
+        const fs::path  candidate = fs::absolute(fs::path(g_rootOverride), ec);
+        if (!ec && LooksLikeRoot(candidate)) {
+            g_root = candidate.lexically_normal().generic_string();
+            ENGINE_LOG_INFO(Channels::kFileSys, "project opened from '{}'", g_root);
+            AssetArchive::MountAll(Resolve(""));   // see the note below
+            return true;
+        }
+
+        ENGINE_LOG_ERROR(Channels::kFileSys,
+                         "'{}' is not a project: it has no '{}' and no 'assets' folder. "
+                         "Nothing was opened.",
+                         g_rootOverride, Project::kFileName);
+        g_root.clear();
+        return false;
+    }
+
+    // An explicit override, checked next.
     //
     // The upward search below assumes the program is running from inside the
     // project folder, which is true for build/<preset>/bin and false for a
@@ -175,9 +299,21 @@ bool FileSystem::Init(const BootConfig&) {
     }
 
     ENGINE_LOG_ERROR(Channels::kFileSys,
-                     "could not find an 'assets' folder above '{}'. Nothing will load.",
-                     start.string());
-    g_root = start.string();
+                     "could not find a project above '{}' - no '{}' and no 'assets' "
+                     "folder. Nothing will load.",
+                     start.string(), Project::kFileName);
+
+    // CLEARED, not left pointing at the executable's own folder.
+    //
+    // It used to be `g_root = start.string()`, and the caller discarded this
+    // `false`, so a failed search produced a file system that LOOKED like it
+    // worked and was aimed at wherever the editor happens to be installed.
+    // Reads would simply miss, which is harmless - but ScriptBuild derives
+    // .build/ from this root and deletes things inside it, so the one thing
+    // that must never happen is a root pointing somewhere that is not a
+    // project. An empty root makes Resolve return nothing and every write
+    // refuse, which is the honest failure.
+    g_root.clear();
     return false;
 }
 
@@ -195,6 +331,21 @@ const std::string& FileSystem::AssetRoot() {
 }
 
 std::string FileSystem::Resolve(std::string_view virtualPath) {
+    // NO PROJECT, NO ANSWER.
+    //
+    // With an empty root the line below would produce `assets/<path>` - a
+    // RELATIVE path, which resolves against whatever the working directory
+    // happens to be. Every read would miss in a confusing place and, far
+    // worse, every write and delete would land there. An empty string makes
+    // callers fail where they stand.
+    //
+    // This is only reachable before Init or after Shutdown, because Init now
+    // returns false rather than leaving a root it does not believe in, and
+    // Engine::Init stops when it does.
+    if (g_root.empty()) {
+        return {};
+    }
+
     // The normal case: everything lives under assets/.
     fs::path path = fs::path(g_root) / "assets" / fs::path(std::string(virtualPath));
 
@@ -421,6 +572,12 @@ bool FileSystem::Remove(std::string_view virtualPath, std::size_t& outDeletedCou
         return false;
     }
 
+    // AND NOWHERE OUTSIDE THE PROJECT. `Remove("../../something")` resolved
+    // to a real path and deleted it; see StaysInsideProject.
+    if (!StaysInsideProject(virtualPath, outError)) {
+        return false;
+    }
+
     const std::string real = Resolve(virtualPath);
 
     std::error_code ec;
@@ -451,6 +608,12 @@ bool FileSystem::Rename(std::string_view virtualPath, std::string_view newName,
     }
     if (newName.empty()) {
         outError = "a name cannot be empty";
+        return false;
+    }
+
+    // The NEW name is already checked for separators below. This checks the
+    // thing being renamed, which could be reached through `..`.
+    if (!StaysInsideProject(virtualPath, outError)) {
         return false;
     }
 
@@ -494,6 +657,15 @@ bool FileSystem::Move(std::string_view virtualPath,
                       std::string_view virtualTargetDirectory, std::string& outError) {
     if (virtualPath.empty()) {
         outError = "refusing to move the assets folder itself";
+        return false;
+    }
+
+    // BOTH ENDS. A move is the one operation where either side being outside
+    // the project is a way out of it - the source by `..`, and the
+    // destination by being a `..` directory that the folder-into-itself check
+    // below would happily accept.
+    if (!StaysInsideProject(virtualPath, outError) ||
+        !StaysInsideProject(virtualTargetDirectory, outError)) {
         return false;
     }
 
@@ -589,8 +761,28 @@ bool FileSystem::Import(std::string_view realSourcePath,
     //  resolves ".." and symbolic links, so the same file reached two
     //  different ways compares equal.
     // ========================================================================
-    const fs::path assets         = fs::weakly_canonical(fs::path(Resolve("")), ec);
-    const fs::path realSource     = fs::weakly_canonical(source, ec);
+    //  ONE error_code EACH, AND BOTH INSPECTED.
+    //
+    //  These two calls used to share the `ec` above and neither looked at it.
+    //  When weakly_canonical fails it returns an EMPTY path, and every path
+    //  is "inside" an empty one - so an unreachable root made this test
+    //  vacuously true and refused every single import with "already in the
+    //  project", which is the one explanation that is certainly wrong.
+    //
+    //  Unreachable sounds exotic and is not: a project remembered on a USB
+    //  drive that is not plugged in, or a network share that is down, reaches
+    //  this on the first drag-and-drop.
+    std::error_code assetsEc;
+    std::error_code sourceEc;
+    const fs::path  assets     = fs::weakly_canonical(fs::path(Resolve("")), assetsEc);
+    const fs::path  realSource = fs::weakly_canonical(source, sourceEc);
+    if (assetsEc || sourceEc || assets.empty() || realSource.empty()) {
+        outError = "cannot work out whether '" + source.filename().string() +
+                   "' is already in the project (" +
+                   (assetsEc ? assetsEc.message() : sourceEc.message()) +
+                   "), so nothing was imported";
+        return false;
+    }
     if (IsInside(realSource, assets)) {
         outError = "'" + source.filename().string() +
                    "' is already in the project - drag it inside the Assets panel to "

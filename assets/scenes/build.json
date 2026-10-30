@@ -1,6 +1,7 @@
 {
   "_comment": "Which scenes are in the build, and in what order. Index 0 is the scene the game opens with. Scenes not listed here are not packed into an exported game. The editor's Build panel writes this file; see engine/include/engine/scene/BuildScenes.h.",
   "scenes": [
+    "scenes/tilemap.oscene",
     "scenes/collector.oscene"
   ]
 }

@@ -22,6 +22,8 @@ set(EDITOR_SOURCES
     src/EditorGui.cpp                    # starting and stopping Dear ImGui
     src/ShellOpen.cpp                    # handing a file to the operating system
     src/ObjectMenu.cpp                   # the one list of objects you can add
+    src/ProjectMenu.cpp                  # creating, opening and closing projects
+    src/Relaunch.cpp                     # starting again on another project
     src/ScriptBuild.cpp                  # finds a compiler and builds the project
     src/AssetDragDrop.cpp                # what happens when you drag a file onto something
     src/EditorSession.cpp                # remembers where you were when you closed it
@@ -99,6 +101,12 @@ engine_set_warnings(editor)
 #  add_dependencies means.
 # ---------------------------------------------------------------------------
 add_dependencies(editor player)
+
+# The launcher, for the same kind of reason: File -> Close Project reopens it
+# when it is there, so building the editor without it would give a menu item
+# whose behaviour depends on whether somebody happened to build another
+# target. Not a link either - the editor starts it as a separate process.
+add_dependencies(editor hub)
 
 # ---------------------------------------------------------------------------
 #  NO CONSOLE WINDOW beside the editor. The Console panel shows the same log,

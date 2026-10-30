@@ -15,6 +15,8 @@
 #include "EditorSession.h"
 #include "GameExport.h"
 #include "ScriptBuild.h"
+#include "ProjectMenu.h"
+#include "Relaunch.h"
 
 #include "panels/AssetBrowserPanel.h"
 #include "panels/BuildPanel.h"
@@ -106,12 +108,19 @@ void EditorState::PruneSelection() {
     }
 }
 
-bool EditorApp::Init() {
+bool EditorApp::Init(const std::string& projectRoot) {
     // The engine first, then the panels. The interface needs a window, so the
     // window has to exist before it - which is why the editor's interface is a
     // subsystem inside the engine's ordered start-up rather than something the
     // editor starts on its own.
     eng::Engine::Options options;
+
+    // WHICH PROJECT. Empty is the normal case and means "look upwards from
+    // this executable", which is what opens the project the editor is
+    // installed inside. Anything else came from --project, and a folder that
+    // is not a project makes Init fail rather than silently opening a
+    // different one. See eng::FileSystem::UseRoot.
+    options.projectRoot = projectRoot;
 
     // The engine does not know what ImGui is. It is handed two functions and
     // calls them at the right moment in its ordered start-up - after the
@@ -166,6 +175,7 @@ bool EditorApp::Init() {
 
     ENGINE_LOG_INFO(eng::Channels::kEditor, "editor ready with {} panels",
                     m_panels.size());
+    m_ready = true;
     return true;
 }
 
@@ -266,6 +276,12 @@ void EditorApp::DrawMenuBar() {
 
     if (ImGui::BeginMenu("File")) {
         eng::Scene& scene = eng::Engine::Get().GetScene();
+
+        // THE PROJECT ITEMS FIRST, above the scene ones, because a project
+        // contains scenes rather than the other way round and the menu should
+        // read in that order.
+        ProjectMenu::Draw();
+        ImGui::Separator();
 
         // The list of scenes is DISCOVERED, not written down. Dropping a
         // .oscene into assets/scenes/ puts it in this menu with no rebuild.
@@ -576,6 +592,12 @@ void EditorApp::Run(int frameLimit) {
         // is in this project right now - every Info and Warning line is
         // dropped before it reaches the Console panel OR the log file. A
         // problem with something the user just asked for has to survive that.
+        // A folder picked for New or Open Project, collected at the same
+        // point and for the same reason as the export's: it is the spot in
+        // the frame where touching the scene and the engine is already known
+        // to be safe.
+        ProjectMenu::CollectPickerResult();
+
         switch (const GameExport::Pending pending = GameExport::TakePending();
                 pending.choice) {
             case GameExport::Choice::None:
@@ -635,8 +657,20 @@ void EditorApp::Run(int frameLimit) {
         EditorGui::EndDockspace();
         DrawPanels();
         DrawSaveAsPopup();
+
+        // OUTSIDE the menu, because a modal opened inside a BeginMenu block
+        // closes the moment the menu does - it would appear for one frame and
+        // vanish. See ProjectMenu.h.
+        DrawNewProjectPopup();
+        DrawUnsavedProjectPopup();
+
         FocusGameViewIfRequested();
         RevealTilePaletteIfRequested();
+
+        // The title carries the project, the scene and whether there is
+        // unsaved work, all three of which change while the editor runs. It
+        // only touches the window when the string is actually different.
+        ProjectMenu::UpdateWindowTitle();
 
         // Ctrl+S. Checked here rather than going through InputMap, because a
         // tool shortcut is not a game action - binding it through the game's
@@ -703,7 +737,22 @@ void EditorApp::Shutdown() {
     // scene's path, which lives in the engine - so it has to happen before
     // either of them is taken down. Putting this one line after m_panels.clear()
     // would compile perfectly and quietly save nothing but a null camera.
-    EditorSession::Save(m_scenePanel);
+    //
+    // ---- AND ONLY IF THERE WAS EVER A SESSION ---------------------------
+    //
+    // main() calls Shutdown after a FAILED Init on purpose, so this path has
+    // to be safe rather than merely unlikely. Init can now fail in the very
+    // first subsystem - that is what `--project <not a project>` does - and
+    // EditorSession::Save reaches Engine::GetScene(), which returns *m_scene
+    // for a pointer the scene subsystem never got as far as setting. The
+    // result was an access violation on the way out of a perfectly correct
+    // error message.
+    //
+    // The same guard the engine keeps for the same reason; see the
+    // m_initialised check at the top of Engine::Shutdown.
+    if (m_ready) {
+        EditorSession::Save(m_scenePanel);
+    }
 
     // Panels before the engine. A panel's destructor may still reach engine
     // state, so it has to go first - the same reverse-order rule the engine

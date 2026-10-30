@@ -23,6 +23,9 @@ set(TEST_SOURCES
     src/test_physics.cpp
     src/test_tilemap.cpp
     src/test_scriptfields.cpp
+    src/test_scriptvars.cpp
+    src/test_project.cpp
+    src/test_scriptabi.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

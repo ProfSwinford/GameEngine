@@ -50,6 +50,7 @@ const char* ScriptFieldTypeName(ScriptFieldType type) {
         case ScriptFieldType::String: return "text";
         case ScriptFieldType::Vec2:   return "position";
         case ScriptFieldType::Color:  return "colour";
+        case ScriptFieldType::Entity: return "entity";
     }
     return "unknown";
 }
@@ -78,6 +79,9 @@ Vec2* ScriptField::AsVec2() const {
 }
 Color* ScriptField::AsColor() const {
     return type == ScriptFieldType::Color ? static_cast<Color*>(value) : nullptr;
+}
+EntityRef* ScriptField::AsEntityRef() const {
+    return type == ScriptFieldType::Entity ? static_cast<EntityRef*>(value) : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +145,46 @@ void ScriptFields::Add(std::string_view name, ScriptFieldType type, void* value,
     m_fields.push_back(std::move(field));
 }
 
+void ScriptFields::AddRef(std::string_view name, EntityRef* value,
+                          std::string_view requiredType, std::string_view tooltip) {
+    // ======================================================================
+    //  A CONSTRAINT THAT NAMES NOTHING, reported rather than left to be
+    //  discovered.
+    //
+    //  The mistake this catches is specific and easy to make:
+    //
+    //      fields.Ref("target", target, "what to chase");
+    //
+    //  which reads perfectly well and asks for entities carrying a component
+    //  type called "what to chase". There are none, so the picker is empty
+    //  and every reference shows as wrong - with nothing anywhere saying why.
+    //
+    //  A WARNING AND NOT A REFUSAL, because false here has an innocent cause:
+    //  a script that is not compiled into this build is not registered, so a
+    //  correct constraint naming it looks exactly like a typo. The reference
+    //  is kept either way and the message names both possibilities.
+    // ======================================================================
+    if (!requiredType.empty() && !IsKnownComponentOrScriptName(requiredType)) {
+        ENGINE_LOG_WARN(Channels::kScene,
+                        "the reference '{}' asks for '{}', which is not a component "
+                        "type or a script in this build. Either that script is not "
+                        "compiled in yet, or a tooltip has been passed where the "
+                        "required type goes - fields.Ref takes the type THEN the "
+                        "tooltip, and fields.Var takes just the tooltip.",
+                        name, requiredType);
+    }
+
+    Add(name, ScriptFieldType::Entity, value, tooltip, false, 0.0f, 0.0f);
+
+    // Written after the fact rather than threaded through Add's parameters.
+    // Add already takes seven, and a constraint that only one of seven field
+    // types can have does not belong in the signature every other type pays
+    // for. It cannot miss: Add either appended or reported why it would not.
+    if (!m_fields.empty() && m_fields.back().name == name) {
+        m_fields.back().requiredType = std::string(requiredType);
+    }
+}
+
 const ScriptField* ScriptFields::Find(std::string_view name) const {
     const auto it = std::find_if(m_fields.begin(), m_fields.end(),
                                  [name](const ScriptField& field) {
@@ -171,6 +215,12 @@ bool JsonFitsFieldType(ScriptFieldType type, const Json& value) {
             return value.is_boolean();
 
         case ScriptFieldType::String:
+        case ScriptFieldType::Entity:
+            // An entity reference IS a string in the file - the target's name.
+            // Nothing here checks that anything answers to it: a scene saved
+            // half-built refers to entities that do not exist yet, and
+            // refusing to load the value would throw away the only record of
+            // what it was meant to point at.
             return value.is_string();
 
         case ScriptFieldType::Vec2:
@@ -206,6 +256,9 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
                 break;
             case ScriptFieldType::Bool:
                 outError += " written as true or false";
+                break;
+            case ScriptFieldType::Entity:
+                outError += " written as the target entity's name, like \"Player\"";
                 break;
             default:
                 break;
@@ -247,6 +300,10 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
                 *field.AsString() = value.get<std::string>();
                 return true;
 
+            case ScriptFieldType::Entity:
+                field.AsEntityRef()->Set(value.get<std::string>());
+                return true;
+
             case ScriptFieldType::Vec2:
                 *field.AsVec2() = Vec2{value[0].get<float>(), value[1].get<float>()};
                 return true;
@@ -282,6 +339,14 @@ Json FieldToJson(const ScriptField& field) {
 
         case ScriptFieldType::String:
             return Json(*field.AsString());
+
+        case ScriptFieldType::Entity:
+            // THE NAME AS STORED, even when nothing currently answers to it.
+            // Writing out "" for a target that has been deleted or renamed
+            // would turn a reference somebody can see and fix into one that
+            // was never set - and would do it the first time the scene was
+            // saved, which is to say immediately.
+            return Json(field.AsEntityRef()->TargetName());
 
         case ScriptFieldType::Vec2: {
             const Vec2 v = *field.AsVec2();

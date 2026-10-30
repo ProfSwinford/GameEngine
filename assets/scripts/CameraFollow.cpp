@@ -82,20 +82,15 @@ public:
     // 8 the camera trails by about 27 units - a couple of percent of the
     // screen, which reads as weight rather than as lag. Want it half as far
     // behind? Double the rate.
-    float followRate = 8.0f;
-
-    // A SLIDER AND NOT A DRAG BOX, because this number has ends that mean
-    // something: below 1 the camera stops keeping up at all and above 50 it is
-    // already a hard lock, so there is nothing out there to find. Use
-    // fields.Var for a distance or a speed, where there is no such limit.
+    // A SLIDER AND NOT A DRAG BOX, which is what the [1..50] says. This number
+    // has ends that mean something: below 1 the camera stops keeping up at all
+    // and above 50 it is already a hard lock, so there is nothing out there to
+    // find. Leave the marker off for a distance or a speed, where there is no
+    // such limit and a slider would invent one.
     //
     // The ends are the widget's, not the engine's - a scene file may hold
     // anything, and nothing clamps it on load.
-    void OnExpose(eng::ScriptFields& fields) {
-        fields.Range("followRate", followRate, 1.0f, 50.0f,
-                     "how hard the camera pulls toward the player, per second. 8 is "
-                     "a gentle follow; 50 is nearly locked.");
-    }
+    float followRate = 7.0f; // [1..50] how hard the camera pulls, per second
 
     void OnStart() {
         // Start ON the target rather than easing in from wherever the scene

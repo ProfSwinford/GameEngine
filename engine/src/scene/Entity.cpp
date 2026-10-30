@@ -141,6 +141,10 @@ Component* Entity::ComponentAt(std::size_t index) {
     return (index < m_components.size()) ? m_components[index].get() : nullptr;
 }
 
+const Component* Entity::ComponentAt(std::size_t index) const {
+    return (index < m_components.size()) ? m_components[index].get() : nullptr;
+}
+
 void Entity::ForEachComponent(const std::function<void(Component&)>& fn) {
     // Looped by index rather than with a range-for on purpose. The callback is
     // allowed to ADD a component - the Inspector's "Add Component" button does

@@ -38,6 +38,42 @@ project(Engine2D
     DESCRIPTION "A 2D game engine and editor for learning"
     LANGUAGES CXX)
 
+# =============================================================================
+#  THE SCRIPT ABI NUMBER - bump this when a script would have to be recompiled.
+#
+#  The version above is for people: it names a release and goes in a window
+#  title. This number is for the build, and it exists because the two change
+#  at completely different rates.
+#
+#  A project's scripts compile into DLLs that are loaded into the editor and
+#  pass std::string and std::vector across the boundary, so they have to be
+#  built against the same headers as the engine that loads them. BUMP THIS
+#  when something a script can see changes shape:
+#
+#    * a field added to or removed from a struct a script holds by value
+#    * a virtual function added to ScriptBehaviour, or its order changed
+#    * an enum's values reordered or renumbered
+#    * anything else that changes the layout of something crossing the DLL
+#      boundary
+#
+#  Do NOT bump it for a change inside a .cpp, or a new function on a class a
+#  script only ever holds a pointer to.
+#
+#  WHAT IT PREVENTS: the editor records this number alongside the C runtime
+#  flavour when it compiles a project's scripts, and recompiles them all when
+#  it changes. Without it, replacing an engine build IN PLACE - which is what
+#  installing a new version over an old one is - leaves the scripts looking
+#  perfectly up to date while they were built against different headers. That
+#  failure does not announce itself: the library loads, the Console says the
+#  build succeeded, and the program dies on the first allocation that crosses
+#  the heap boundary. See engine/include/engine/project/EngineBuild.h.
+#
+#  Keeping it separate from the version means a release with no layout change
+#  does not force every project to recompile, and a layout change cannot be
+#  forgotten just because the version was already bumped for something else.
+# =============================================================================
+set(ENGINE_SCRIPT_ABI 1)
+
 # --- which version of C++ ----------------------------------------------------
 # C++23 is used for std::format (see core/Log.h) and a handful of other
 # conveniences. REQUIRED means "fail now with a clear message" rather than
@@ -80,6 +116,10 @@ add_subdirectory(player)
 
 if(ENGINE_WITH_IMGUI)
     add_subdirectory(editor)
+
+    # The launcher, under the same option as the editor because it exists to
+    # start one and uses the same ImGui. See hub/CMakeLists.txt.
+    add_subdirectory(hub)
 endif()
 
 if(ENGINE_BUILD_TESTS)

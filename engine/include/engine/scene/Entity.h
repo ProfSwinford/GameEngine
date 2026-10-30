@@ -118,6 +118,12 @@ public:
     Component*  ComponentAt(std::size_t index);
     void        ForEachComponent(const std::function<void(Component&)>& fn);
 
+    // The const half, for code that only wants to LOOK at what is attached -
+    // "does this entity carry a script called DoorSwitch?" is a question with
+    // no business taking a mutable entity. FindComponent and Transform below
+    // both have the same pair for the same reason.
+    const Component* ComponentAt(std::size_t index) const;
+
     // Every entity has a transform, always. It is created automatically rather
     // than required from the data file, because "an entity with no position"
     // is not a useful thing and making it optional would put a null check in

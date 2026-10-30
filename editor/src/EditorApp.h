@@ -120,7 +120,15 @@ struct EditorState {
 
 class EditorApp {
 public:
-    bool Init();
+    // `projectRoot` is a real folder on this machine, or empty for "look
+    // upwards from this executable until a project turns up" - which is the
+    // original behaviour and what opens the project the editor is installed
+    // inside.
+    //
+    // A NAMED FOLDER THAT IS NOT A PROJECT FAILS. It does not fall back to
+    // the search: somebody who asked for one particular project must not be
+    // handed a different one. See eng::FileSystem::UseRoot.
+    bool Init(const std::string& projectRoot = {});
     // `frameLimit` of 0 means "until the window is closed", which is what a
     // person always wants. A positive number runs that many frames and then
     // shuts down normally, which is what an automated check wants: it proves
@@ -173,6 +181,12 @@ private:
     // panel is reached only through the base class, which is exactly why only
     // these two are named here.
     class ScenePanel* m_scenePanel = nullptr;
+
+    // Did Init get all the way through? Shutdown is called after a FAILED
+    // Init as well, and most of what it does - saving the session above all -
+    // reaches engine state that a failed start-up never created. The engine
+    // keeps the same flag for the same reason; see Engine::Shutdown.
+    bool m_ready = false;
     class GamePanel*  m_gamePanel  = nullptr;
     class TilePalettePanel* m_tilePalettePanel = nullptr;
 

@@ -131,25 +131,33 @@ std::string DefaultScriptText(std::string_view scriptName) {
 //    OnDestroy()          The entity is going away. It is still safe to touch
 //                         here and not afterwards.
 //
-//    OnExpose(fields)     NOT AN EVENT - the odd one out. It lists the
-//                         variables this script wants in the Inspector, and
-//                         runs once when the script is bound:
+//    OnExpose(fields)     NOT AN EVENT, and USUALLY NOT NEEDED. Variables
+//                         reach the Inspector on their own - see below. Write
+//                         this only when the list is not a fixed set of
+//                         declarations, and it then wins over the automatic
+//                         one. See engine/scene/ScriptFields.h.
 //
-//                             float speed = 200.0f;
+//  -----------------------------------------------------------------------------
+//  VARIABLES IN THE INSPECTOR, which take no code at all.
 //
-//                             void OnExpose(eng::ScriptFields& fields) {{
-//                                 fields.Var("speed", speed);
-//                             }}
+//  A PUBLIC variable of a supported type is on screen, editable while the game
+//  runs, and saved on each entity separately - so one script can drive two
+//  entities that behave differently:
 //
-//                         Those are then editable WHILE THE GAME RUNS and
-//                         saved per entity, so one script can drive two
-//                         entities that behave differently. The name is also
-//                         the key in the scene file.
+//      float speed = 200.0f;        // how fast it goes
+//      float blend = 0.5f;          // [0..1] how much to mix
+//      eng::EntityRef target;       // [Rigidbody2DComponent] what to push
 //
-//                         Only a float, int, bool, std::string, Vec2 or Color,
-//                         and only an ordinary member - a `static constexpr`
-//                         constant cannot be changed, so it cannot be one of
-//                         these. See engine/scene/ScriptFields.h.
+//  The trailing comment is the tooltip. A [low..high] at its START makes a
+//  slider; a [TypeName] narrows a reference to entities carrying that
+//  component or script.
+//
+//  float, int, bool, std::string, Vec2, Color and eng::EntityRef. A `static
+//  constexpr` constant cannot be changed, so it is left out - the Console says
+//  which and why. To hide one, make it private or name it m_something.
+//
+//  HOW: the editor reads this file when it builds it, because C++ cannot ask a
+//  class what members it has. See engine/tools/ScriptVars.h.
 //
 //    OnCollisionEnter     A SOLID contact: neither side is a trigger. ENTER
 //    OnCollisionStay      fires once when the overlap begins, STAY every step
@@ -204,24 +212,20 @@ class {0} final : public MyScriptBehaviour {{
 public:
     // ---- a number you can tune from the Inspector -----------------------
     //
-    // AN ORDINARY MEMBER WITH ITS DEFAULT HERE, and not a `static constexpr`
-    // constant. A constant cannot be changed, so the Inspector could only
-    // show it greyed out; this can be dragged while the game runs.
+    // IT IS ALREADY THERE. Public, and a type the Inspector can draw, is all
+    // it takes - nothing registers it and nothing has to be kept in step.
     //
-    // Delete both of these if this script has nothing worth tuning.
-    float speed = 100.0f;
-
-    // Lists the variables above for the Inspector. Nothing finds them by
-    // itself - C++ can ask whether a name exists but not what names exist -
-    // so a variable appears on screen because this function named it.
+    // The trailing comment becomes its tooltip. Put [0..500] at the start of
+    // that comment to make it a slider instead of a drag box.
     //
-    // Each one is then saved ON EACH ENTITY SEPARATELY, and only if somebody
-    // changed it: leave it alone and it takes whatever the line above says,
-    // so editing that default still reaches every entity that never disagreed.
-    // The name here is also the key in the scene file.
-    void OnExpose(ScriptFields& fields) {{
-        fields.Var("speed", speed, "say here what this number is for");
-    }}
+    // It is saved ON EACH ENTITY SEPARATELY, and only if somebody changed it:
+    // leave it alone and it takes whatever this line says, so editing the
+    // default still reaches every entity that never disagreed. The name here
+    // is also the key in the scene file.
+    //
+    // Delete it if this script has nothing worth tuning. Make it private, or
+    // rename it m_speed, to keep it out of the Inspector while keeping it.
+    float speed = 100.0f;   // say here what this number is for
 
     void OnStart() {{
         ENGINE_LOG_INFO(Channels::kGame, "{0} started on '{{}}'",

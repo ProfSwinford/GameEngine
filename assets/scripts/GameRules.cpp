@@ -61,6 +61,28 @@ bool IsPickup(eng::Entity& entity) {
 
 class GameRules final : public eng::ScriptBehaviour {
 public:
+    // ========================================================================
+    //  THE THREE HUD LABELS, as references rather than as names in the code.
+    //
+    //  These used to be `scene->Find("HudScore")` with the name written here,
+    //  in C++, three times. That worked and it put a piece of LEVEL DATA in
+    //  the program: renaming an entity in the Hierarchy broke the HUD, with
+    //  nothing anywhere saying so, and a second scene wanting differently
+    //  named labels could not have them at all.
+    //
+    //  As references they are set in the Inspector, saved per entity, and
+    //  shown in red the moment one stops resolving. The defaults keep the
+    //  existing scene working untouched.
+    //
+    //  THE MARKER IS WHAT MAKES THEM USABLE. [UITextComponent] is why the
+    //  picker offers the three labels out of everything in the scene, and why
+    //  pointing one at the Player says so instead of quietly doing nothing.
+    //  See engine/scene/EntityRef.h and engine/tools/ScriptVars.h.
+    // ========================================================================
+    eng::EntityRef scoreLabel{"HudScore"};    // [UITextComponent] how many collected
+    eng::EntityRef timerLabel{"HudTimer"};    // [UITextComponent] the countdown
+    eng::EntityRef bannerLabel{"HudBanner"};  // [UITextComponent] the big message
+
     void OnStart() {
         m_totalPickups = CountPickups();
         m_secondsLeft  = kTimeLimit;
@@ -181,29 +203,21 @@ private:
     //  player actually sees.
     //
     //  So the score, the timer and the banner are entities in the scene file
-    //  now, each with a UIRect and a UIText. This script finds them by name
-    //  and sets their text. The LAYOUT is data you can drag around in the
-    //  Inspector; only the WORDS are code. See engine/include/engine/scene/UI.h.
+    //  now, each with a UIRect and a UIText, and this script is POINTED AT
+    //  them - see the references at the top. The LAYOUT is data you can drag
+    //  around in the Inspector, WHICH labels is data too, and only the WORDS
+    //  are code. See engine/include/engine/scene/UI.h.
     // -------------------------------------------------------------------------
-    eng::UITextComponent* FindLabel(const char* entityName) const {
-        eng::Scene* scene = GetScene();
-        if (scene == nullptr) {
-            return nullptr;
-        }
-        eng::Entity* entity = scene->Get(scene->Find(entityName));
-        return entity != nullptr ? entity->Find<eng::UITextComponent>() : nullptr;
-    }
-
     void UpdateHud(int collected) {
         char line[96];
 
-        if (eng::UITextComponent* score = FindLabel("HudScore")) {
+        if (eng::UITextComponent* score = scoreLabel.Find<eng::UITextComponent>()) {
             std::snprintf(line, sizeof(line), "COLLECTED  %d / %d", collected,
                           m_totalPickups);
             score->text = line;
         }
 
-        if (eng::UITextComponent* timer = FindLabel("HudTimer")) {
+        if (eng::UITextComponent* timer = timerLabel.Find<eng::UITextComponent>()) {
             std::snprintf(line, sizeof(line), "TIME       %5.1f",
                           static_cast<double>(m_secondsLeft));
             timer->text = line;
@@ -217,7 +231,7 @@ private:
 
         // The banner is HIDDEN in the scene file and switched on here, which
         // is why there is no "if won, draw" branch around a draw call.
-        if (eng::UITextComponent* banner = FindLabel("HudBanner")) {
+        if (eng::UITextComponent* banner = bannerLabel.Find<eng::UITextComponent>()) {
             eng::Entity* owner = banner->Owner();
             auto*        rect  = owner != nullptr ? owner->Find<eng::UIRectComponent>()
                                                   : nullptr;

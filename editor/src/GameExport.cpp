@@ -7,6 +7,7 @@
 #include "ScriptBuild.h"
 
 #include <engine/Engine.h>
+#include <engine/platform/FolderDialog.h>
 #include <engine/core/Json.h>
 #include <engine/core/Log.h>
 #include <engine/fs/AssetArchive.h>
@@ -21,7 +22,6 @@
 #include <filesystem>
 #include <functional>
 #include <map>
-#include <mutex>
 #include <set>
 #include <string>
 #include <system_error>
@@ -32,46 +32,11 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Where the folder picker's answer waits until the main thread collects it.
-//
-// A MUTEX RATHER THAN A BARE STRING, because SDL says the callback "may be
-// called from a different thread than the one the function was invoked on" -
-// and on Windows it is. Two threads touching one std::string with no lock is
-// undefined behaviour, and the kind that works every time you test it and
-// fails on somebody else's machine.
-std::mutex            g_pendingMutex;
-GameExport::Pending   g_pending;
+// Which question this file asks the shared folder picker. The project menu
+// uses its own numbers; they only have to differ. See FolderDialog.h.
+constexpr int kPurposeExport = 10;
 
-// THIS RUNS ON SDL'S DIALOG THREAD, NOT THE MAIN ONE.
-//
-// So it does exactly one thing: leave a note under a lock. It must not log -
-// Log and LogBuffer have no mutex anywhere in them, and appending to that
-// vector while the main thread is drawing the Console panel from it is
-// undefined behaviour of the worst kind, the sort that works on the machine
-// you wrote it on. It must not touch the scene or the engine either.
-//
-// Everything worth saying is said by TakePending's caller, on the main thread.
-void OnFolderChosen(void* /*userdata*/, const char* const* filelist, int /*filter*/) {
-    GameExport::Pending pending;
 
-    if (filelist == nullptr) {
-        // The dialog itself could not run. SDL_GetError is safe here; it is
-        // per-thread.
-        pending.choice = GameExport::Choice::Failed;
-        const char* reason = SDL_GetError();
-        pending.error = (reason != nullptr && reason[0] != '\0')
-                            ? reason
-                            : "the operating system did not say why";
-    } else if (filelist[0] == nullptr) {
-        pending.choice = GameExport::Choice::Cancelled;
-    } else {
-        pending.choice = GameExport::Choice::Chosen;
-        pending.path   = filelist[0];
-    }
-
-    const std::lock_guard<std::mutex> lock(g_pendingMutex);
-    g_pending = pending;
-}
 
 // The folder the editor itself is running from, which is where player.exe,
 // engine.dll and SDL3.dll sit. SDL_GetBasePath hands back a string IT owns, so
@@ -467,25 +432,33 @@ void MeasureAssets(const fs::path& assetsDir, int& outFiles, std::uintmax_t& out
 } // namespace
 
 void GameExport::AskForDestination() {
-    // THE EDITOR'S WINDOW IS PASSED AS THE PARENT, so the dialog is modal to
-    // it and cannot end up behind it - a folder picker lost behind a maximised
-    // editor is indistinguishable from a Build button that does nothing.
-    //
-    // Window::NativeWindowHandle hands back the SDL_Window as a void*, which
-    // is how the engine exposes its platform objects everywhere: the type is
-    // never named in a public header, and the one program that already links
-    // SDL casts it back. See Window.h and Renderer::NativeRendererHandle.
-    auto* window =
-        static_cast<SDL_Window*>(eng::Engine::Get().GetWindow().NativeWindowHandle());
-
-    SDL_ShowOpenFolderDialog(OnFolderChosen, nullptr, window, nullptr, false);
+    // DELEGATED. The picker and - far more importantly - the rule about
+    // which thread its answer arrives on now live in the engine, because
+    // opening and creating a project need the same thing. Two copies of a
+    // threading contract is one copy that can be fixed while the other is
+    // not. See engine/include/engine/platform/FolderDialog.h.
+    eng::FolderDialog::Ask(kPurposeExport);
 }
 
 GameExport::Pending GameExport::TakePending() {
-    const std::lock_guard<std::mutex> lock(g_pendingMutex);
-    const Pending                     taken = g_pending;
-    g_pending                               = Pending{};
-    return taken;
+    // Only answers questions THIS asked. There is one dialog and one
+    // pending answer, so without the purpose check, picking a folder for
+    // Open Project would be collected here and exported into.
+    const eng::FolderDialog::Result picked = eng::FolderDialog::Take();
+    if (picked.purpose != kPurposeExport) {
+        return Pending{};
+    }
+
+    Pending out;
+    out.path  = picked.path;
+    out.error = picked.error;
+    switch (picked.choice) {
+        case eng::FolderDialog::Choice::Chosen:    out.choice = Choice::Chosen;    break;
+        case eng::FolderDialog::Choice::Cancelled: out.choice = Choice::Cancelled; break;
+        case eng::FolderDialog::Choice::Failed:    out.choice = Choice::Failed;    break;
+        case eng::FolderDialog::Choice::None:      out.choice = Choice::None;      break;
+    }
+    return out;
 }
 
 GameExport::Result GameExport::ExportTo(const std::string& destination) {
@@ -538,8 +511,18 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
     // NeedsRebuild is the same check RebuildScriptsIfChanged uses, so the
     // library is current for exactly the same reasons it is current when you
     // alt-tab back into the editor.
-    if (ScriptBuild::NeedsRebuild()) {
-        const ScriptBuild::Result scripts = ScriptBuild::BuildAndReload();
+    // ALWAYS, and into ONE library rather than the per-script ones the editor
+    // runs on. A shipped game will never recompile a script, so eleven
+    // libraries would be eleven import tables and eleven lots of load-time
+    // relocation for nothing. See ScriptBuild::BuildBundle - it links the
+    // objects the editor already compiled, so this is a link and not a
+    // rebuild.
+    //
+    // Not guarded by NeedsRebuild any more: the bundle is a different output
+    // from the modules, so "the modules are up to date" says nothing about
+    // whether it exists. BuildBundle is incremental by itself.
+    {
+        const ScriptBuild::Result scripts = ScriptBuild::BuildBundle();
         if (!scripts.ok) {
             result.summary = "the scripts did not build - the game was not exported";
             ENGINE_LOG_ERROR(

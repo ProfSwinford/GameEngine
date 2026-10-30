@@ -53,6 +53,7 @@ another one.
 | `scene/`      | entities, components, levels, scripts, messaging                    |
 | `physics/`    | collision shapes and collision events                               |
 | `tilemap/`    | the auto-tiling algorithm, the grid, and making it solid            |
+| `project/`    | what makes a folder a project, and which engine build this is        |
 | `tools/`      | the three function pointers that let a tool see input first          |
 
 ---
@@ -67,7 +68,9 @@ another one.
 | how to write your own component                  | `scene/Component.h`, then `SpinComponent.h`|
 | how a level file becomes a world                 | `scene/Scene.h`                            |
 | how to write your own behaviour                  | `scene/ScriptComponent.h`                  |
+| how a variable reaches the Inspector by itself    | `tools/ScriptVars.h`                       |
 | how a script puts its own variables on screen     | `scene/ScriptFields.h`                     |
+| how one entity refers to another                 | `scene/EntityRef.h`                        |
 | how scripts are compiled and loaded              | `scene/ScriptLibrary.h`                    |
 | why deleting things is queued                    | `scene/DeferredOps.h`                      |
 | how entities tell each other things              | `scene/Messaging.h`                        |
@@ -81,6 +84,11 @@ another one.
 | how images are shared and unloaded               | `render/Texture.h`                         |
 | how key bindings are changed without rebuilding  | `input/InputMap.h`                         |
 | why files are named the short way                | `fs/FileSystem.h`                          |
+| what makes a folder a project                    | `project/Project.h`                        |
+| why switching project restarts the editor        | `editor/src/ProjectMenu.h`                 |
+| why changing engine recompiles your scripts      | `project/EngineBuild.h`                    |
+| why a mismatched script library is refused       | `project/ScriptAbi.h`                      |
+| where a setting that is not a project's lives    | `fs/UserPaths.h`                           |
 | why the engine starts up in a fixed order        | `core/Subsystem.h`                         |
 
 ---
@@ -112,18 +120,37 @@ are printed to the log at start-up, so it is never a guess.
 
 ---
 
-## The two programs, and the third library
+## The three programs, and the fourth library
 
 `player` runs a game with no editor attached, and contains no game itself — the
 scene file and the scripts under `assets/` are the game. `editor` is the development
-environment. Both are built on the same `engine`, which is a **shared** library
-- one copy of it in the process, shared by everything.
+environment. `hub` is a launcher: a list of projects, a list of engine builds,
+and a button that starts the right editor on the right project. All are built
+on the same `engine`, which is a **shared** library - one copy of it in the
+process, shared by everything.
+
+The launcher is a separate program for one reason that is not negotiable: it
+chooses *which engine* to open a project with, and an editor has already loaded
+its own `engine.dll` by the time it could offer a choice. That is the same
+decision as "opening a project restarts the editor" — the two hold each other
+up, because launching a project is then just starting an executable with an
+argument, and engine version management costs no engine code at all. See
+`editor/src/ProjectMenu.h`.
+
+The launcher is also the only program here that runs with **no project open**,
+which is why `project/Project.h`, `project/EngineBuild.h` and `fs/UserPaths.h`
+all deal in real paths rather than going through `FileSystem` — there is no
+project root for them to be resolved against.
 
 That matters because of the third piece. Every `.cpp` and `.h` under `assets/`
-is compiled into `.build/userContent.dll` by the editor while it is running,
-and **loaded** by both programs rather than linked into them. A script calls
-`InputMap::IsDown` and reaches the same engine the editor is running, because
-there is only one.
+is compiled by the editor while it is running, and **loaded** by both programs
+rather than linked into them. A script calls `InputMap::IsDown` and reaches the
+same engine the editor is running, because there is only one.
+
+While developing, each script is its own library under `.build/modules/`, so
+editing one recompiles one — and one that will not compile no longer stops the
+others. An exported game gets them bundled into a single
+`assets/userContent.dll`, which is the same objects linked a different way.
 
 The consequences are worth spelling out:
 

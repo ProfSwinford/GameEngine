@@ -41,8 +41,8 @@ public:
     //
     // Each one is read where it is used rather than copied at OnStart, so a
     // change takes effect on the next step with nothing to notify.
-    float walkSpeed   = 260.0f;
-    float jumpImpulse = 520.0f;
+    float walkSpeed   = 260.0f;   // pixels a second, flat out
+    float jumpImpulse = 520.0f;   // one upward kick. Gravity decides the height.
 
     // HALF THE CHARACTER'S HEIGHT PLUS A LITTLE, which is why it belongs on
     // the entity and not in the code: a different sprite needs a different
@@ -50,17 +50,13 @@ public:
     //
     // Too short and a jump is refused while standing on the floor; too long
     // and it is allowed in mid-air.
-    float groundProbe = 30.0f;
+    float groundProbe = 30.0f;   // [1..200] how far down to look for a floor
 
-    void OnExpose(eng::ScriptFields& fields) {
-        fields.Var("walkSpeed", walkSpeed, "pixels a second, flat out");
-        fields.Var("jumpImpulse", jumpImpulse,
-                   "one kick upward, in impulse - not a speed. Gravity decides how "
-                   "high it gets you.");
-        fields.Range("groundProbe", groundProbe, 1.0f, 200.0f,
-                     "how far below the middle of the entity to look for a floor. "
-                     "About half its height.");
-    }
+    // A POINTER, so it is not exposed and could not be - the Inspector edits
+    // values, and there is nothing to put in a box for an address. The Console
+    // says so by name when it builds this file, which is how a variable that
+    // did not appear is told from one that was never meant to.
+    Ridigbody2D m_body = nullptr;
 
     void OnStart() {
         m_body = Owner() != nullptr ? Owner()->Find<eng::Rigidbody2DComponent>()
@@ -85,17 +81,17 @@ public:
         }
 
         const float horizontal =
-            eng::InputMap::GetAxis("MoveRight") - eng::InputMap::GetAxis("MoveLeft");
+            Input::GetAxis("MoveRight") - Input::GetAxis("MoveLeft");
 
-        const eng::Vec2 velocity = m_body->Velocity();
-        m_body->SetVelocity(eng::Vec2{horizontal * walkSpeed, velocity.y});
+        const Vector2 velocity = m_body->Velocity();
+        m_body->SetVelocity(Vector2{horizontal * walkSpeed, velocity.y});
 
         m_grounded = IsOnGround();
 
-        if (m_grounded && eng::InputMap::IsDown("Jump")) {
+        if (m_grounded && Input::IsDown("Jump")) {
             // An impulse and not a force: a jump is one kick, not a push
             // spread over the step. See ForceMode in physics/Rigidbody.h.
-            m_body->AddForce(eng::Vec2{0.0f, jumpImpulse}, eng::ForceMode::Impulse);
+            m_body->AddForce(Vector2{0.0f, jumpImpulse}, eng::ForceMode::Impulse);
         }
     }
 
@@ -108,12 +104,16 @@ private:
     // actually asking - and it keeps answering while standing still, when
     // there is no new contact at all.
     bool IsOnGround() const {
-        const eng::Transform2D* transform = Transform();
+        // `::Transform` and not `Transform`. Inside a ScriptBehaviour, the
+        // unqualified name finds the inherited FUNCTION Transform() - a member
+        // hides anything at global scope - so the typedef in Engine.h is only
+        // reachable from here with the `::` in front of it.
+        const ::Transform transform = Transform();
         if (transform == nullptr) {
             return false;
         }
 
-        const eng::Vec2 from = transform->WorldPosition();
+        const Vector2 from = transform->WorldPosition();
 
         eng::QueryFilter filter;
         filter.ignore      = OwnerId();   // or the ray finds this very collider
@@ -128,7 +128,6 @@ private:
         return hit && hit.normal.y > 0.5f;
     }
 
-    Ridigbody2D m_body = nullptr;
     bool                       m_grounded = false;
 };
 

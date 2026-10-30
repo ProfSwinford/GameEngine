@@ -11,6 +11,7 @@
 
 #include "AssetDragDrop.h"
 #include "EditorApp.h"
+#include "panels/HierarchyPanel.h"   // kPayloadEntity, for dropping an entity on a reference
 #include "ShellOpen.h"
 
 #include <imgui.h>
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <set>
 #include <string>
@@ -1166,9 +1168,209 @@ bool DrawStringField(const eng::ScriptField& field) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+//  A reference to another entity.
+//
+//  THE GESTURE IS DRAG FROM THE HIERARCHY, which is the one people arrive
+//  already knowing, and the Hierarchy was already a drag source before any of
+//  this existed - see kPayloadEntity. The button is also a picker, because
+//  dragging across a docked layout to a panel you cannot see both ends of is
+//  a worse experience than a list.
+//
+//  ==========================================================================
+//  WHAT IT SHOWS WHEN SOMETHING IS WRONG, which is most of the value here.
+//
+//  A reference holds a NAME, so three different things can be true and they
+//  do not look alike:
+//
+//    nothing set           "(none)", greyed - the ordinary starting state
+//    set and resolving     the name, plainly
+//    set and NOT resolving the name IN RED - deleted, or renamed in a build
+//                          where this script was not compiled in
+//    resolving but wrong   the name, plus amber: it is there, and it does not
+//                          carry the thing this reference asked for
+//
+//  The last one is the one no other editor tells you about until the game
+//  does nothing. It costs one lookup per frame to answer.
+// ---------------------------------------------------------------------------
+
+// Declared early because the reference field below draws SEVERAL items - a
+// button, a label, and sometimes a line of red - so the caller's "attach a
+// tooltip to whatever was just drawn" would land on the wrong one. It calls
+// this itself, against the button, and DrawScriptFields knows to skip it.
+void DrawFieldTooltip(const eng::ScriptComponent& script, const eng::ScriptField& field,
+                      bool overridden);
+
+// Every entity that would satisfy this reference, newest-looking first is not
+// worth arranging - the Hierarchy's order is what somebody expects.
+void CollectCandidates(eng::Scene& scene, const std::string& requiredType,
+                       std::vector<std::string>& into) {
+    into.clear();
+    scene.ForEach([&requiredType, &into](eng::Entity& entity) {
+        if (requiredType.empty() || eng::EntityHasNamed(entity, requiredType)) {
+            into.push_back(entity.Name());
+        }
+    });
+}
+
+// A one-line summary of what is attached, for the picker rows: "Sprite,
+// Rigidbody2D, PlayerMovement". It is what tells two entities called Enemy1
+// and Enemy2 apart when you are looking for the one with the script on it.
+std::string DescribeAttachments(const eng::Entity& entity) {
+    std::string out;
+    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+        const eng::Component* component = entity.ComponentAt(i);
+        if (component == nullptr) {
+            continue;
+        }
+        std::string name(component->TypeName());
+
+        // A script is named by its SCRIPT, not by "ScriptComponent" - four
+        // identical entries would say nothing about an entity carrying four
+        // scripts, which is exactly when this summary is needed.
+        if (name == eng::ScriptComponent::kTypeName) {
+            name = static_cast<const eng::ScriptComponent*>(component)->ScriptName();
+            if (name.empty()) {
+                name = "Script";
+            }
+        } else if (name.ends_with("Component")) {
+            // "SpriteComponent" -> "Sprite". The suffix is on every one of
+            // them, so it distinguishes nothing and costs a third of the line.
+            name.resize(name.size() - 9);
+        }
+
+        if (!out.empty()) {
+            out += ", ";
+        }
+        out += name;
+    }
+    return out;
+}
+
+bool DrawEntityRefField(const eng::ScriptComponent& script,
+                        const eng::ScriptField& field) {
+    eng::EntityRef* ref = field.AsEntityRef();
+    if (ref == nullptr) {
+        return false;
+    }
+
+    eng::Scene&       scene  = eng::Engine::Get().GetScene();
+    const eng::Entity* target = ref->Target();
+    const bool        missing = ref->IsSet() && target == nullptr;
+    const bool        wrongKind =
+        target != nullptr && !field.requiredType.empty() &&
+        !eng::EntityHasNamed(*target, field.requiredType);
+
+    bool changed = false;
+
+    // ---- the button, which is the current value and the picker -----------
+    const char* shown = ref->IsSet() ? ref->TargetName().c_str() : "(none)";
+
+    if (missing) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    } else if (!ref->IsSet()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    }
+
+    // Sized so the row lines up with the drag boxes above it, and so there is
+    // a target big enough to drop onto rather than a word.
+    const bool pick = ImGui::Button(shown, ImVec2(ImGui::CalcItemWidth(), 0.0f));
+
+    if (missing || !ref->IsSet()) {
+        ImGui::PopStyleColor();
+    }
+
+    // AGAINST THE BUTTON, while the button is still the last item drawn.
+    DrawFieldTooltip(script, field, script.IsFieldOverridden(field.name));
+
+    // ---- dropping an entity on it ----------------------------------------
+    //
+    // ACCEPTED WHATEVER IT IS, including an entity that does not satisfy the
+    // constraint. Refusing the drop would leave somebody holding the thing
+    // they meant with no explanation; taking it and saying it is wrong is the
+    // same information without the guessing.
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadEntity)) {
+            if (payload->DataSize == static_cast<int>(sizeof(eng::EntityId))) {
+                eng::EntityId dropped{};
+                std::memcpy(&dropped, payload->Data, sizeof(dropped));
+                if (const eng::Entity* entity = scene.Get(dropped)) {
+                    ref->Set(*entity);
+                    changed = true;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    ImGui::SameLine();
+    ImGui::TextUnformatted(field.name.c_str());
+
+    // ---- the picker ------------------------------------------------------
+    if (pick) {
+        ImGui::OpenPopup("pick-entity");
+    }
+    if (ImGui::BeginPopup("pick-entity")) {
+        static std::vector<std::string> candidates;
+        CollectCandidates(scene, field.requiredType, candidates);
+
+        if (field.requiredType.empty()) {
+            ImGui::TextDisabled("any entity");
+        } else {
+            ImGui::TextDisabled("entities with a %s", field.requiredType.c_str());
+        }
+        ImGui::Separator();
+
+        if (ImGui::Selectable("(none)", !ref->IsSet())) {
+            ref->Clear();
+            changed = true;
+        }
+
+        if (candidates.empty()) {
+            // NAMING THE CONSTRAINT, because an empty list with no explanation
+            // reads as a broken picker rather than as an answer.
+            ImGui::TextDisabled("nothing in this scene has a %s on it",
+                                field.requiredType.c_str());
+        }
+
+        for (const std::string& name : candidates) {
+            const bool chosen = ref->TargetName() == name;
+            if (ImGui::Selectable(name.c_str(), chosen)) {
+                ref->Set(name);
+                changed = true;
+            }
+            if (const eng::Entity* entity = scene.Get(scene.Find(name))) {
+                const std::string summary = DescribeAttachments(*entity);
+                if (!summary.empty() && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", summary.c_str());
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // ---- what is wrong with it, if anything ------------------------------
+    if (missing) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           "nothing in this scene is called '%s'",
+                           ref->TargetName().c_str());
+    } else if (wrongKind) {
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "'%s' has no %s on it, so this will not do anything",
+                           ref->TargetName().c_str(), field.requiredType.c_str());
+    }
+
+    return changed;
+}
+
 // One variable, drawn with whichever widget suits its type. True on a frame
 // the value was actually changed.
-bool DrawFieldWidget(const eng::ScriptField& field) {
+//
+// The component is here only for the entity reference, which needs to know
+// whether the value is overridden in order to draw its own tooltip. Every
+// other type ignores it.
+bool DrawFieldWidget(const eng::ScriptComponent& script,
+                     const eng::ScriptField& field) {
     const char* label = field.name.c_str();
 
     switch (field.type) {
@@ -1207,6 +1409,9 @@ bool DrawFieldWidget(const eng::ScriptField& field) {
 
         case eng::ScriptFieldType::String:
             return DrawStringField(field);
+
+        case eng::ScriptFieldType::Entity:
+            return DrawEntityRefField(script, field);
 
         case eng::ScriptFieldType::Vec2: {
             eng::Vec2* value = field.AsVec2();
@@ -1267,7 +1472,13 @@ void DrawFieldTooltip(const eng::ScriptComponent& script,
         ImGui::TextUnformatted(field.tooltip.c_str());
         ImGui::Separator();
     }
-    ImGui::TextDisabled("%s", eng::ScriptFieldTypeName(field.type));
+    if (field.requiredType.empty()) {
+        ImGui::TextDisabled("%s", eng::ScriptFieldTypeName(field.type));
+    } else {
+        // The constraint is part of what the field IS, so it belongs where the
+        // type would otherwise be rather than as an extra line.
+        ImGui::TextDisabled("an entity with a %s on it", field.requiredType.c_str());
+    }
 
     if (overridden) {
         ImGui::TextDisabled("saved on this entity as %s",
@@ -1306,7 +1517,7 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
 
         const bool overridden = script.IsFieldOverridden(field.name);
 
-        if (DrawFieldWidget(field)) {
+        if (DrawFieldWidget(script, field)) {
             // The widget has already written the new value through the
             // field's own pointer; this records it as the saved one. Exactly
             // one piece of code - FieldToJson - knows how each type is
@@ -1315,7 +1526,11 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
             script.SaveFieldValue(field.name);
             EditorState::Get().dirty = true;
         }
-        DrawFieldTooltip(script, field, overridden);
+        // Skipped for a reference, which drew its own against the button -
+        // see the note on the forward declaration above.
+        if (field.type != eng::ScriptFieldType::Entity) {
+            DrawFieldTooltip(script, field, overridden);
+        }
 
         // DIRECTLY AFTER THE WIDGET, so it reads as belonging to it. Anything
         // that has to be said about the value goes underneath, below.

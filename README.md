@@ -228,29 +228,49 @@ is a compile error that says what to write instead, and a script with no hooks
 at all is a compile error too — those checks exist because a misspelled hook
 would otherwise be a function nobody calls.
 
-**A script can put its own variables in the Inspector**, editable while the
-game runs and saved on each entity separately — so one script can drive two
-entities that behave differently:
+**Declare a public variable and it is in the Inspector** — editable while the
+game runs, and saved on each entity separately, so one script drives two
+entities that behave differently. Nothing to annotate or register:
 
 ```cpp
 class Orbiter : public eng::ScriptBehaviour {
 public:
-    float radius = 90.0f;
-    float speed  = 1.2f;
-
-    void OnExpose(eng::ScriptFields& fields) {
-        fields.Var("radius", radius, "how far out it orbits");
-        fields.Range("speed", speed, 0.0f, 10.0f);   // a slider instead
-    }
+    float radius = 90.0f;        // how far out it orbits
+    float speed  = 1.2f;         // [0..10] turns per second
+    eng::EntityRef centre;       // [TransformComponent] what to circle
 
     void OnFixedUpdate() { /* read them here, so a change takes effect now */ }
 };
 ```
 
-`float`, `int`, `bool`, `std::string`, `eng::Vec2` and `eng::Color`. This one
-is written out rather than found by the compiler, and that is not an
-inconsistency: `requires` can ask whether a *named* member exists, and no C++
-construct can ask what members exist at all.
+`float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color` and
+`eng::EntityRef`. The trailing comment becomes the tooltip; a `[low..high]` at
+its start makes a slider, and a `[TypeName]` narrows a reference to entities
+carrying that component or script. Keep one off screen by making it `private`
+or naming it `m_something`.
+
+**This is the one thing the compiler cannot do for us.** `requires` can ask
+whether a *named* member exists; nothing in C++ can ask what members exist. So
+the editor **reads the script's source** when it builds it — the way Unreal's
+header tool does — and generates the registration. It is a whitelist of
+declaration shapes rather than a C++ parser, so it misses unusual ones, and
+missing them is cheap by design: the generated code wraps every variable in
+`if constexpr (requires ...)`, so a wrong guess compiles away instead of
+breaking the build, and the Console lists what was exposed and what was
+skipped. Write `OnExpose` by hand for anything it cannot cover, and the
+hand-written list wins.
+
+**An `EntityRef` points at another entity** — drag one from the Hierarchy onto
+the field, then reach what you need on the other side:
+
+```cpp
+if (auto* push = body.Find<eng::Rigidbody2DComponent>()) { /* shove it */ }
+```
+
+It stores the target's **name**, so it is readable in the scene file, and
+renaming an entity in the Hierarchy moves every reference with it. Ask for the
+target when you need it rather than keeping it, exactly as with an `EntityId` —
+the thing on the other end can be destroyed.
 
 **Only the values you change are saved.** Leave a variable alone and it is
 absent from the scene file and takes whatever the code says — so editing that

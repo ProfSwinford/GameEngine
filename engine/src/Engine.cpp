@@ -274,7 +274,26 @@ bool Engine::Init(const Options& options) {
     // in the ordered shutdown. Starting it twice is harmless, and it ignores
     // the settings anyway, which is just as well: they have not been read yet
     // and m_config is still all defaults on this line.
-    m_fileSystem.Init(m_config);
+    // WHICH project, before the file system goes looking for one. Empty is
+    // the normal case and restores the original search - see
+    // FileSystem::UseRoot.
+    FileSystem::UseRoot(options.projectRoot);
+
+    // AND THE ANSWER IS CHECKED NOW. This used to discard the bool, which
+    // mattered once a failed Init stopped leaving a guessed root behind:
+    // carrying on without a project means every Resolve returns nothing, and
+    // the first thing to go wrong would be the log file failing to open,
+    // reported through the log. Failing here names the folder instead.
+    if (!m_fileSystem.Init(m_config)) {
+        // The log is not open yet, so this goes straight to the terminal -
+        // the same reason the config error below does.
+        std::fprintf(stderr,
+                     "no project was opened%s%s. A project is a folder containing "
+                     "'project.oproj' or an 'assets' folder.\n",
+                     options.projectRoot.empty() ? "" : ": ",
+                     options.projectRoot.empty() ? "" : options.projectRoot.c_str());
+        return false;
+    }
 
     std::string configError;
     if (!LoadBootConfig(options.configPath, m_config, m_configDocument, configError)) {

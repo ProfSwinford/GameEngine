@@ -24,6 +24,7 @@ set(ENGINE_SOURCES
 
     src/fs/AssetArchive.cpp           # packing a folder of assets into one .bin
     src/fs/FileSystem.cpp             # finding and reading files
+    src/fs/UserPaths.cpp              # where this user's own settings live
 
     src/input/InputMap.cpp            # key presses -> named actions
 
@@ -32,12 +33,17 @@ set(ENGINE_SOURCES
     src/math/Random.cpp
     src/math/Transform2D.cpp
 
+    src/project/EngineBuild.cpp       # which engine build this is
+    src/project/Project.cpp           # what makes a folder a project
+    src/project/ScriptAbi.cpp         # were these scripts built for this engine?
+
     src/physics/Collider.cpp          # collision shapes and events
     src/physics/Physics2D.cpp         # raycasts, overlap queries, gravity
     src/physics/Rigidbody.cpp         # mass, velocity, forces
 
     src/platform/EventPump.cpp        # reading input from the OS
     src/platform/SdlHandles.cpp       # automatic clean-up for SDL objects
+    src/platform/FolderDialog.cpp     # asking the OS for a folder
     src/platform/Window.cpp           # the game window
 
     src/render/Camera.cpp
@@ -54,6 +60,7 @@ set(ENGINE_SOURCES
     src/scene/CameraComponent.cpp     # the game camera, as an entity
     src/scene/DeferredOps.cpp         # safe create and destroy
     src/scene/Entity.cpp
+    src/scene/EntityRef.cpp            # one entity referring to another
     src/scene/Messaging.cpp           # entities talking to each other
     src/scene/Scene.cpp               # loading and saving levels
     src/scene/ScriptComponent.cpp     # your own behaviour classes
@@ -69,6 +76,7 @@ set(ENGINE_SOURCES
     src/tilemap/TilemapCollider.cpp   # solid cells merged into boxes
 
     src/tools/GuiHooks.cpp            # lets the editor see input first
+    src/tools/ScriptVars.cpp          # reads a script's variables from its source
 )
 
 set(ENGINE_HEADERS
@@ -81,12 +89,17 @@ set(ENGINE_HEADERS
     include/engine/core/Subsystem.h
     include/engine/core/Time.h
     include/engine/fs/FileSystem.h
+    include/engine/fs/UserPaths.h
     include/engine/input/InputMap.h
     include/engine/math/Mat3.h
     include/engine/math/Overlap.h
     include/engine/math/Random.h
     include/engine/math/Transform2D.h
     include/engine/math/Vec2.h
+    include/engine/project/EngineBuild.h
+    include/engine/project/Project.h
+    include/engine/project/ScriptAbi.h
+    include/engine/platform/FolderDialog.h
     include/engine/physics/Collider.h
     include/engine/physics/Contact.h
     include/engine/physics/Physics2D.h
@@ -103,6 +116,7 @@ set(ENGINE_HEADERS
     include/engine/scene/DeferredOps.h
     include/engine/scene/Entity.h
     include/engine/scene/EntityId.h
+    include/engine/scene/EntityRef.h
     include/engine/scene/Messaging.h
     include/engine/scene/Scene.h
     include/engine/scene/ScriptComponent.h
@@ -116,6 +130,7 @@ set(ENGINE_HEADERS
     include/engine/tilemap/Tilemap.h
     include/engine/tilemap/TilemapCollider.h
     include/engine/tools/GuiHooks.h
+    include/engine/tools/ScriptVars.h
 )
 
 add_library(engine SHARED ${ENGINE_SOURCES} ${ENGINE_HEADERS})
@@ -137,6 +152,55 @@ add_library(Engine2D::engine ALIAS engine)
 #  Ignored on macOS and Linux, where everything is visible by default.
 # ---------------------------------------------------------------------------
 set_target_properties(engine PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
+# ---------------------------------------------------------------------------
+#  WHICH C RUNTIME THIS ENGINE WAS BUILT WITH, so it can say so.
+#
+#  A project's scripts are DLLs loaded into the running program, passing
+#  std::string and std::vector across the boundary, so they have to be built
+#  against the same C runtime. The engine records this in the stamp the script
+#  build compares against - and, more to the point, the PLAYER compares
+#  against it at start-up, because the player has no compiler and so cannot
+#  fix a mismatch the way the editor can. It refuses instead of loading
+#  scripts that would corrupt the heap.
+#
+#  PRIVATE: only the engine's own translation units need it, and it must be
+#  the ENGINE's configuration that is reported rather than that of whoever is
+#  asking. The editor has an equivalent define of its own which it uses to
+#  pass /MDd or /MD to the compiler; both come from $<CONFIG> on targets that
+#  are always built together, so they cannot disagree.
+#
+#  See engine/include/engine/project/ScriptAbi.h.
+# ---------------------------------------------------------------------------
+target_compile_definitions(engine PRIVATE
+    ENGINE_IS_DEBUG=$<IF:$<CONFIG:Debug>,1,0>)
+
+# ---------------------------------------------------------------------------
+#  engine-version.json, written beside engine.dll by the build itself.
+#
+#  WHY A FILE AND NOT A COMPILED-IN CONSTANT: a launcher that manages several
+#  installed engines has to know what each one IS in order to decide which to
+#  run, and it cannot run them to find out. A file beside the library can be
+#  read without launching anything. The editor reads the same file for its own
+#  build, so there is one answer rather than two that can disagree.
+#
+#  file(GENERATE) rather than a POST_BUILD command: the content is fixed at
+#  generate time, it understands $<CONFIG> so a multi-config generator writes
+#  the right one into each folder, and it does not re-run on every build the
+#  way an echo command would.
+#
+#  scriptAbi is the number that actually protects anything - see the long note
+#  on ENGINE_SCRIPT_ABI in the top-level CMakeLists.
+# ---------------------------------------------------------------------------
+file(GENERATE
+    OUTPUT "$<TARGET_FILE_DIR:engine>/engine-version.json"
+    CONTENT "{
+  \"_comment\": \"Written by the build, beside engine.dll. Names which engine build this is, so a launcher can list installed engines and the editor can tell when a project's scripts were compiled against a different one. See engine/include/engine/project/EngineBuild.h.\",
+  \"version\": \"${PROJECT_VERSION}\",
+  \"configuration\": \"$<CONFIG>\",
+  \"scriptAbi\": ${ENGINE_SCRIPT_ABI}
+}
+")
 
 # PUBLIC means "anything that links the engine also gets this include folder",
 # which is what lets the game, the editor and a project's scripts all write

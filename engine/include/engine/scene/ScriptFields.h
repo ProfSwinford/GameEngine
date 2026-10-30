@@ -1,47 +1,61 @@
 #pragma once
 
 // ============================================================================
-//  ScriptFields.h - showing a script's variables in the Inspector.
+//  ScriptFields.h - the list of variables the Inspector draws for a script.
 //
-//  A script lists the variables it wants on screen, and the editor draws them,
-//  saves them into the scene file, and puts them back when the scene loads:
+//  MOST SCRIPTS NEVER TOUCH THIS FILE. A public variable of a supported type
+//  appears in the Inspector on its own:
 //
 //      class Orbiter final : public eng::ScriptBehaviour {
 //      public:
-//          float radius = 90.0f;
-//          float speed  = 1.2f;
-//
-//          void OnExpose(eng::ScriptFields& fields) {
-//              fields.Var("radius", radius, "how far out it orbits");
-//              fields.Range("speed", speed, 0.0f, 10.0f);
-//          }
+//          float radius = 90.0f;   // how far out it orbits
+//          float speed  = 1.2f;    // [0..10] turns per second
 //
 //          void OnFixedUpdate() { ... }
 //      };
 //
-//  That is the whole feature. Everything below is why it has to be written out
-//  rather than discovered, and what the editor can be trusted to do with it.
+//  That is done by a BUILD STEP that reads the source, because C++ cannot ask
+//  a class what members it has - see engine/tools/ScriptVars.h for how, and
+//  for what it deliberately does not understand.
+//
+//  This file is the model underneath: the list that step fills in, what the
+//  scene file stores, and the escape hatch for the cases it cannot cover.
 //
 //  ==========================================================================
-//  WHY THE LIST IS WRITTEN BY HAND
+//  THE ESCAPE HATCH: OnExpose
+//
+//  A script can still write the list itself, and when it does, THE
+//  HAND-WRITTEN ONE WINS - nothing generated argues with it:
+//
+//      void OnExpose(eng::ScriptFields& fields) {
+//          fields.Var("radius", radius, "how far out it orbits");
+//          fields.Range("speed", speed, 0.0f, 10.0f);
+//      }
+//
+//  Worth reaching for when the list is not a fixed set of declarations: a
+//  variable exposed only in some builds, a name worked out at run time, or a
+//  type the parser cannot see through. Nothing in assets/scripts needs it any
+//  more, which is the point.
+//
+//  ==========================================================================
+//  WHY IT IS A SOURCE PARSE AND NOT REFLECTION
 //
 //  Every other question the engine asks about a script - "does it have an
-//  OnUpdate?" - is answered by the compiler, with no list to keep up to date.
-//  See ScriptHooks.h. This one cannot be, and the difference is not laziness:
+//  OnUpdate?" - is answered by the compiler. See ScriptHooks.h. This one
+//  cannot be:
 //
 //  C++ CAN ASK WHETHER A NAME EXISTS. IT CANNOT ASK WHAT NAMES EXIST.
 //
 //  `requires(T& t) { t.OnUpdate(); }` works because OnUpdate is spelled out in
 //  the question. There is no way to write "list the members of T" - no
-//  reflection, in any released C++ standard - so a float called `radius` is
-//  invisible to the engine until something names it. C# engines get this free;
-//  this is the price of scripts being compiled rather than interpreted, and it
-//  is one line per variable.
+//  reflection, in any released C++ standard. So something has to read the
+//  source, which is what Unreal does and what the editor does here.
 //
-//  IT IS ALSO NOT PURELY A COST. A Unity script exposes every public field
-//  whether or not it was meant for the Inspector, and hiding one needs an
-//  attribute. Here a variable is on screen because somebody said so, which
-//  means the Inspector shows the knobs and not the bookkeeping.
+//  THE COST OF THAT CHOICE IS THE ONE UNITY HAS TOO: every public field of a
+//  supported type is exposed whether or not it was meant to be. Three ways to
+//  keep one off screen, in order of how often they are the right answer:
+//  make it private, prefix it m_ (this project's convention, and respected as
+//  such), or write OnExpose and leave it out.
 //
 //  ==========================================================================
 //  WHAT THE SCENE FILE STORES, AND WHAT IT DELIBERATELY DOES NOT
@@ -87,6 +101,7 @@
 #include <engine/core/Json.h>
 #include <engine/math/Vec2.h>
 #include <engine/render/Renderer.h>
+#include <engine/scene/EntityRef.h>
 
 #include <string>
 #include <string_view>
@@ -114,6 +129,15 @@ enum class ScriptFieldType {
     String,
     Vec2,
     Color,
+
+    // ANOTHER ENTITY - the only one that is not a value.
+    //
+    // It is an eng::EntityRef, which holds a NAME and looks the entity up when
+    // asked. The Inspector draws it as something you drag an entity onto from
+    // the Hierarchy, and it can be constrained to entities carrying a
+    // particular component or script - see ScriptFields::Ref. EntityRef.h has
+    // the argument for why a name and not a pointer.
+    Entity,
 };
 
 // "float", "colour" - for error messages and the Inspector's tooltips.
@@ -148,6 +172,25 @@ struct ScriptField {
     float min    = 0.0f;
     float max    = 0.0f;
 
+    // Set by Ref(), and only meaningful for Entity. The component type name or
+    // script name the target has to carry - "Rigidbody2DComponent",
+    // "DoorSwitch" - or empty for "any entity will do".
+    //
+    // A NAME AND NOT A TYPE, which is what lets one mechanism serve both a
+    // component the engine ships and a script somebody wrote this afternoon.
+    // Both are registered under a name and neither can be named in a header
+    // that every script includes - a script class lives in an anonymous
+    // namespace, so no other file can even mention it.
+    //
+    // It is advice to the Inspector, not a rule the engine keeps: a reference
+    // can be pointed at an entity that does not satisfy it, and the Inspector
+    // says so rather than refusing. A level in the middle of being built is
+    // allowed to be wrong.
+    //
+    // NOT called `requires`, which has been a C++ KEYWORD since C++20 - the
+    // same keyword ScriptHooks.h uses to ask whether a script has an OnUpdate.
+    std::string requiredType;
+
     // ---- typed access ----------------------------------------------------
     //
     // Each returns null when the field is NOT that type, rather than casting
@@ -160,6 +203,7 @@ struct ScriptField {
     std::string* AsString() const;
     Vec2*        AsVec2() const;
     Color*       AsColor() const;
+    EntityRef*   AsEntityRef() const;
 };
 
 namespace fields {
@@ -195,6 +239,10 @@ template <> struct Traits<Vec2> {
 template <> struct Traits<Color> {
     static constexpr bool            known = true;
     static constexpr ScriptFieldType type  = ScriptFieldType::Color;
+};
+template <> struct Traits<EntityRef> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::Entity;
 };
 
 // A slider needs two ends to put them at, so only the numeric types can have
@@ -280,6 +328,33 @@ public:
         }
     }
 
+    // A REFERENCE TO ANOTHER ENTITY, narrowed to the ones that can actually
+    // do the job.
+    //
+    //     eng::EntityRef target;
+    //     fields.Ref("target", target, "Rigidbody2DComponent", "what to push");
+    //
+    // `requiredType` is a COMPONENT TYPE NAME or a SCRIPT NAME, and the
+    // Inspector uses it twice: the picker offers only entities that carry one,
+    // and a reference pointing at something that does not say so in red. That
+    // turns "why is nothing happening" into something visible on the entity
+    // you are already looking at.
+    //
+    // IT IS MANDATORY HERE, with no default, and that is deliberate. A
+    // defaulted third argument would sit exactly where Var() takes its
+    // tooltip, so `fields.Ref("target", target, "what to chase")` would
+    // quietly become a constraint on a type called "what to chase" and the
+    // picker would offer nothing. Use Var() for an unconstrained reference -
+    // it accepts an EntityRef like any other variable - and this when the
+    // target has to have something on it.
+    //
+    // An unrecognised name is reported rather than ignored, which is what
+    // catches the mistake above anyway. See the note on Add().
+    void Ref(std::string_view name, EntityRef& value, std::string_view requiredType,
+             std::string_view tooltip = "") {
+        AddRef(name, &value, requiredType, tooltip);
+    }
+
     // A variable that is const cannot be edited, and a slider that cannot
     // move is a worse answer than a compile error saying why.
     //
@@ -321,6 +396,12 @@ private:
     void Add(std::string_view name, ScriptFieldType type, void* value,
              std::string_view tooltip, bool ranged, float min, float max);
 
+    // Ref's half of the same job. Separate because it carries a string rather
+    // than two floats, and because it is the one that checks its constraint
+    // against what is actually registered.
+    void AddRef(std::string_view name, EntityRef* value,
+                std::string_view requiredType, std::string_view tooltip);
+
     std::vector<ScriptField> m_fields;
 };
 
@@ -330,6 +411,10 @@ private:
 //  The shapes match what the rest of the engine already uses, so a scene file
 //  stays consistent and hand-editable: a Vec2 is [x, y] as ReadVec2 expects,
 //  and a Color is [r, g, b, a] from 0 to 255 as SpriteComponent's tint is.
+//
+//  An ENTITY REFERENCE is the target's name as a plain string - "Player" -
+//  which is the same thing the Hierarchy shows and what somebody editing the
+//  file by hand would type. An empty string means nothing is referred to.
 // ---------------------------------------------------------------------------
 
 // Reads `value` into the field. False means the JSON was the wrong shape, with

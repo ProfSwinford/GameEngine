@@ -13,6 +13,133 @@ build/debug/bin/Debug/editor
 
 ---
 
+## Projects
+
+**A project is a folder.** It holds `assets/` (scenes, scripts, textures),
+`config/engine.json` (the settings), and two folders the editor generates:
+`.build/` for compiled scripts and `.editor/` for your place in the work. Only
+the first two are worth committing; a new project's `.gitignore` says so.
+
+**It can live anywhere.** The editor does not have to be installed beside it:
+
+```bash
+editor --project D:/games/orbit
+```
+
+With no folder named, the editor looks upwards from its own location until it
+finds a project, which is what opens the one it is installed inside. That is
+the behaviour it always had, and it is unchanged.
+
+**File → New Project...** picks a folder, asks for a name, and creates the
+skeleton. The new project has **no scene** - `Scene → New Scene` makes the
+first one. That is deliberate: shipping a starter scene would mean the project
+creator knowing the scene format, which is a second place to update whenever
+the format changes and the first place to forget.
+
+**File → Open Project...** picks a folder. Picking one *inside* a project opens
+the project, so you can point it at `assets/scenes/` and it will do the obvious
+thing. **File → Recent Projects** is the same list the launcher shows.
+
+**Opening a project restarts the editor**, the way Unity does. It is not
+laziness - `editor/src/ProjectMenu.h` explains at length what re-rooting a
+running engine would cost and why the risk is not worth one second of
+start-up. Nothing is lost: `.editor/session.json` remembers the open scene, the
+selection and the Scene view's camera, and `.editor/imgui.ini` remembers the
+panel layout, so reopening a project puts you back where you were. If there is
+unsaved work you are asked first, and the dialog names the file.
+
+**`project.oproj` is optional.** A folder with an `assets/` folder in it is a
+project whether or not it has one - which is why this repository needs nothing
+added to it. The manifest only gives a project a name of its own, so that two
+folders both called `game` are distinguishable in a list. **File → Add a
+Project File** writes one when you want it; nothing is ever written into your
+folder uninvited.
+
+---
+
+## The launcher
+
+`hub` is a separate, small program: a list of projects, a list of engine
+builds, and a button that starts the right editor on the right project.
+
+It exists for the one thing the editor cannot do - choose *which engine* to
+open a project with. An editor is built against one `engine.dll` and has
+already loaded it by the time it could offer a choice.
+
+An "engine" here is just a folder containing an editor and an
+`engine-version.json`, so your own `build/debug/bin` and `build/release/bin`
+already qualify and the one the launcher ships beside is always available. It
+does **not** download or install engine versions; that needs a release server
+and an install layout this project does not have yet.
+
+The launcher closes when it starts an editor. **File → Close Project** opens it
+again, so closing a project lands you somewhere you can open another one.
+
+### Why your scripts rebuild after an engine change
+
+`engine-version.json` carries a `scriptAbi` number, and the editor records it
+alongside the C runtime flavour when it compiles your scripts. Change engines
+and every script is recompiled.
+
+That is not caution for its own sake. Your scripts are DLLs loaded into the
+editor, passing `std::string` and `std::vector` across the boundary, so they
+have to be built against the same headers as the engine loading them. Two
+engines in different folders were already caught, because the library path is
+part of the record - but an engine *replaced in place*, which is what
+installing a new version over an old one is, left every object looking current
+while having been compiled against different headers. That failure does not
+announce itself: the library loads, the Console says the build succeeded, and
+the program dies on the first allocation that crosses the heap boundary. The
+check is a comparison rather than a date, so going *back* to an older engine
+rebuilds too.
+
+### "the compiled scripts were built by ..., but this is ..."
+
+If you see that line, the scripts in `.build/` were compiled for a different
+engine than the one now trying to load them. **They have not been loaded**, so
+every script shows as NOT FOUND until they are rebuilt. Nothing is broken; run
+`editor --build-scripts`, or just open the editor, which rebuilds on its own.
+
+The commonest way to get there is running `player` after the *other* build
+configuration compiled the scripts — `build/debug` and `build/release` share one
+`.build/` folder, so whichever editor built last wins.
+
+**The editor fixes this by itself** and the player cannot, which is the whole
+reason the message exists. The editor has a compiler, notices the mismatch and
+recompiles. The player has no compiler, so its only options were to load the
+scripts and corrupt memory, or to refuse and say so. It used to do the first:
+an access violation, no log output at all, and — because only some scenes
+allocate across the boundary early enough — it looked like a bad *scene* rather
+than a bad build.
+
+An exported game never sees this. It ships one `userContent.dll` built beside
+the `engine.dll` that went with it, so they match by construction and there is
+nothing to check.
+
+### One exception to "the last successful build still runs"
+
+Normally a script that will not compile keeps its last working library, so the
+rest of the game carries on while you fix it. That is the point of one library
+per script.
+
+**Changing engine or configuration breaks that promise, deliberately.** The kept
+library was built for a *different* engine, so keeping it would load exactly the
+mismatched library this all exists to prevent — and it would do so inside the
+editor, one module among ten correct ones. So when the build stamp changes, the
+old libraries are discarded along with the objects, and a script that then fails
+to compile says so:
+
+```
+scripts/Orbiter.cpp did not compile, and the build it had was made for a
+different engine - it was discarded rather than loaded, so its scripts will
+show as NOT FOUND until this compiles
+```
+
+That is a separate message from "has never been built", because the two are
+different situations and only one of them means you have lost nothing.
+
+---
+
 ## The layout
 
 ```
@@ -408,21 +535,69 @@ project's source code to do any of it.
 There is a **Build Scripts** button in the Assets panel too, for building
 without alt-tabbing - which is what you want after fixing a compile error.
 
+**No console window appears while it compiles.** The compiler is a separate
+program and it used to be given one, which opened over whatever you were doing
+and took the keyboard. Worse, it was a window, so it invited closing - and
+closing it killed the compiler mid-build, which came back as scripts that
+"did not compile" with no error to explain it. Everything the compiler prints
+goes to the Console panel and to `.build/build.log` instead.
+
+**Each script is its own library.** `assets/scripts/Orbiter.cpp` becomes
+`.build/modules/Orbiter__<id>.dll`, and the engine loads that whole folder.
 What happens on a rebuild:
 
-1. every running script object is destroyed
-2. the old library is unloaded
-3. every `.cpp` and script `.h` under `assets/` is compiled into
-   `.build/userContent.dll`
-4. that is loaded, and every script in the scene is reattached **by name**
+1. every running script object is destroyed and the libraries are unloaded
+2. **only the scripts whose source actually changed** are recompiled and
+   relinked
+3. they are all loaded again, and every script in the scene is reattached
+   **by name**
 
 So a scene you are editing keeps working across a rebuild with nothing
 reattached by hand. Play mode is stopped first, the way Unity does, because a
 running play session cannot survive its own code being replaced.
 
-If the build fails, the compiler's messages appear in the **Console**, and
-**SCRIPTS DID NOT BUILD** appears in the menu bar - your scripts have stopped
-running until it is fixed. Fix the error and press **Build Scripts**.
+Changing one script takes a few seconds rather than rebuilding everything.
+Changing an **engine header** still rebuilds every script, deliberately:
+working out which script included which header needs the compiler's own
+dependency output, and being wrong about it means running stale code while the
+Console says the build succeeded.
+
+### When one script will not compile
+
+**The others keep working.** Only the broken one is affected, and the Console
+names it:
+
+```
+scripts/Orbiter.cpp did not compile - the version from the last successful
+build is still what runs
+C:/dev/GameEngine/assets/scripts/Orbiter.cpp(170): error C2059: syntax error
+```
+
+Note the second line: the error points at **your file and your line number**,
+even though what the compiler was handed is a generated wrapper. That is why
+the wrapper `#include`s your source instead of copying it.
+
+"The version from the last successful build is still what runs" is literal — a
+script that has compiled before keeps its last working library, so the game
+stays playable while one file is mid-edit. A script that has *never* compiled
+has no library and shows as **NOT FOUND** in the Inspector instead. Either way
+**SCRIPTS DID NOT BUILD** appears in the menu bar until it is fixed.
+
+**The error is reported once, not on a loop.** A failed build is not tried
+again until one of the files it was built from actually changes, so the
+compiler's explanation stays where you can read it instead of being pushed up
+the Console by copies of itself. Save a fix and the next time the editor
+regains focus it builds again, as usual; **Build Scripts** in the Assets panel
+always builds on the spot, whether anything changed or not.
+
+### What an exported game gets
+
+**One `userContent.dll`**, not the per-script libraries. A shipped game is never
+going to recompile a script, and eleven libraries would mean eleven import
+tables and eleven lots of load-time work for nothing.
+
+It is the same object files linked a different way, so exporting straight after
+a build is a link and not a rebuild — a second or two.
 
 **This needs a C++ compiler on your machine.** That is unavoidable: these are
 real compiled C++ scripts. On Windows install Visual Studio or the standalone
@@ -464,30 +639,73 @@ rather than a call into an empty function sixty times a second.
 
 ### Variables in the Inspector
 
-A script can offer up the numbers worth tuning. They appear in the Inspector,
-can be dragged **while the game is running**, and are saved on each entity
-separately — so one script can drive two entities that behave differently:
+**Declare a public variable and it is there.** No annotation, no registration,
+nothing to keep in step. It can be dragged **while the game is running**, and
+it is saved on each entity separately — so one script drives two entities that
+behave differently:
 
 ```cpp
 class Orbiter : public eng::ScriptBehaviour {
 public:
-    float radius = 90.0f;
-    float speed  = 1.2f;
-
-    void OnExpose(eng::ScriptFields& fields) {
-        fields.Var("radius", radius, "how far out it orbits");
-        fields.Range("speed", speed, 0.0f, 10.0f);   // a slider, not a drag box
-    }
+    float radius = 90.0f;   // how far out it orbits
+    float speed  = 1.2f;    // [0..10] turns per second
 
     void OnFixedUpdate() { /* read radius and speed here */ }
 };
 ```
 
-`Var` draws a drag box; `Range` draws a slider with ends. Use `Range` only when
-the range is part of what the number means — a 0-to-1 blend, a percentage. A
-distance has no upper limit and a slider would invent one.
+The **trailing comment becomes the tooltip**, and a `[low..high]` at the
+*start* of that comment makes it a slider instead of a drag box. Use a range
+only when the ends are part of what the number means — a 0-to-1 blend, a
+percentage. A distance has no upper limit and a slider would invent one. A
+bracket group anywhere other than the start is left alone as ordinary prose.
 
-Six types, and only ordinary members:
+| the comment | what you get |
+| --- | --- |
+| `// how fast it goes` | a drag box, with that tooltip |
+| `// [0..10] how fast` | a slider from 0 to 10, tooltip "how fast" |
+| `// [Rigidbody2DComponent] what to push` | on an `EntityRef`, narrows the picker |
+| `// see [1] for why` | a drag box; the bracket is not at the start |
+
+**To keep a variable off screen**, make it `private`, or name it `m_something`
+— this project's convention for internals is respected as a deliberate "not
+this one", so a public `m_body` is left out silently.
+
+A `static constexpr` constant is **not** exposed, and the Console says which
+one and why. Make it an ordinary member to tune it.
+
+#### How it works, and what it misses
+
+C++ has no reflection — `requires` can ask whether a *named* member exists, but
+nothing can ask what members exist. So the editor **reads the script's source**
+when it builds it, the way Unreal's header tool does, and generates the
+registration. `engine/tools/ScriptVars.h` has the detail.
+
+It is a whitelist of declaration shapes, not a C++ parser, so it will miss
+unusual ones. Three things make missing them cheap:
+
+- anything unrecognised is simply not exposed — the same as before;
+- the generated code wraps every variable in `if constexpr (requires ...)`, so
+  a variable it got wrong **compiles away** rather than breaking your build;
+- the Console lists what it exposed and what it skipped, with the reason.
+
+#### When to write it yourself
+
+A script can still declare the list by hand, and **the hand-written one wins**:
+
+```cpp
+void OnExpose(eng::ScriptFields& fields) {
+    fields.Var("radius", radius, "how far out it orbits");
+    fields.Range("speed", speed, 0.0f, 10.0f);
+    fields.Ref("body", body, "Rigidbody2DComponent", "what to push");
+}
+```
+
+Reach for it when the list is not a fixed set of declarations — a variable
+exposed only in some builds, a name worked out at run time, or a declaration
+the parser cannot see through. Nothing in `assets/scripts` needs it.
+
+Seven types, and only ordinary members:
 
 | | drawn as |
 | --- | --- |
@@ -496,10 +714,7 @@ Six types, and only ordinary members:
 | `std::string` | a text box |
 | `eng::Vec2` | two numbers |
 | `eng::Color` | a colour picker |
-
-A `static constexpr` constant **cannot** be one of these, and the compiler says
-so by name: a constant cannot be changed, so the Inspector could only show it.
-Make it an ordinary member with its default written where the constant was.
+| `eng::EntityRef` | another entity — drag one from the Hierarchy |
 
 **Only the values you change are saved.** A variable you leave alone is absent
 from the scene file and takes whatever the code says — so editing that default
@@ -527,6 +742,66 @@ Read the variable where you use it rather than copying it in `OnStart` — that
 is what makes dragging the slider take effect immediately, because nothing
 cached it. `assets/scripts/Orbiter.cpp` and `TilemapWalker.cpp` are the worked
 examples.
+
+### Pointing one entity at another
+
+An `eng::EntityRef` is a reference to another entity. **Drag an entity from the
+Hierarchy onto it**, or click it for a list:
+
+```cpp
+eng::EntityRef target;   // what to chase
+eng::EntityRef body;     // [Rigidbody2DComponent] what to push
+
+void OnFixedUpdate() {
+    if (eng::Entity* enemy = target.Target()) { /* chase it */ }
+    if (auto* push = body.Find<eng::Rigidbody2DComponent>()) { /* shove it */ }
+}
+```
+
+Plain, it takes anything. **A `[TypeName]` marker narrows it** to entities
+carrying that component or script — `[Rigidbody2DComponent]`, `[DoorSwitch]` —
+and the Inspector uses it twice: the picker offers only entities that have one,
+and a reference pointing at something that does not says so.
+
+The type is named as **text**, which is what lets one mechanism serve both a
+component the engine ships and a script you wrote this afternoon. Writing the
+list by hand, it is `fields.Ref(name, ref, "Rigidbody2DComponent", tooltip)` —
+mandatory there, so a tooltip can never be mistaken for one.
+
+| the field shows | meaning |
+| --- | --- |
+| `(none)`, greyed | nothing set |
+| the name, plainly | set, and it resolves |
+| the name **in red** | set, and nothing in the scene has that name |
+| the name + amber | it is there, but has no `Rigidbody2DComponent` on it |
+
+**A reference stores the target's NAME**, not a pointer and not an id. A name
+survives being written to a file, is what the Hierarchy shows you, and is what
+you would type editing the scene by hand — `"target": "Player"`. Entity names
+are kept unique, which is what makes it unambiguous. An id would have been
+worse than it looks: it is a slot number decided by the order a scene happens
+to load in, so inserting an entity above another in the file would silently
+re-point every reference to it.
+
+**Renaming an entity moves every reference with it**, including the saved
+values, so renaming things in the Hierarchy is safe. The one exception is a
+script that is not compiled into this build: with no script bound, nothing can
+say which of its saved values are references, so those are left alone and show
+in red against the old name rather than being guessed at.
+
+Ask for the target when you need it and do not keep it — `Target()` is a hash
+lookup, and the entity may have been destroyed since last frame. That is the
+same rule the rest of the engine follows for `EntityId`.
+
+To reach another **script's own members** you need its class in a header both
+files include, because a script in `assets/scripts` sits in an anonymous
+namespace and no other file can name its type. Most references do not need
+that: `fields.Ref(..., "DoorSwitch", ...)` plus a transform or a message gets
+you there with no headers at all. See `engine/include/engine/scene/EntityRef.h`
+and `FindScriptOn` in `ScriptComponent.h`.
+
+`assets/scripts/GameRules.cpp` is the worked example — its three HUD labels
+used to be names written in the C++.
 
 ### The two updates
 

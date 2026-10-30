@@ -64,7 +64,6 @@
 #include <string>
 
 namespace eng {
-
 enum class RigidbodyType { Dynamic, Kinematic, Static };
 
 // How a push is meant: spread over this step, or delivered all at once.
@@ -106,7 +105,7 @@ public:
 
     // ---- what kind of body -------------------------------------------------
     RigidbodyType BodyType() const { return m_bodyType; }
-    void          SetBodyType(RigidbodyType type);
+    void SetBodyType(RigidbodyType type);
 
     bool IsDynamic() const { return m_bodyType == RigidbodyType::Dynamic; }
 
@@ -116,7 +115,7 @@ public:
     // the way you would expect relative to each other; making everything 100x
     // heavier changes nothing at all, because gravity is an acceleration.
     float Mass() const;
-    void  SetMass(float mass);
+    void SetMass(float mass);
 
     bool UseAutoMass() const { return m_useAutoMass; }
     void SetUseAutoMass(bool automatic) { m_useAutoMass = automatic; }
@@ -134,11 +133,11 @@ public:
     float InverseInertia() const;
 
     // ---- velocity ----------------------------------------------------------
-    Vec2  Velocity() const { return m_velocity; }
-    void  SetVelocity(Vec2 velocity) { m_velocity = velocity; }
+    Vec2 Velocity() const { return m_velocity; }
+    void SetVelocity(Vec2 velocity) { m_velocity = velocity; }
 
-    float AngularVelocity() const { return m_angularVelocity; }   // radians/sec
-    void  SetAngularVelocity(float radiansPerSecond);
+    float AngularVelocity() const { return m_angularVelocity; } // radians/sec
+    void SetAngularVelocity(float radiansPerSecond);
 
     // ---- the knobs ---------------------------------------------------------
 
@@ -146,15 +145,15 @@ public:
     // makes it fall twice as hard, and a negative number makes it rise. This
     // is the single most useful number for making a jump feel right.
     float GravityScale() const { return m_gravityScale; }
-    void  SetGravityScale(float scale) { m_gravityScale = scale; }
+    void SetGravityScale(float scale) { m_gravityScale = scale; }
 
     // Air resistance: how quickly motion bleeds away with nothing acting on
     // it. 0 means it never stops.
     float LinearDrag() const { return m_linearDrag; }
-    void  SetLinearDrag(float drag);
+    void SetLinearDrag(float drag);
 
     float AngularDrag() const { return m_angularDrag; }
-    void  SetAngularDrag(float drag);
+    void SetAngularDrag(float drag);
 
     // Stops the body turning while leaving it free to move. Nearly always what
     // a character wants - a capsule that tips over when it bumps a step is not
@@ -172,8 +171,7 @@ public:
 
     // Off-centre, so it spins the body as well as moving it. `worldPosition`
     // is where the push is applied, in world space.
-    void AddForceAtPosition(Vec2 force, Vec2 worldPosition,
-                            ForceMode mode = ForceMode::Force);
+    void AddForceAtPosition(Vec2 force, Vec2 worldPosition, ForceMode mode = ForceMode::Force);
 
     void AddTorque(float torque, ForceMode mode = ForceMode::Force);
 
@@ -207,25 +205,25 @@ public:
 private:
     RigidbodyType m_bodyType = RigidbodyType::Dynamic;
 
-    float m_mass        = 1.0f;
-    bool  m_useAutoMass = false;
+    float m_mass = 1.0f;
+    bool m_useAutoMass = false;
 
-    Vec2  m_velocity{0.0f, 0.0f};
+    Vec2 m_velocity{0.0f, 0.0f};
     float m_angularVelocity = 0.0f;
 
     float m_gravityScale = 1.0f;
-    float m_linearDrag   = 0.0f;
-    float m_angularDrag  = 0.05f;
-    bool  m_freezeRotation = false;
+    float m_linearDrag = 0.0f;
+    float m_angularDrag = 0.05f;
+    bool m_freezeRotation = false;
 
     // Reset at the end of every step. See the note at the top of the file.
-    Vec2  m_force{0.0f, 0.0f};
+    Vec2 m_force{0.0f, 0.0f};
     float m_torque = 0.0f;
 
     // Set by MovePosition/MoveRotation, consumed by the next integration.
-    bool  m_hasMoveTarget = false;
-    Vec2  m_moveTarget{0.0f, 0.0f};
-    bool  m_hasRotateTarget = false;
+    bool m_hasMoveTarget = false;
+    Vec2 m_moveTarget{0.0f, 0.0f};
+    bool m_hasRotateTarget = false;
     float m_rotateTarget = 0.0f;
 };
 
@@ -239,9 +237,9 @@ private:
 // ---------------------------------------------------------------------------
 class RigidbodySystem final : public System {
 public:
-    void        Update(float deltaSeconds) override;
-    const char* Name() const override  { return "RigidbodySystem"; }
-    int         Order() const override { return SystemStage::kPhysics; }
+    void Update(float deltaSeconds) override;
+    const char* Name() const override { return "RigidbodySystem"; }
+    int Order() const override { return SystemStage::kPhysics; }
 
     static void Register(Rigidbody2DComponent& body);
     static void Unregister(Rigidbody2DComponent& body);
@@ -252,5 +250,4 @@ public:
 
     static void RegisterComponentTypes();
 };
-
 } // namespace eng

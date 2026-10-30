@@ -42,8 +42,33 @@ class FileSystem : public Subsystem {
 public:
     // Works out where the project's files are and remembers it. Nothing in the
     // settings affects that, so the config is accepted and ignored.
+    //
+    // Returns FALSE when it could not find a project, and the caller must act
+    // on that - see Engine::Init. A failed Init leaves no root at all rather
+    // than a guessed one, so Resolve returns nothing and nothing can be
+    // written outside a project by accident.
     bool Init(const BootConfig& config) override;
     void Shutdown() override;
+
+    // ---- which project to open -------------------------------------------
+    //
+    // Call before Init to name the project folder explicitly, which is what
+    // `editor --project <folder>` does. This is the reason a project no
+    // longer has to sit beside the executable.
+    //
+    // Checked ahead of ENGINE_ASSET_ROOT and ahead of the upward search, and
+    // unlike both of those a wrong answer here FAILS rather than falling back
+    // to guessing: somebody who named one folder must not silently get a
+    // different project. Passing an empty string means "nobody said", which
+    // restores the original search entirely - that is what the tests and the
+    // player rely on.
+    //
+    // It survives Shutdown deliberately; see the note in the .cpp.
+    static void UseRoot(std::string_view realDirectory);
+
+    // Is a project open? False before Init, after Shutdown, and after an Init
+    // that found nothing.
+    static bool HasRoot();
 
     static const std::string& AssetRoot();
 
