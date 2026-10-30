@@ -24,6 +24,7 @@
 
 #include <engine/core/Config.h>
 #include <engine/fs/FileSystem.h>
+#include <engine/project/Project.h>
 
 #include <cstdlib>
 #include <filesystem>
@@ -474,6 +475,43 @@ TEST_CASE("a stale ENGINE_ASSET_ROOT still falls back to searching") {
     fileSystem.Shutdown();
     SetEnvironment("ENGINE_ASSET_ROOT", "");
     fs::remove_all(empty, ec);
+}
+
+TEST_CASE("the environment can name a project, and reports it without judging it") {
+    // ======================================================================
+    //  HALF OF WHAT THE EDITOR ASKS BEFORE OPENING THE LAUNCHER.
+    //
+    //  The editor opens a project it was NAMED and nothing else; given none
+    //  it starts the launcher rather than searching upward for one. Setting
+    //  this variable IS naming one, so it has to count - see
+    //  editor/src/main.cpp.
+    //
+    //  REPORTED, NOT JUDGED, and the division of labour is the point. This
+    //  hands back whatever the variable says and leaves the caller to decide
+    //  whether it likes it, because the two callers want opposite things:
+    //  Init is lenient and falls back to the upward search (the test above
+    //  pins that, and the player and these sandboxes rely on it), while the
+    //  editor checks the folder itself and opens the launcher when it is not
+    //  a project. Teaching THIS function to validate would silently make
+    //  Init strict, which would break the player.
+    //
+    //  ASKED WITH NO FILE SYSTEM RUNNING, deliberately. The editor asks
+    //  before Init, which is why this is a plain question about the
+    //  environment rather than a property of an open project.
+    // ======================================================================
+    SetEnvironment("ENGINE_ASSET_ROOT", "");
+    CHECK(FileSystem::RootFromEnvironment().empty());
+
+    // A FOLDER THAT DOES NOT EVEN EXIST comes back verbatim. If this ever
+    // starts returning empty for a folder it dislikes, the editor stops being
+    // able to tell "nobody named a project" from "somebody named a bad one" -
+    // and those get different messages on purpose.
+    SetEnvironment("ENGINE_ASSET_ROOT", "Z:/no/such/folder");
+    CHECK(FileSystem::RootFromEnvironment() == "Z:/no/such/folder");
+    CHECK_FALSE(Project::Looks(FileSystem::RootFromEnvironment()));
+
+    SetEnvironment("ENGINE_ASSET_ROOT", "");
+    CHECK(FileSystem::RootFromEnvironment().empty());
 }
 
 TEST_CASE("a folder is a project when it has a manifest but no assets folder") {

@@ -254,7 +254,7 @@ bool ProjectMenu::RequestOpen(const std::string& realRoot) {
     // the only action in the editor that can lose an edit without the edit
     // being the subject, which is exactly when a confirmation earns its
     // interruption.
-    if (EditorState::Get().dirty) {
+    if (EditorState::Get().IsDirty()) {
         g_waiting = Waiting{Waiting::Kind::Open, info.realRoot, info.name};
         g_openUnsavedPopup = true;
         return true;   // accepted; it is waiting on an answer
@@ -265,7 +265,7 @@ bool ProjectMenu::RequestOpen(const std::string& realRoot) {
 }
 
 bool ProjectMenu::RequestClose() {
-    if (EditorState::Get().dirty) {
+    if (EditorState::Get().IsDirty()) {
         g_waiting          = Waiting{Waiting::Kind::Close, {}, CurrentProject().name};
         g_openUnsavedPopup = true;
         return true;
@@ -293,7 +293,7 @@ void ProjectMenu::UpdateWindowTitle() {
     if (!scene.SourcePath().empty()) {
         title += " - " + scene.SourcePath();
     }
-    if (EditorState::Get().dirty) {
+    if (EditorState::Get().IsDirty()) {
         title += "*";
     }
     title += " - Engine2D";
@@ -569,7 +569,7 @@ void DrawUnsavedProjectPopup() {
     if (ImGui::Button("Save and continue")) {
         std::string error;
         if (eng::Engine::Get().SaveScene({}, error)) {
-            EditorState::Get().dirty = false;
+            EditorState::Get().ClearDirty();
             const Waiting change     = g_waiting;
             ImGui::CloseCurrentPopup();
             Commit(change);

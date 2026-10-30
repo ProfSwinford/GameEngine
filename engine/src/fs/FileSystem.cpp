@@ -51,8 +51,14 @@ std::string g_root;
 //
 //  Set once from the command line - `editor --project D:/games/orbit` - and
 //  consulted before everything else in Init. Empty means "nobody said", which
-//  is the case for the player, for the tests, and for an editor launched with
-//  no arguments, and makes Init behave exactly as it always has.
+//  is the case for the player, for the tests, and for `editor --build-scripts`
+//  and `--build-game`, and makes Init behave exactly as it always has.
+//
+//  THE EDITOR'S WINDOW NO LONGER ARRIVES HERE EMPTY. Run with no project it
+//  starts the launcher instead of searching, so the upward search below is
+//  reached on its behalf only by those two headless modes. The search itself
+//  is unchanged and still load-bearing for everything else - see
+//  editor/src/main.cpp.
 //
 //  DELIBERATELY NOT CLEARED BY Shutdown. This is the PROCESS'S INTENT rather
 //  than the file system's state: Init and Shutdown run more than once in a
@@ -197,6 +203,14 @@ bool FileSystem::HasRoot() {
     return !g_root.empty();
 }
 
+std::string FileSystem::RootFromEnvironment() {
+    const char* named = std::getenv(kRootVariable);
+    if (named == nullptr || named[0] == '\0') {
+        return {};
+    }
+    return named;
+}
+
 bool FileSystem::Init(const BootConfig&) {
     // ======================================================================
     //  THE PROJECT THE PROCESS WAS TOLD TO OPEN, ahead of everything else.
@@ -239,20 +253,20 @@ bool FileSystem::Init(const BootConfig&) {
     // build folder somewhere else or a copied executable. Setting the
     // ENGINE_ASSET_ROOT environment variable to the folder CONTAINING assets/
     // skips the guessing entirely.
-    if (const char* overridePath = std::getenv("ENGINE_ASSET_ROOT");
+    if (const char* overridePath = std::getenv(kRootVariable);
         overridePath != nullptr && overridePath[0] != '\0') {
         std::error_code ec;
         const fs::path candidate = fs::absolute(fs::path(overridePath), ec);
         if (LooksLikeRoot(candidate)) {
             g_root = candidate.string();
             ENGINE_LOG_INFO(Channels::kFileSys,
-                            "asset folder taken from ENGINE_ASSET_ROOT: '{}'", g_root);
+                            "asset folder taken from {}: '{}'", kRootVariable, g_root);
             AssetArchive::MountAll(Resolve(""));   // see the note below
             return true;
         }
         ENGINE_LOG_WARN(Channels::kFileSys,
-                        "ENGINE_ASSET_ROOT is set to '{}' but there is no 'assets' folder "
-                        "there; searching instead", overridePath);
+                        "{} is set to '{}' but there is no 'assets' folder "
+                        "there; searching instead", kRootVariable, overridePath);
     }
 
     // Start from the executable's own folder.

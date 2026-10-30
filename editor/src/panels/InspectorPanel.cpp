@@ -45,7 +45,7 @@ void DrawTransform(eng::TransformComponent& component, bool running) {
     float position[2] = {transform.LocalPosition().x, transform.LocalPosition().y};
     if (ImGui::DragFloat2("Position", position, 0.5f)) {
         transform.SetLocalPosition(eng::Vec2{position[0], position[1]});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     // Shown in DEGREES, stored in radians. Every angle a person sees in this
@@ -54,13 +54,13 @@ void DrawTransform(eng::TransformComponent& component, bool running) {
     float degrees = transform.LocalRotation() * eng::kRadToDeg;
     if (ImGui::DragFloat("Rotation", &degrees, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
         transform.SetLocalRotation(degrees * eng::kDegToRad);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     float scale[2] = {transform.LocalScale().x, transform.LocalScale().y};
     if (ImGui::DragFloat2("Scale", scale, 0.01f)) {
         transform.SetLocalScale(eng::Vec2{scale[0], scale[1]});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     ImGui::EndDisabled();
@@ -87,7 +87,7 @@ void DrawSprite(eng::SpriteComponent& sprite) {
     if (ImGui::InputText("Texture", path, sizeof(path),
                          ImGuiInputTextFlags_EnterReturnsTrue)) {
         sprite.SetTexture(path);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::TextDisabled("press Enter to load, or drag an image from the Assets panel");
 
@@ -100,13 +100,13 @@ void DrawSprite(eng::SpriteComponent& sprite) {
                                   static_cast<unsigned char>(rgba[1] * 255.0f),
                                   static_cast<unsigned char>(rgba[2] * 255.0f),
                                   static_cast<unsigned char>(rgba[3] * 255.0f)});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     int layer = sprite.Layer();
     if (ImGui::DragInt("Draw order", &layer, 0.2f)) {
         sprite.SetLayer(layer);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::TextDisabled("higher numbers are drawn on top");
 
@@ -214,7 +214,7 @@ void DrawPointList(T& collider, int maxPoints) {
 
     if (changed) {
         collider.SetPoints(std::move(points));
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 }
 
@@ -232,7 +232,7 @@ void DrawRigidbody(eng::Rigidbody2DComponent& body) {
         body.SetBodyType(type == 0   ? eng::RigidbodyType::Dynamic
                          : type == 1 ? eng::RigidbodyType::Kinematic
                                      : eng::RigidbodyType::Static);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     // WHAT EACH ONE MEANS, on screen rather than in a manual. Picking the
@@ -260,7 +260,7 @@ void DrawRigidbody(eng::Rigidbody2DComponent& body) {
     bool autoMass = body.UseAutoMass();
     if (ImGui::Checkbox("Auto mass", &autoMass)) {
         body.SetUseAutoMass(autoMass);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(from the collider's area x its density)");
@@ -271,7 +271,7 @@ void DrawRigidbody(eng::Rigidbody2DComponent& body) {
     float mass = body.Mass();
     if (ImGui::DragFloat("Mass", &mass, 0.1f, 0.0001f, 100000.0f)) {
         body.SetMass(mass);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     if (autoMass) {
         ImGui::EndDisabled();
@@ -281,26 +281,26 @@ void DrawRigidbody(eng::Rigidbody2DComponent& body) {
     float gravityScale = body.GravityScale();
     if (ImGui::DragFloat("Gravity scale", &gravityScale, 0.05f, -10.0f, 10.0f)) {
         body.SetGravityScale(gravityScale);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::TextDisabled("0 floats, 1 is normal, 2 falls twice as hard");
 
     float linearDrag = body.LinearDrag();
     if (ImGui::DragFloat("Linear drag", &linearDrag, 0.05f, 0.0f, 100.0f)) {
         body.SetLinearDrag(linearDrag);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     float angularDrag = body.AngularDrag();
     if (ImGui::DragFloat("Angular drag", &angularDrag, 0.01f, 0.0f, 100.0f)) {
         body.SetAngularDrag(angularDrag);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     bool freeze = body.FreezeRotation();
     if (ImGui::Checkbox("Freeze rotation", &freeze)) {
         body.SetFreezeRotation(freeze);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(nearly always what a character wants)");
@@ -343,7 +343,7 @@ void DrawTilemap(eng::TilemapComponent& map) {
     int layer = map.Layer();
     if (ImGui::DragInt("Layer", &layer, 0.2f, -1000, 1000)) {
         map.SetLayer(layer);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::TextDisabled("shared with sprites: a NEGATIVE layer puts the map behind them");
 
@@ -355,7 +355,7 @@ void DrawTilemap(eng::TilemapComponent& map) {
                                static_cast<unsigned char>(rgba[1] * 255.0f),
                                static_cast<unsigned char>(rgba[2] * 255.0f),
                                static_cast<unsigned char>(rgba[3] * 255.0f)});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     // ---- cell size ---------------------------------------------------------
@@ -366,14 +366,14 @@ void DrawTilemap(eng::TilemapComponent& map) {
         // Unticking goes back to the tile's own size, which is what a map
         // drawn at the size its art was drawn at wants.
         map.SetCellSize(explicitSize ? cellSize : eng::Vec2{0.0f, 0.0f});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     if (map.HasExplicitCellSize()) {
         float size[2] = {cellSize.x, cellSize.y};
         if (ImGui::DragFloat2("Cell size", size, 0.5f, 1.0f, 4096.0f)) {
             map.SetCellSize(eng::Vec2{size[0], size[1]});
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
         }
     } else {
         ImGui::Text("Cell size: %.0f x %.0f", static_cast<double>(cellSize.x),
@@ -414,7 +414,7 @@ void DrawTilemap(eng::TilemapComponent& map) {
     if (!map.Palette().empty()) {
         if (ImGui::Button("Drop unused entries")) {
             const std::size_t dropped = map.CompactPalette();
-            EditorState::Get().dirty  = true;
+            EditorState::Get().MarkDirty();
             ENGINE_LOG_INFO(eng::Channels::kTilemap,
                             "tilemap palette compacted: {} entr{} dropped", dropped,
                             dropped == 1 ? "y" : "ies");
@@ -441,10 +441,16 @@ void DrawTilemap(eng::TilemapComponent& map) {
     if (ImGui::BeginPopupModal("confirmclear", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Erase all %zu tile(s) in this map?", map.TileCount());
-        ImGui::TextDisabled("There is no undo.");
+
+        // It said "There is no undo." until there was one. The cells are part
+        // of the scene document, so this is one Ctrl+Z like any other edit -
+        // which is also why the question is still asked: erasing a few
+        // thousand cells by accident is worth one confirmation even when it
+        // can be taken back.
+        ImGui::TextDisabled("Ctrl+Z will bring them back.");
         if (ImGui::Button("Erase")) {
             map.Clear();
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -459,7 +465,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
     bool enabled = collider.Enabled();
     if (ImGui::Checkbox("Enabled", &enabled)) {
         collider.SetEnabled(enabled);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(switched off it takes part in nothing - no events, no "
@@ -468,7 +474,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
     bool trigger = collider.IsTrigger();
     if (ImGui::Checkbox("Trigger", &trigger)) {
         collider.SetTrigger(trigger);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(reports overlaps but does not block movement)");
@@ -484,7 +490,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
     float offset[2] = {collider.Offset().x, collider.Offset().y};
     if (ImGui::DragFloat2("Offset", offset, 0.5f)) {
         collider.SetOffset(eng::Vec2{offset[0], offset[1]});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
 // The shape-specific fields. Which ones depend on what this actually is.
@@ -494,14 +500,14 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
             float half[2] = {box.HalfExtents().x, box.HalfExtents().y};
             if (ImGui::DragFloat2("Half size", half, 0.5f, 0.0f, 10000.0f)) {
                 box.SetHalfExtents(eng::Vec2{half[0], half[1]});
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             ImGui::TextDisabled("half the width and half the height");
 
             float edge = box.EdgeRadius();
             if (ImGui::DragFloat("Edge radius", &edge, 0.1f, 0.0f, 1000.0f)) {
                 box.SetEdgeRadius(edge);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(rounds the corners)");
@@ -513,7 +519,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
             float radius = circle.Radius();
             if (ImGui::DragFloat("Radius", &radius, 0.5f, 0.0f, 10000.0f)) {
                 circle.SetRadius(radius);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             break;
         }
@@ -523,14 +529,14 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
             float size[2] = {capsule.Size().x, capsule.Size().y};
             if (ImGui::DragFloat2("Size", size, 0.5f, 0.0f, 10000.0f)) {
                 capsule.SetSize(eng::Vec2{size[0], size[1]});
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
 
             int direction = capsule.Direction() == eng::CapsuleDirection::Vertical ? 0 : 1;
             if (ImGui::Combo("Direction", &direction, "Vertical\0Horizontal\0")) {
                 capsule.SetDirection(direction == 0 ? eng::CapsuleDirection::Vertical
                                                     : eng::CapsuleDirection::Horizontal);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             ImGui::TextDisabled("the round ends are on the long axis; as wide as it is "
                                 "tall makes a circle");
@@ -596,7 +602,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
             float radius = edge.EdgeRadius();
             if (ImGui::DragFloat("Edge radius", &radius, 0.1f, 0.0f, 1000.0f)) {
                 edge.SetEdgeRadius(radius);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(gives the line thickness)");
@@ -604,7 +610,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
             bool loop = edge.Loop();
             if (ImGui::Checkbox("Loop", &loop)) {
                 edge.SetLoop(loop);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(joins the last point back to the first)");
@@ -628,13 +634,13 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
 
     if (materialChanged) {
         collider.SetMaterial(material);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     float density = collider.Density();
     if (ImGui::DragFloat("Density", &density, 0.05f, 0.0001f, 1000.0f)) {
         collider.SetDensity(density);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(only used when a rigidbody has Auto mass on)");
@@ -654,7 +660,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
     if (ImGui::InputText("Layer (what it is)", layer, sizeof(layer),
                          ImGuiInputTextFlags_EnterReturnsTrue)) {
         collider.SetLayer(layer);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     // "Collides with" as a set of checkboxes. Untick one and the collision
@@ -701,7 +707,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
 
     if (changed) {
         collider.SetCollidesWith(std::move(wanted));
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     ImGui::TextDisabled("Two colliders are only tested when EACH one's list "
@@ -736,7 +742,7 @@ void DrawCamera(eng::CameraComponent& camera) {
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::DragFloat("Zoom", &zoom, 0.01f, 0.01f, 50.0f, "%.2fx")) {
         camera.SetZoom(zoom);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Bigger is closer in. This is the game's zoom - the Scene "
@@ -747,7 +753,7 @@ void DrawCamera(eng::CameraComponent& camera) {
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::DragInt("Priority", &priority, 0.2f)) {
         camera.SetPriority(priority);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("With several cameras in a scene, the highest priority is "
@@ -757,7 +763,7 @@ void DrawCamera(eng::CameraComponent& camera) {
     bool enabled = camera.Enabled();
     if (ImGui::Checkbox("Enabled", &enabled)) {
         camera.SetEnabled(enabled);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     ImGui::Separator();
@@ -865,7 +871,7 @@ void DrawUIRect(eng::UIRectComponent& rect) {
                         rect.resolvedMin.y, rect.resolvedMax.x, rect.resolvedMax.y);
 
     if (changed) {
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 }
 
@@ -928,7 +934,7 @@ void DrawUIText(eng::UITextComponent& label) {
     }
 
     if (changed) {
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 }
 
@@ -962,7 +968,7 @@ void DrawUIImage(eng::UIImageComponent& image) {
     }
 
     if (changed) {
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 }
 
@@ -990,7 +996,7 @@ void DrawUIButton(eng::UIButtonComponent& button) {
                        "Owner()->Find<eng::UIButtonComponent>()->WasClicked().");
 
     if (changed) {
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 }
 
@@ -1015,7 +1021,7 @@ void DrawUISlider(eng::UISliderComponent& slider) {
     }
 
     if (changed) {
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 }
 
@@ -1025,12 +1031,12 @@ void DrawSpin(eng::SpinComponent& spin) {
     float degrees = spin.RadiansPerSecond() * eng::kRadToDeg;
     if (ImGui::DragFloat("Degrees/sec", &degrees, 1.0f, -720.0f, 720.0f, "%.1f")) {
         spin.SetRadiansPerSecond(degrees * eng::kDegToRad);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("0")) {
         spin.SetRadiansPerSecond(0.0f);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     ImGui::TextDisabled("negative numbers spin the other way");
@@ -1524,7 +1530,7 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
             // stored, and it is in the engine beside the code that reads it
             // back.
             script.SaveFieldValue(field.name);
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
         }
         // Skipped for a reference, which drew its own against the button -
         // see the note on the forward declaration above.
@@ -1538,7 +1544,7 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
             ImGui::SameLine();
             if (ImGui::SmallButton("revert")) {
                 script.RevertFieldValue(field.name);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Forget this entity's value and go back to the one "
@@ -1626,7 +1632,7 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
     // state as well; this is the half somebody can see.
     if (script.IsResolved() && ImGui::Button("Forget them")) {
         const std::size_t gone = script.ForgetUnusedSavedValues();
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
         ENGINE_LOG_INFO(eng::Channels::kEditor,
                         "dropped {} saved value(s) that the script '{}' no longer has "
                         "variables for", gone, script.ScriptName());
@@ -1679,7 +1685,7 @@ void DrawScript(eng::ScriptComponent& script) {
         eng::ScriptRegistry::ForEachScript([&](const char* name) {
             if (ImGui::Selectable(name, script.ScriptName() == name)) {
                 script.SetScriptName(name);
-                EditorState::Get().dirty = true;
+                EditorState::Get().MarkDirty();
             }
         });
         ImGui::EndCombo();
@@ -1722,7 +1728,7 @@ void InspectorPanel::ApplyPendingRemoval() {
     }
 
     if (entity->RemoveComponentAt(request.index)) {
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
         ENGINE_LOG_INFO(eng::Channels::kEditor, "removed {} from '{}'", typeName,
                         entity->Name());
     }
@@ -1797,11 +1803,8 @@ void InspectorPanel::Draw() {
                            state.selection.size());
 
         if (ImGui::Button("Destroy all")) {
-            for (const eng::EntityId id : state.selection) {
-                eng::DeferredOps::QueueDestroy(id);
-            }
-            state.ClearSelection();
-            state.dirty = true;
+            // The same one the Delete key and Edit -> Delete use.
+            DestroySelection();
         }
 
         if (ImGui::TreeNode("Show the list")) {
@@ -1826,8 +1829,12 @@ void InspectorPanel::Draw() {
 
     ImGui::SameLine(ImGui::GetWindowWidth() - 90.0f);
     if (ImGui::Button("Destroy")) {
-        // Answer 3: through the deferred queue, like everything else.
-        eng::DeferredOps::QueueDestroy(entity->Id());
+        // Answer 3: through the deferred queue, like everything else - and
+        // through the one shared door, which is what marks the scene so undo
+        // can see it. This used to call DeferredOps::QueueDestroy directly
+        // and was the only destroy in the editor that did not mark. See
+        // DestroyEntity in EditorApp.h.
+        DestroyEntity(entity->Id());
     }
 
     ImGui::Separator();
@@ -1999,7 +2006,7 @@ void InspectorPanel::Draw() {
         std::snprintf(label, sizeof(label), "+ %s", typeName);
         if (ImGui::SmallButton(label)) {
             entity->AddComponent(typeName);
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
         }
     });
 }

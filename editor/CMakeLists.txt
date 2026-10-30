@@ -24,6 +24,8 @@ set(EDITOR_SOURCES
     src/ObjectMenu.cpp                   # the one list of objects you can add
     src/ProjectMenu.cpp                  # creating, opening and closing projects
     src/Relaunch.cpp                     # starting again on another project
+    src/Shortcuts.cpp                    # the keyboard, in one table
+    src/UndoStack.cpp                    # Ctrl+Z, by snapshotting the scene
     src/ScriptBuild.cpp                  # finds a compiler and builds the project
     src/AssetDragDrop.cpp                # what happens when you drag a file onto something
     src/EditorSession.cpp                # remembers where you were when you closed it

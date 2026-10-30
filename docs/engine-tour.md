@@ -137,6 +137,16 @@ up, because launching a project is then just starting an executable with an
 argument, and engine version management costs no engine code at all. See
 `editor/src/ProjectMenu.h`.
 
+And there is now **one way into a project**, which runs through the launcher.
+The editor opens a project it was *named* — `--project`, a folder argument, or
+`ENGINE_ASSET_ROOT` — and starts the launcher when it was given none, rather
+than searching upward from its own folder and opening whatever it found. That
+search still exists and is still how the `player` and `editor --build-scripts`
+find their project; it is simply no longer how a window gets opened, because
+"the nearest project above the executable" is a stale reference rather than a
+default once a launcher can point the editor anywhere. See
+`editor/src/main.cpp`.
+
 The launcher is also the only program here that runs with **no project open**,
 which is why `project/Project.h`, `project/EngineBuild.h` and `fs/UserPaths.h`
 all deal in real paths rather than going through `FileSystem` — there is no

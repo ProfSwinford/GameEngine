@@ -156,7 +156,7 @@ bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
                 return false;
             }
             sprite->SetTexture(virtualPath);
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
             outMessage = entity->Name() + " now uses " + std::string(virtualPath);
             return true;
         }
@@ -204,7 +204,7 @@ bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
                 return false;
             }
             script->SetScriptName(scriptName);
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
 
             // ATTACHING WORKS EVEN IF THE SCRIPT HAS NOT BEEN COMPILED YET,
             // and says so. That is the whole design - see ScriptComponent.h -
@@ -307,7 +307,7 @@ eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 world
     }
     sprite->SetTexture(virtualPath);
 
-    EditorState::Get().dirty = true;
+    EditorState::Get().MarkDirty();
     outMessage = "created " + entity->Name();
     return id;
 }

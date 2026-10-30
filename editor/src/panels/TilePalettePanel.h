@@ -21,11 +21,18 @@
 //  active, because a mode you cannot see is a mode you forget you are in.
 //
 //  ==========================================================================
-//  THERE IS NO UNDO, because this editor has none to hook into.
+//  UNDO COVERS PAINTING, AND NOTHING HERE HAD TO BE DONE TO MAKE IT
 //
-//  Right-dragging erases, which is the usual way of taking a stroke back, and
-//  the Scene view says so. That is a stop-gap and it is worth being plain
-//  about it rather than letting somebody discover it after a long session.
+//  This note used to read "THERE IS NO UNDO, because this editor has none to
+//  hook into", and described right-dragging to erase as the stop-gap.
+//
+//  There is one now - editor/src/UndoStack.h - and painting came along for
+//  free, because it works by snapshotting the whole scene document and a
+//  tilemap's cells are part of that document. No paint tool records anything,
+//  and none of them has to: a stroke is one step because the snapshot is taken
+//  when the mouse comes up rather than per cell.
+//
+//  Right-dragging to erase is still the quicker fix for a single wrong cell.
 // ============================================================================
 
 #include "Panel.h"

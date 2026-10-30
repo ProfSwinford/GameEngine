@@ -476,6 +476,24 @@ void Scene::Unload() {
     // and that is still true after an unload - it is the only way back.
 }
 
+void Scene::StartNewScene() {
+    Unload();
+
+    // AND THE DOCUMENT TOO, not just the path. m_document holds the keys this
+    // build did not recognise when the scene was read, so that saving puts
+    // them back - see BuildSceneDocument. Carrying them into a brand new
+    // scene would write another file's unknown settings into it.
+    m_document   = Json::object();
+    m_sourcePath.clear();
+
+    // Back to where a scene with no camera saved in it starts, so a new scene
+    // does not inherit the last one's framing.
+    m_cameraPosition = Vec2{};
+    m_cameraZoom     = 1.0f;
+
+    ENGINE_LOG_INFO(Channels::kScene, "new scene started; it has no file yet");
+}
+
 // ---------------------------------------------------------------------------
 //  Editing
 // ---------------------------------------------------------------------------

@@ -13,13 +13,17 @@
 #                    is written out in engine/CMakeLists.txt.
 #      player/       a game, running on its own - the export template.
 #      editor/       the development environment.
+#      hub/          the launcher: a list of projects, a list of engine builds.
+#                    What the editor opens when it was given no project, which
+#                    is why `editor` depends on it - see editor/CMakeLists.txt.
 #      tests/        the unit tests. 
 #
 #  ---------------------------------------------------------------------------
 #  NOTE WHAT CMAKE DOES NOT BUILD: the project's scripts.
 #
 #  Every .cpp and .h under assets/ is compiled by the EDITOR, while it runs, into
-#  a library that both programs above load - see editor/src/ScriptBuild.h. That
+#  a library that the editor and the player both load - see
+#  editor/src/ScriptBuild.h. That
 #  is the whole point: somebody using the released editor has a compiler and a
 #  project folder, not this source tree, and adding a script must not require
 #  rebuilding anything here.

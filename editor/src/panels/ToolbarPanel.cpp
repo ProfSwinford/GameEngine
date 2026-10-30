@@ -8,6 +8,7 @@
 #include "panels/InspectorPanel.h"
 
 #include "EditorApp.h"
+#include "Shortcuts.h"
 
 #include <imgui.h>
 
@@ -47,6 +48,17 @@ void ToolbarPanel::Draw() {
         }
     }
     ImGui::PopStyleColor();
+
+    // ---- THE CHORD, ON THE BUTTON ---------------------------------------
+    //
+    // These three are the only actions with a shortcut that is not also a
+    // menu item, so a tooltip is the only place somebody could find out. The
+    // string comes from the same table the key check reads - see Shortcuts.h
+    // - so it cannot end up advertising a key that has moved.
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s - takes a snapshot of the scene, and puts it back on Stop",
+                          Shortcuts::Hint(Shortcuts::Action::PlayStop));
+    }
     ImGui::SameLine();
 
     // Pause only means anything while playing. Greyed out rather than hidden,
@@ -61,6 +73,9 @@ void ToolbarPanel::Draw() {
         clock.SetPaused(!paused);
     }
     ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", Shortcuts::Hint(Shortcuts::Action::PauseResume));
+    }
     ImGui::SameLine();
 
     ImGui::BeginDisabled(!playing || !paused);
@@ -71,6 +86,10 @@ void ToolbarPanel::Draw() {
         clock.RequestSingleStep();
     }
     ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s - exactly one simulation step",
+                          Shortcuts::Hint(Shortcuts::Action::Step));
+    }
 
     ImGui::SameLine();
     float scale = clock.TimeScale();

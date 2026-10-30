@@ -7,6 +7,8 @@
 #include <SDL3/SDL.h>
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -43,6 +45,10 @@ std::filesystem::path HubPath() {
 
 } // namespace
 
+std::string LauncherPath() {
+    return HubPath().generic_string();
+}
+
 bool HubIsInstalled() {
     const fs::path hub = HubPath();
     if (hub.empty()) {
@@ -52,7 +58,7 @@ bool HubIsInstalled() {
     return fs::exists(hub, ec);
 }
 
-bool RelaunchHub(std::string& outError) {
+bool RelaunchHub(std::string& outError, const HubRequest& request) {
     const fs::path hub = HubPath();
 
     std::error_code ec;
@@ -62,9 +68,30 @@ bool RelaunchHub(std::string& outError) {
     }
 
     const std::string hubPath = hub.string();
-    const char*       args[]  = {hubPath.c_str(), nullptr};
 
-    SDL_Process* child = SDL_CreateProcess(args, false);
+    // BOTH STRINGS LIVE UNTIL AFTER SDL_CreateProcess. The vector holds
+    // pointers into them, so a temporary - std::to_string(...).c_str() written
+    // inline - would be freed before SDL ever read it.
+    const std::string frames = std::to_string(request.frameLimit);
+
+    // BUILT UP rather than written out, because the two options are
+    // independent of each other and the array would otherwise need one spelled
+    // out per combination.
+    std::vector<const char*> args;
+    args.push_back(hubPath.c_str());
+    if (request.becauseNoProject) {
+        args.push_back("--from-editor");
+    }
+    if (request.frameLimit > 0) {
+        args.push_back("--frames");
+        args.push_back(frames.c_str());
+    }
+
+    // NULL-TERMINATED, which SDL requires and which is easy to leave out
+    // because nothing complains until it reads past the end.
+    args.push_back(nullptr);
+
+    SDL_Process* child = SDL_CreateProcess(args.data(), false);
     if (child == nullptr) {
         const char* reason = SDL_GetError();
         outError           = (reason != nullptr && reason[0] != '\0')
@@ -72,6 +99,42 @@ bool RelaunchHub(std::string& outError) {
                                  : "the operating system did not say why";
         return false;
     }
+
+    if (request.waitForIt) {
+        // THE RETURN VALUE IS NOT DECORATION. SDL_WaitProcess returns true
+        // only if the process EXITED, and SDL_process.h is explicit that the
+        // exit code "will not be changed if the process is still running" -
+        // so ignoring the bool and reading exitCode would report a tidy zero
+        // for a wait that never happened, with the launcher still alive. That
+        // is precisely the orphan this branch exists to prevent, reported as
+        // success.
+        int        exitCode = 0;
+        const bool exited   = SDL_WaitProcess(child, true, &exitCode);
+
+        // DESTROYED EITHER WAY: SDL_process.h says to call this "whether the
+        // process was killed, terminated on its own, or is still running".
+        SDL_DestroyProcess(child);
+
+        if (!exited) {
+            const char* reason = SDL_GetError();
+            outError = std::string("the launcher was started but could not be waited "
+                                   "for, so it may still be running: ") +
+                       ((reason != nullptr && reason[0] != '\0')
+                            ? reason
+                            : "the operating system did not say why");
+            return false;
+        }
+
+        // REPORTED AS A FAILURE OF OURS, because the only reason to wait is
+        // that somebody is reading the exit code. A launcher that could not
+        // open a window must not look like a successful hand-off.
+        if (exitCode != 0) {
+            outError = "the launcher exited with code " + std::to_string(exitCode);
+            return false;
+        }
+        return true;
+    }
+
     SDL_DestroyProcess(child);
     return true;
 }

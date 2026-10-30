@@ -26,6 +26,7 @@ set(TEST_SOURCES
     src/test_scriptvars.cpp
     src/test_project.cpp
     src/test_scriptabi.cpp
+    src/test_snapshot.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

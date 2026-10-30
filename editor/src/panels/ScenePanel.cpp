@@ -162,7 +162,7 @@ void ScenePanel::Draw() {
             gameCamera.SetPosition(m_camera.Position());
             gameCamera.SetZoom(m_camera.Zoom());
         }
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Move the game camera to where this view is looking. Saved "
@@ -375,7 +375,7 @@ bool ScenePanel::HandleTilePainting(const ImVec2& imageOrigin) {
                                       : map->AddToPalette(state.tilePath);
     };
 
-    const auto markDirty = [] { EditorState::Get().dirty = true; };
+    const auto markDirty = [] { EditorState::Get().MarkDirty(); };
 
     switch (state.tool) {
         case TileTool::Select:
@@ -746,17 +746,10 @@ void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting) {
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
         !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
 
-        // THE WHOLE SELECTION, matching the Hierarchy. Pressing Delete with
-        // eight things outlined and watching one of them go would be the
-        // kind of half-finished behaviour that makes a tool untrustworthy.
-        EditorState& state = EditorState::Get();
-        if (!state.selection.empty()) {
-            for (const eng::EntityId id : state.selection) {
-                eng::DeferredOps::QueueDestroy(id);
-            }
-            state.ClearSelection();
-            state.dirty = true;
-        }
+        // THE WHOLE SELECTION, matching the Hierarchy - and now literally the
+        // same code rather than a second copy of it. See DestroySelection in
+        // EditorApp.h for why that mattered.
+        DestroySelection();
     }
 
     // ---- left click selects ------------------------------------------------
@@ -947,7 +940,7 @@ void ScenePanel::UpdateGizmo(const ImVec2& imageOrigin) {
         other->Transform().SetWorldPosition(other->Transform().WorldPosition() + delta);
     }
 
-    EditorState::Get().dirty = true;
+    EditorState::Get().MarkDirty();
 }
 
 void ScenePanel::DrawGizmo(const ImVec2& imageOrigin) {

@@ -106,6 +106,23 @@ public:
     // Destroys every entity, which releases every texture they were using.
     void Unload();
 
+    // ---- starting a scene from nothing ------------------------------------
+    //
+    // Empties the scene AND FORGETS THE FILE IT CAME FROM, which is the whole
+    // difference from Unload and the reason this is not a flag on it.
+    //
+    // Unload means "put this away": the path survives, because "reload what I
+    // just unloaded" needs it. This means "start something else", so the next
+    // save has to be told where to go - otherwise File -> New Scene would
+    // leave Ctrl+S pointing at the file you were previously editing, and the
+    // first save of a brand new scene would silently overwrite it.
+    //
+    // This is what makes a freshly created project usable. Project -> New
+    // Project deliberately creates no scene, and until this existed the only
+    // route to the first one was to add an object and notice that Save As had
+    // become available.
+    void StartNewScene();
+
     const std::string& Name() const { return m_name; }
 
     // The file this scene was last loaded from. Deliberately survives Unload,

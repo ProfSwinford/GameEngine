@@ -73,6 +73,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -138,6 +139,24 @@ bool WriteWholeFile(const std::string& path, const std::string& text) {
     }
     out << text;
     return static_cast<bool>(out);
+}
+
+// The folder this launcher is in, with no trailing separator.
+//
+// SDL_GetBasePath hands back a string it owns and which must not be freed, so
+// the result is copied. The editor has the same function - see
+// editor/src/Relaunch.cpp - and they cannot share one, because the Hub links
+// no editor code and the editor links no Hub code. Six lines in two places is
+// the cheaper half of that trade.
+std::string ThisDirectory() {
+    if (const char* base = SDL_GetBasePath(); base != nullptr && base[0] != '\0') {
+        fs::path path(base);
+        if (path.filename().empty() && path.has_parent_path()) {
+            path = path.parent_path();
+        }
+        return path.generic_string();
+    }
+    return {};
 }
 
 // ---- projects -------------------------------------------------------------
@@ -208,8 +227,36 @@ void SaveProjects(const std::vector<ProjectRow>& rows) {
     WriteWholeFile(path, document.dump(2) + "\n");
 }
 
-void RememberProject(std::vector<ProjectRow>& rows, const std::string& root,
-                     const std::string& name) {
+// ===========================================================================
+//  BY VALUE, NOT BY CONST REFERENCE, AND THAT IS THE BUG FIX.
+//
+//  This function REARRANGES `rows`. Open() calls it as
+//  RememberProject(hub.projects, row.root, row.name), where `row` is an
+//  element OF hub.projects - so with reference parameters, `root` and `name`
+//  named strings inside the very vector being rearranged. remove_if moves the
+//  kept elements over the removed one, and the lines below then read `root`
+//  again to build the new front entry: by that point it names a moved-from or
+//  overwritten string.
+//
+//  MEASURED, three ways, with the old signature:
+//
+//    clicking the first of three rows  -> the clicked project is replaced by a
+//                                         DUPLICATE of the second, and is gone
+//    clicking the last of three        -> the new entry is EMPTY, so
+//                                         LoadProjects skips it next time
+//    clicking the only row             -> the list becomes one empty entry,
+//                                         i.e. it reads as EMPTY afterwards
+//
+//  So opening a project from the launcher is what removed it from the list of
+//  projects you have opened. It was always wrong; it matters more now that the
+//  launcher is how the editor gets opened at all.
+//
+//  Taking the two strings by value costs two copies on a button press and
+//  makes the hazard impossible rather than merely absent at today's call
+//  sites.
+// ===========================================================================
+void RememberProject(std::vector<ProjectRow>& rows, std::string root,
+                     std::string name) {
     const fs::path wanted = fs::path(root).lexically_normal();
     rows.erase(std::remove_if(rows.begin(), rows.end(),
                               [&wanted](const ProjectRow& row) {
@@ -260,16 +307,7 @@ std::vector<EngineRow> LoadEngines() {
     // The Hub sits beside an editor and an engine.dll, so there is always at
     // least one engine available and it never has to be registered. A
     // launcher whose list is empty on first run looks broken.
-    const std::string here = [] {
-        if (const char* base = SDL_GetBasePath(); base != nullptr && base[0] != '\0') {
-            fs::path path(base);
-            if (path.filename().empty() && path.has_parent_path()) {
-                path = path.parent_path();
-            }
-            return path.generic_string();
-        }
-        return std::string{};
-    }();
+    const std::string here = ThisDirectory();
 
     const bool alreadyListed =
         std::any_of(rows.begin(), rows.end(), [&here](const EngineRow& row) {
@@ -303,6 +341,62 @@ void SaveEngines(const std::vector<EngineRow>& rows) {
                            "listed here.";
     document["engines"]  = list;
     WriteWholeFile(path, document.dump(2) + "\n");
+}
+
+// ===========================================================================
+//  THE PROJECT SITTING BESIDE THIS ENGINE, IF THERE IS ONE.
+//
+//  OFFERED, NEVER OPENED BY ITSELF - and the difference is the whole point.
+//
+//  The editor used to search upward from its own folder and open whatever
+//  project it found, which is what a cold start quietly loading a stale
+//  project means in practice. It no longer does: with no project named it
+//  starts this launcher instead.
+//
+//  But the folder it used to find is usually the right answer on a FIRST RUN.
+//  Somebody who has just cloned and built the engine is sitting in front of a
+//  launcher with an empty list and no way to know that the project is three
+//  folders above the executable. So the same search still happens - here -
+//  and the answer is shown as a row with a button. One click instead of none,
+//  and nobody is surprised by which project appeared.
+//
+//  SHOWN UNTIL IT IS IN THE LIST, which is what opening it does - so the offer
+//  removes itself after one use and cannot become clutter.
+//
+//  NOT hidden merely because the list is non-empty, which is what it did at
+//  first and was wrong: somebody whose list holds other projects has still
+//  never been shown this one. A source checkout of the engine has the sample
+//  game in it, and "the list is not empty" is no reason to make that an
+//  Add Existing... expedition.
+//
+//  An INSTALLED engine - one that does not sit inside a project - finds
+//  nothing here and no row appears, so this only ever shows up for the people
+//  it is for.
+// ===========================================================================
+std::optional<ProjectRow> ProjectBesideTheEngine() {
+    const std::string here = ThisDirectory();
+    if (here.empty()) {
+        return std::nullopt;
+    }
+
+    // THE SAME SEARCH THE EDITOR USED TO DO, by the same function, so the row
+    // offered here is exactly the project a cold start used to open.
+    const std::string root = eng::Project::FindAbove(here);
+    if (root.empty()) {
+        return std::nullopt;
+    }
+
+    eng::ProjectInfo info;
+    std::string      error;
+    if (!eng::Project::Read(root, info, error)) {
+        return std::nullopt;
+    }
+
+    ProjectRow row;
+    row.root          = info.realRoot;
+    row.name          = info.name;
+    row.engineVersion = info.engineVersion;
+    return row;
 }
 
 // ---- launching ------------------------------------------------------------
@@ -359,6 +453,29 @@ struct Hub {
     // for one task is one window too many, and the editor is the one being
     // worked in. Reopening the Hub is how you come back.
     bool launched = false;
+
+    // The project found beside this engine, offered when the list is empty.
+    // Worked out once at start-up; see ProjectBesideTheEngine.
+    std::optional<ProjectRow> beside;
+
+    // ----------------------------------------------------------------------
+    //  ASK FOR THE LIST TO BE RE-READ, RATHER THAN RE-READING IT.
+    //
+    //  The rows are drawn in a loop that holds a reference INTO the vector
+    //  and an index into it, so reassigning it mid-draw leaves both stale -
+    //  and the Forget button further down the same iteration erases by that
+    //  index, which would then name a different project.
+    //
+    //  The path that needs this is a row found NOT to be a project when its
+    //  Open button was pressed: it has to refresh the list and then carry on
+    //  drawing. Setting a flag defers that to the top of the next frame.
+    //
+    //  The success path reassigns hub.projects too - RememberProject ends by
+    //  re-reading it - but sets `launched` immediately after, so the window is
+    //  closing and nothing reads the stale reference. Said here because it
+    //  would otherwise look like an oversight.
+    // ----------------------------------------------------------------------
+    bool reloadProjects = false;
 };
 
 const std::string& EngineDirectoryFor(const Hub& hub) {
@@ -381,6 +498,27 @@ void Open(Hub& hub, const ProjectRow& row) {
         return;
     }
 
+    // ---- CHECKED AGAIN, NOW ----------------------------------------------
+    //
+    // row.missing was worked out when the list was READ, which may have been
+    // a while ago. What this guards is not a slow reader, though: it is that
+    // THE HUB CLOSES the moment it starts an editor. If the folder stopped
+    // being a project in between, the editor exits with "that is not a
+    // project" into a console nobody is watching, the Hub has already gone,
+    // and one click has made every window on screen disappear.
+    //
+    // One re-read keeps the complaint here, where there is something to read
+    // it on.
+    eng::ProjectInfo info;
+    std::string      readError;
+    if (!eng::Project::Read(row.root, info, readError)) {
+        hub.status = "cannot open '" + row.root + "': " + readError;
+        ENGINE_LOG_ERROR(eng::Channels::kEditor, "cannot open '{}': {}", row.root,
+                         readError);
+        hub.reloadProjects = true;   // so the row turns red; see Hub::reloadProjects
+        return;
+    }
+
     std::string error;
     if (!StartEditor(EngineDirectoryFor(hub), row.root, error)) {
         hub.status = "could not start the editor: " + error;
@@ -390,6 +528,46 @@ void Open(Hub& hub, const ProjectRow& row) {
 
     RememberProject(hub.projects, row.root, row.name);
     hub.launched = true;
+}
+
+// The offer itself. A function rather than inline code because it belongs
+// below BOTH an empty list and a full one, and the empty case returns early.
+void DrawBesideOffer(Hub& hub) {
+    if (!hub.beside.has_value()) {
+        return;
+    }
+
+    // ALREADY IN THE LIST? Then there is nothing to offer. Compared as
+    // normalised paths, the same way RememberProject decides whether an entry
+    // is a duplicate - and both sides came from ProjectInfo::realRoot, so they
+    // are spelled the same way to begin with.
+    const fs::path wanted = fs::path(hub.beside->root).lexically_normal();
+    const bool     listed =
+        std::any_of(hub.projects.begin(), hub.projects.end(),
+                    [&wanted](const ProjectRow& row) {
+                        return fs::path(row.root).lexically_normal() == wanted;
+                    });
+    if (listed) {
+        return;
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped("There is a project in the folder tree this engine was built "
+                       "in:");
+    ImGui::Spacing();
+    ImGui::TextUnformatted(hub.beside->name.c_str());
+    ImGui::TextDisabled("%s", hub.beside->root.c_str());
+    ImGui::Spacing();
+    if (ImGui::Button("Open It")) {
+        // SAFE TO PASS: `beside` is its own copy, not a row of the vector
+        // Open rearranges. See RememberProject.
+        Open(hub, *hub.beside);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Opens it and adds it to the list, after which this offer "
+                          "goes away. It is the project the editor used to open on "
+                          "its own.");
+    }
 }
 
 void DrawProjectsTab(Hub& hub) {
@@ -411,6 +589,7 @@ void DrawProjectsTab(Hub& hub) {
         ImGui::TextDisabled("No projects yet.");
         ImGui::TextDisabled("Add Existing... points at a folder you already have;");
         ImGui::TextDisabled("New Project... makes one.");
+        DrawBesideOffer(hub);
         return;
     }
 
@@ -469,6 +648,8 @@ void DrawProjectsTab(Hub& hub) {
         }
         ImGui::EndTable();
     }
+
+    DrawBesideOffer(hub);
 }
 
 void DrawEnginesTab(Hub& hub) {
@@ -662,35 +843,76 @@ void DrawNewProjectPopup(Hub& hub) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // ----------------------------------------------------------------------
+    //  BORROW THE TERMINAL THAT STARTED THIS, IF THERE WAS ONE.
+    //
+    //  The same trick the editor uses and for the same reason: a GUI program
+    //  has no console of its own, so anything printed goes nowhere unless it
+    //  was launched from one. editor/src/main.cpp carries the full
+    //  explanation, including why CONOUT$ is the name to reopen onto.
+    //
+    //  TWO THINGS THAT WERE WRONG HERE, both worth a line:
+    //
+    //  IT RUNS BEFORE THE ARGUMENT LOOP NOW. It used to run after, so
+    //  `--help` and the unrecognised-option message were printed before there
+    //  was anywhere for them to go.
+    //
+    //  AND IT LEAVES AN EXISTING REDIRECTION ALONE. It used to call
+    //  AttachConsole unconditionally, which threw away a stdout that was
+    //  already pointing at a file: `hub > log.txt` came back empty and wrote
+    //  to the screen instead. A GUI program that was NOT redirected has no
+    //  stdout handle at all, which is how the two cases are told apart.
+    //
+    //  DONE FIRST, BEFORE THE ARGUMENT LOOP, so that everything printed below
+    //  - the usage text above all - is visible when this was started from a
+    //  terminal, and goes nowhere when it was not.
+    // ----------------------------------------------------------------------
+#if defined(_WIN32)
+    const HANDLE existingOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    const bool   alreadyGoingSomewhere =
+        existingOut != nullptr && existingOut != INVALID_HANDLE_VALUE &&
+        GetFileType(existingOut) != FILE_TYPE_UNKNOWN;
+
+    if (!alreadyGoingSomewhere && AttachConsole(ATTACH_PARENT_PROCESS) != 0) {
+        FILE* reopened = nullptr;
+        freopen_s(&reopened, "CONOUT$", "w", stdout);
+        freopen_s(&reopened, "CONOUT$", "w", stderr);
+    }
+#endif
+
     // --frames N: run that many frames and exit normally.
     //
     // The same option the editor and the player have, for the same reason -
     // it proves the thing starts, draws and takes itself down cleanly, with
     // nobody at the keyboard. A launcher is exactly the sort of program that
     // would otherwise only ever be tested by hand.
-    int frameLimit = 0;
+    //
+    // The editor passes it straight through when it hands over on a cold
+    // start, so `editor --frames N` with no project still ends by itself -
+    // see editor/src/Relaunch.h.
+    int  frameLimit     = 0;
+    bool openedByEditor = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             frameLimit = std::atoi(argv[++i]);
             continue;
         }
+        // --from-editor: `editor` was run with no project, so it started this
+        // instead of a window. Only the editor beside this launcher passes it,
+        // and the two are always the same build - see editor/src/Relaunch.h,
+        // which explains why that direction is safe to add options to and the
+        // other one is not.
+        if (std::strcmp(argv[i], "--from-editor") == 0) {
+            openedByEditor = true;
+            continue;
+        }
         const bool askedForHelp = std::strcmp(argv[i], "--help") == 0;
         std::printf("hub - pick a project and open it\n\n"
                     "  (no options)    open the launcher\n"
-                    "  --frames <N>    open it, run N frames, then exit\n");
+                    "  --frames <N>    open it, run N frames, then exit\n"
+                    "  --from-editor   say that the editor sent you here\n");
         return askedForHelp ? 0 : 1;
     }
-
-#if defined(_WIN32)
-    // The same trick the editor uses, for the same reason: a GUI program has
-    // no console of its own, so anything printed goes nowhere unless it was
-    // started from a terminal. See editor/src/main.cpp.
-    if (AttachConsole(ATTACH_PARENT_PROCESS) != 0) {
-        FILE* reopened = nullptr;
-        freopen_s(&reopened, "CONOUT$", "w", stdout);
-        freopen_s(&reopened, "CONOUT$", "w", stderr);
-    }
-#endif
 
     // ---- the three subsystems this needs, by hand -------------------------
     //
@@ -747,11 +969,29 @@ int main(int argc, char** argv) {
     ImGui_ImplSDLRenderer3_Init(sdlRenderer);
 
     Hub hub;
-    hub.projects = LoadProjects();
-    hub.engines  = LoadEngines();
+    hub.projects       = LoadProjects();
+    hub.engines        = LoadEngines();
+    hub.beside         = ProjectBesideTheEngine();
+
+    // SAID, because somebody who ran the editor and got a launcher is owed the
+    // reason. Kept as the status line rather than a field on Hub: it is one
+    // sentence shown once, and nothing else in the Hub needs to know.
+    if (openedByEditor) {
+        hub.status = "the editor opens a project it was named, and was given none - "
+                     "pick one here";
+    }
 
     ENGINE_LOG_INFO(eng::Channels::kCore, "hub ready: {} project(s), {} engine(s)",
                     hub.projects.size(), hub.engines.size());
+
+    // WHAT WAS FOUND, not what is on screen - whether it is offered depends on
+    // the list, which can change while the window is open. See
+    // ProjectBesideTheEngine and DrawBesideOffer.
+    if (hub.beside.has_value()) {
+        ENGINE_LOG_INFO(eng::Channels::kCore,
+                        "a project sits beside this engine: '{}' in '{}'",
+                        hub.beside->name, hub.beside->root);
+    }
 
     int  frames  = 0;
     bool running = true;
@@ -775,6 +1015,12 @@ int main(int argc, char** argv) {
         }
 
         HandlePicker(hub);
+
+        // BEFORE THE DRAW, not during it. See Hub::reloadProjects.
+        if (hub.reloadProjects) {
+            hub.projects       = LoadProjects();
+            hub.reloadProjects = false;
+        }
 
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui_ImplSDL3_NewFrame();

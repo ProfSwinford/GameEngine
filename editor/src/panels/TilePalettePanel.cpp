@@ -223,7 +223,13 @@ void TilePalettePanel::DrawToolRow() {
 
     if (state.IsPainting()) {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f), "no undo - erase to correct");
+
+        // IT USED TO SAY "no undo - erase to correct", which was true when it
+        // was written. Ctrl+Z now covers painting, because a tilemap's cells
+        // are part of the scene document and undo restores the whole document
+        // - see editor/src/UndoStack.h. One stroke is one step: the snapshot
+        // is taken when the mouse comes up, not per cell.
+        ImGui::TextDisabled("Ctrl+Z undoes a whole stroke");
     }
 }
 
@@ -263,7 +269,27 @@ void TilePalettePanel::DrawTargetRow() {
     }
 
     if (ImGui::Button("New Tilemap entity")) {
-        eng::Entity* entity = scene->Get(scene->CreateEntity("Tilemap"));
+        // ---- A UNIQUE NAME, WHICH IS NOT A TIDINESS POINT -----------------
+        //
+        // This used to be CreateEntity("Tilemap") flat, so pressing this
+        // button twice produced two entities both called "Tilemap" - and
+        // Scene::CreateEntity does not de-duplicate, it just overwrites the
+        // name index.
+        //
+        // A NAME IS AN IDENTITY in this engine, not a label. Scene::Find and
+        // the name index answer for one of the two; a script's entity
+        // reference is a name (EntityRef.h); Scene::ResolveParents matches
+        // parents BY NAME on every load, so the first map's children would be
+        // reparented onto the second one every time the scene was read back;
+        // and undo restores the selection and the tile brush's target by name
+        // (UndoStack.h). Destroying either one then erases the shared index
+        // entry and Find stops answering for the survivor.
+        //
+        // Every other creation path in the editor already goes through
+        // MakeUniqueName. This was the one that did not.
+        const std::string name = scene->MakeUniqueName("Tilemap");
+
+        eng::Entity* entity = scene->Get(scene->CreateEntity(name));
         if (entity != nullptr) {
             entity->AddComponent(eng::TilemapComponent::kTypeName);
 
@@ -274,10 +300,13 @@ void TilePalettePanel::DrawTargetRow() {
 
             state.tilemap = entity->Id();
             EditorState::Get().SelectOnly(entity->Id());
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
+
+            // NAMES WHAT IT ACTUALLY MADE. It used to say 'Tilemap' whatever
+            // the entity ended up being called, which was true exactly once.
             std::snprintf(m_status, sizeof(m_status),
-                          "created 'Tilemap' with a TilemapComponent and a "
-                          "TilemapColliderComponent");
+                          "created '%s' with a TilemapComponent and a "
+                          "TilemapColliderComponent", name.c_str());
         }
     }
 
@@ -285,7 +314,7 @@ void TilePalettePanel::DrawTargetRow() {
         ImGui::SameLine();
         if (ImGui::Button("Tidy palette")) {
             const std::size_t dropped = map->CompactPalette();
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
             std::snprintf(m_status, sizeof(m_status),
                           "dropped %zu unused palette entr%s", dropped,
                           dropped == 1 ? "y" : "ies");

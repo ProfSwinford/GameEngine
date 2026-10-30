@@ -68,6 +68,7 @@ ctest --preset debug
 | `engine`      | The engine, as a SHARED library. Knows nothing about any game.       |
 | `editor`      | The development environment - Scene view, Game view, seven panels.   |
 | `player`      | A game running on its own, with no editor. Contains no game itself.  |
+| `hub`         | The launcher: a list of projects, a list of engine builds.           |
 | `tests`       | The unit tests.                                                      |
 
 **The project's scripts are not on that list, and that is the point.**
@@ -87,7 +88,28 @@ build/debug/bin/editor --build-scripts
 build/debug/bin/Debug/editor
 ```
 
-That is the one to start with. See [docs/editor-guide.md](docs/editor-guide.md).
+That is the one to start with - and it opens the **launcher**, not the editor.
+The editor opens a project it was *named* and nothing else; run with none it
+starts the launcher so you can pick one. On a first run the launcher offers the
+project it finds beside the engine, which is this repository, so it is one
+click to the sample game.
+
+To skip the launcher and open a project straight away:
+
+```bash
+build/debug/bin/Debug/editor --project .
+```
+
+| Command                        | What it does                                   |
+| ------------------------------ | ---------------------------------------------- |
+| `editor`                       | open the launcher, to pick a project           |
+| `editor --project <folder>`    | open that project directly                     |
+| `editor <folder>`              | the same, so a folder can be dragged onto it   |
+| `editor --build-scripts`       | compile the project's scripts and exit         |
+| `editor --build-game <folder>` | export a standalone game and exit              |
+| `editor --help`                | the full list                                  |
+
+See [docs/editor-guide.md](docs/editor-guide.md).
 
 ```bash
 build/debug/bin/player
@@ -470,7 +492,8 @@ view. Paint, Erase, Rectangle, Fill and Pick; left-drag paints and right-drag
 erases, middle-drag still pans. The default tool is Select, so the Scene view
 behaves exactly as it always did until you choose otherwise — and the current
 tool is shown over the view, because a mode you cannot see is a mode you forget
-you are in. **There is no undo yet.**
+you are in. **`Ctrl+Z` undoes a whole stroke** - see
+[the editor guide](docs/editor-guide.md#undo).
 
 ### Making it solid
 

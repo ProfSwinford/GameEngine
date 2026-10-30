@@ -44,8 +44,9 @@
 //
 //  The `or` is not laziness, it is the entire backward-compatibility story.
 //  This repository has no `project.oproj` and never needs one: it has
-//  `assets/`, so it is a project, and opening the editor with no arguments
-//  finds it by exactly the upward walk it always used.
+//  `assets/`, so it is a project, and the player, `editor --build-scripts`
+//  and the launcher's own "there is a project beside this engine" row all
+//  find it by exactly the upward walk the engine always used.
 //
 //  FileSystem::LooksLikeRoot used to be its own one-line `is_directory(dir /
 //  "assets")`. It now calls Looks() below, so there is ONE definition of "is
@@ -170,8 +171,10 @@ public:
     // its root - or an empty string if there is none above it.
     //
     // This is what lets `--project <some folder inside a project>` do the
-    // obvious thing instead of refusing, and it is the same search the engine
-    // has always done from the executable's folder when given no arguments.
+    // obvious thing instead of refusing. It is the same search the engine
+    // does from the executable's folder when nobody has named a project,
+    // which is still how the player and `editor --build-scripts` find theirs
+    // - and how the launcher works out which project to offer on a first run.
     static std::string FindAbove(std::string_view realStartDirectory);
 
     // ---- making a new one -------------------------------------------------

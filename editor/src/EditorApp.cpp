@@ -17,6 +17,8 @@
 #include "ScriptBuild.h"
 #include "ProjectMenu.h"
 #include "Relaunch.h"
+#include "Shortcuts.h"
+#include "UndoStack.h"
 
 #include "panels/AssetBrowserPanel.h"
 #include "panels/BuildPanel.h"
@@ -115,11 +117,15 @@ bool EditorApp::Init(const std::string& projectRoot) {
     // editor starts on its own.
     eng::Engine::Options options;
 
-    // WHICH PROJECT. Empty is the normal case and means "look upwards from
-    // this executable", which is what opens the project the editor is
-    // installed inside. Anything else came from --project, and a folder that
-    // is not a project makes Init fail rather than silently opening a
-    // different one. See eng::FileSystem::UseRoot.
+    // WHICH PROJECT. Normally a real folder, from --project or from a folder
+    // argument, and a folder that is not a project makes Init fail rather
+    // than silently opening a different one - see eng::FileSystem::UseRoot.
+    //
+    // EMPTY IS NOW THE UNUSUAL CASE and means "the environment named it":
+    // ENGINE_ASSET_ROOT is set and does hold a project, so FileSystem::Init
+    // will pick it up by itself. main() does not reach here at all when
+    // nobody named a project - it opens the launcher instead of searching
+    // upward for one.
     options.projectRoot = projectRoot;
 
     // The engine does not know what ImGui is. It is handed two functions and
@@ -173,6 +179,11 @@ bool EditorApp::Init(const std::string& projectRoot) {
     // camera - so it needs the engine running and every panel already built.
     EditorSession::Restore(m_scenePanel);
 
+    // AFTER Restore, which may have opened a different scene than the one the
+    // engine started with. The baseline has to be the scene that is actually
+    // on screen, or the first Ctrl+Z would step back to a scene nobody opened.
+    Undo::Reset();
+
     ENGINE_LOG_INFO(eng::Channels::kEditor, "editor ready with {} panels",
                     m_panels.size());
     m_ready = true;
@@ -191,10 +202,148 @@ void EditorApp::RefreshSceneList() {
     }
 }
 
+std::size_t DestroySelection() {
+    EditorState& state = EditorState::Get();
+    if (state.selection.empty()) {
+        return 0;
+    }
+
+    // A COPY OF THE LIST FIRST. Queueing a destroy does not remove anything
+    // from the selection, but the prune at the top of the next frame will -
+    // and iterating the thing that is about to be cleared is how one of these
+    // two copies would eventually have grown a bug the other did not.
+    const std::vector<eng::EntityId> doomed = state.selection;
+    for (const eng::EntityId id : doomed) {
+        eng::DeferredOps::QueueDestroy(id);
+    }
+    state.ClearSelection();
+    state.MarkDirty();
+
+    ENGINE_LOG_INFO(eng::Channels::kEditor, "destroyed {} entit{}", doomed.size(),
+                    doomed.size() == 1 ? "y" : "ies");
+    return doomed.size();
+}
+
+void DestroyEntity(eng::EntityId id) {
+    if (id.IsNull()) {
+        return;
+    }
+    eng::DeferredOps::QueueDestroy(id);
+
+    // THE SELECTION IS LEFT TO THE PRUNE at the top of the next frame, which
+    // drops any id whose entity has gone - see EditorState::PruneSelection.
+    // Clearing it here would be wrong rather than merely unnecessary: this
+    // destroys ONE entity, which need not be the selected one, and the
+    // Hierarchy's context menu uses it on whatever was right-clicked.
+    EditorState::Get().MarkDirty();
+}
+
+namespace {
+
+// ---------------------------------------------------------------------------
+//  THE ACTIONS THE EDIT MENU AND THE KEYBOARD SHARE.
+//
+//  File-local rather than methods, because none of them needs anything from
+//  EditorApp - and having them here means the menu item and the chord are
+//  demonstrably the same code rather than two call sites that look alike.
+// ---------------------------------------------------------------------------
+
+// Undo or redo, with the status-bar line it should leave behind.
+std::string StepUndoStack(bool forward) {
+    std::string error;
+    const bool  ok = forward ? Undo::StepForward(error) : Undo::StepBack(error);
+    const char* verb = forward ? "redo" : "undo";
+
+    if (!ok) {
+        return std::string(verb) + ": " + error;
+    }
+
+    // HOW MANY ARE LEFT, because the useful question after pressing Ctrl+Z is
+    // "can I keep going?".
+    const std::size_t left = forward ? Undo::RedoDepth() : Undo::UndoDepth();
+    return std::string(forward ? "redone" : "undone") + " (" + std::to_string(left) +
+           " more)";
+}
+
+// Copies everything selected and leaves the copies selected.
+//
+// ONE LEVEL, NOT A SUBTREE. Scene::DuplicateEntity copies the entity and its
+// components and gives the copy the same parent - it does not copy children.
+// That is its existing behaviour, which the Hierarchy's own Duplicate item
+// has always had; this does not quietly change it.
+std::size_t DuplicateSelection() {
+    eng::Scene& scene = eng::Engine::Get().GetScene();
+
+    // COPIED BEFORE ANY DUPLICATING, because duplicating adds entities and
+    // the selection is about to be replaced by the copies.
+    const std::vector<eng::EntityId> sources = EditorState::Get().selection;
+    if (sources.empty()) {
+        return 0;
+    }
+
+    std::vector<eng::EntityId> copies;
+    for (const eng::EntityId id : sources) {
+        std::string         error;
+        const eng::EntityId copy = scene.DuplicateEntity(id, error);
+        if (copy.IsNull()) {
+            ENGINE_LOG_WARN(eng::Channels::kEditor, "could not duplicate: {}", error);
+            continue;
+        }
+        copies.push_back(copy);
+    }
+    if (copies.empty()) {
+        return 0;
+    }
+
+    // THE COPIES BECOME THE SELECTION, which is what every editor does and the
+    // only thing that makes "duplicate, then drag it aside" one gesture - the
+    // copy lands exactly on top of the original, so whatever you drag next had
+    // better be the copy.
+    EditorState::Get().ClearSelection();
+    for (const eng::EntityId id : copies) {
+        EditorState::Get().AddToSelection(id);
+    }
+    EditorState::Get().MarkDirty();
+    return copies.size();
+}
+
+std::size_t SelectEverything() {
+    EditorState::Get().ClearSelection();
+
+    std::size_t count = 0;
+    eng::Engine::Get().GetScene().ForEach([&count](eng::Entity& entity) {
+        EditorState::Get().AddToSelection(entity.Id());
+        ++count;
+    });
+    return count;
+}
+
+// Where Save As should start from: the file this scene came from, or a name
+// that at least looks like a scene for one that has never been saved.
+//
+// THREE CALLERS - the menu item, Ctrl+Shift+S, and Ctrl+S on a scene with
+// nowhere to save to. It was written out twice before any of them was a
+// shortcut, which is two places to forget the extension.
+void PrefillSaveAsPath(char* buffer, std::size_t size) {
+    const eng::Scene& scene = eng::Engine::Get().GetScene();
+    if (!scene.SourcePath().empty()) {
+        std::snprintf(buffer, size, "%s", scene.SourcePath().c_str());
+    } else {
+        std::snprintf(buffer, size, "scenes/untitled%s", eng::kSceneExtension);
+    }
+}
+
+} // namespace
+
 void EditorApp::SaveScene(const std::string& virtualPath) {
     std::string error;
     if (eng::Engine::Get().SaveScene(virtualPath, error)) {
-        EditorState::Get().dirty = false;
+        EditorState::Get().ClearDirty();
+
+        // THE SAVED STATE IS NOW THIS ONE, so undoing back to it can clear the
+        // unsaved marker instead of leaving the title bar claiming work that
+        // is on disk. See UndoStack.h.
+        Undo::NoteSaved();
         std::snprintf(m_status, sizeof(m_status), "saved %s",
                       eng::Engine::Get().GetScene().SourcePath().c_str());
         m_sceneList.clear();   // the list may have gained a file
@@ -202,6 +351,359 @@ void EditorApp::SaveScene(const std::string& virtualPath) {
         std::snprintf(m_status, sizeof(m_status), "save failed: %s", error.c_str());
         ENGINE_LOG_ERROR(eng::Channels::kEditor, "save failed: {}", error);
     }
+}
+
+// ---------------------------------------------------------------------------
+//  The Edit menu.
+//
+//  Every item here is reachable by its chord as well, and the hint beside it
+//  comes from the same table the chord does - see Shortcuts.h. The one
+//  exception is Delete, whose hint is a literal: the KEY is handled by the
+//  panels, because which panel has focus decides whether Delete removes
+//  entities or a file on disk.
+// ---------------------------------------------------------------------------
+void EditorApp::DrawEditMenu() {
+    using Shortcuts::Action;
+
+    const bool playing = eng::Engine::Get().IsInPlayMode();
+
+    // ---- undo ------------------------------------------------------------
+    //
+    // Greyed out rather than hidden while playing, with the reason in the
+    // tooltip. Undoing into a play session would restore a snapshot that Stop
+    // is about to throw away anyway.
+    // RECORDED, NOT DONE. This is inside DrawMenuBar, which runs before the
+    // panels draw - and undoing replaces every entity in the scene. See
+    // EditorApp::UndoRequest.
+    ImGui::BeginDisabled(!Undo::CanUndo());
+    if (ImGui::MenuItem("Undo", Shortcuts::Hint(Action::Undo))) {
+        m_undoRequest = UndoRequest::Back;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (playing) {
+            ImGui::SetTooltip("Not while playing - press Stop first.");
+        } else if (Undo::UndoDepth() == 0) {
+            ImGui::SetTooltip("Nothing to undo yet.");
+        } else {
+            ImGui::SetTooltip("%zu step(s) available. One step is one edit, or one "
+                              "whole drag.", Undo::UndoDepth());
+        }
+    }
+
+    ImGui::BeginDisabled(!Undo::CanRedo());
+    if (ImGui::MenuItem("Redo", Shortcuts::Hint(Action::Redo))) {
+        m_undoRequest = UndoRequest::Forward;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+
+    const bool anySelected = !EditorState::Get().selection.empty();
+
+    ImGui::BeginDisabled(!anySelected);
+    if (ImGui::MenuItem("Duplicate", Shortcuts::Hint(Action::Duplicate))) {
+        if (const std::size_t made = DuplicateSelection(); made > 0) {
+            std::snprintf(m_status, sizeof(m_status), "duplicated %zu entit%s", made,
+                          made == 1 ? "y" : "ies");
+        }
+    }
+
+    // "Del" IS A LITERAL HERE, and it is the one place the one-table rule is
+    // knowingly broken. See the note at the top of Shortcuts.h.
+    if (ImGui::MenuItem("Delete", "Del")) {
+        DestroySelection();
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+
+    if (ImGui::MenuItem("Select All", Shortcuts::Hint(Action::SelectAll))) {
+        const std::size_t count = SelectEverything();
+        std::snprintf(m_status, sizeof(m_status), "selected %zu entit%s", count,
+                      count == 1 ? "y" : "ies");
+    }
+    ImGui::BeginDisabled(!anySelected);
+    if (ImGui::MenuItem("Deselect All", Shortcuts::Hint(Action::DeselectAll))) {
+        EditorState::Get().ClearSelection();
+    }
+    ImGui::EndDisabled();
+}
+
+// ---------------------------------------------------------------------------
+//  THE KEYBOARD, once a frame.
+//
+//  Called late in the frame, next to where a requested scene is applied, and
+//  for the same reason: undo REPLACES EVERY ENTITY, which cannot happen while
+//  the panels are still describing them. See EditorState::requestedScene.
+//
+//  Every branch here calls the same function the matching menu item does.
+//  That is the point of the arrangement rather than a happy accident: a
+//  shortcut that is a second implementation of a menu item is a shortcut that
+//  will eventually do something slightly different.
+// ---------------------------------------------------------------------------
+void EditorApp::HandleShortcuts() {
+    using Shortcuts::Action;
+    eng::Engine& engine = eng::Engine::Get();
+
+    // ---- the scene file --------------------------------------------------
+    if (Shortcuts::Pressed(Action::SaveScene)) {
+        if (engine.GetScene().SourcePath().empty()) {
+            // NOWHERE TO SAVE TO YET, so Ctrl+S means what Save As means.
+            // Doing nothing would be defensible and is what this used to do -
+            // but a brand new scene is exactly when somebody presses Ctrl+S
+            // hardest, and a shortcut that silently does nothing teaches them
+            // it is broken.
+            PrefillSaveAsPath(m_saveAsPath, sizeof(m_saveAsPath));
+            m_openSaveAsPopup = true;
+        } else {
+            SaveScene({});
+        }
+    }
+    if (Shortcuts::Pressed(Action::SaveSceneAs)) {
+        PrefillSaveAsPath(m_saveAsPath, sizeof(m_saveAsPath));
+        m_openSaveAsPopup = true;
+    }
+    if (Shortcuts::Pressed(Action::NewScene)) {
+        RequestNewScene();
+    }
+    if (Shortcuts::Pressed(Action::OpenScene)) {
+        RefreshSceneList();
+        m_openOpenScenePopup = true;
+    }
+
+    // ---- undo ------------------------------------------------------------
+    //
+    // The chords record a request exactly as the menu items do, and the ONE
+    // place that acts on it is at the bottom of this function. Two routes in,
+    // one apply point - which is what makes the claim that they are the same
+    // code true rather than merely intended.
+    if (Shortcuts::Pressed(Action::Undo)) {
+        m_undoRequest = UndoRequest::Back;
+    }
+    if (Shortcuts::Pressed(Action::Redo)) {
+        m_undoRequest = UndoRequest::Forward;
+    }
+
+    // ---- the selection ---------------------------------------------------
+    if (Shortcuts::Pressed(Action::Duplicate)) {
+        if (const std::size_t made = DuplicateSelection(); made > 0) {
+            std::snprintf(m_status, sizeof(m_status), "duplicated %zu entit%s", made,
+                          made == 1 ? "y" : "ies");
+        }
+    }
+    if (Shortcuts::Pressed(Action::SelectAll)) {
+        const std::size_t count = SelectEverything();
+        std::snprintf(m_status, sizeof(m_status), "selected %zu entit%s", count,
+                      count == 1 ? "y" : "ies");
+    }
+    if (Shortcuts::Pressed(Action::DeselectAll)) {
+        EditorState::Get().ClearSelection();
+    }
+
+    // ---- the play controls -----------------------------------------------
+    //
+    // THE SAME THING THE TOOLBAR BUTTONS DO. Ctrl+P in particular has to keep
+    // working while playing with the Game view focused, because it is the way
+    // back out - the keyboard belongs to the game at that point, but ImGui is
+    // still tracking it and a chord with Ctrl in it is not something a game
+    // binds.
+    if (Shortcuts::Pressed(Action::PlayStop)) {
+        if (engine.IsInPlayMode()) {
+            engine.ExitPlayMode();
+        } else {
+            std::string error;
+            if (engine.EnterPlayMode(error)) {
+                EditorState::Get().focusGameView = true;
+            }
+        }
+    }
+    if (Shortcuts::Pressed(Action::PauseResume) && engine.IsInPlayMode()) {
+        engine.Clock().SetPaused(!engine.Clock().IsPaused());
+    }
+    if (Shortcuts::Pressed(Action::Step) && engine.IsInPlayMode() &&
+        engine.Clock().IsPaused()) {
+        engine.Clock().RequestSingleStep();
+    }
+
+    // ---- and the undo step itself, LAST ----------------------------------
+    //
+    // Whether it came from a chord above or from the Edit menu drawn earlier
+    // this frame, it is applied here - the one point in the frame where
+    // replacing every entity in the scene is allowed.
+    if (m_undoRequest != UndoRequest::None) {
+        const bool forward = m_undoRequest == UndoRequest::Forward;
+        m_undoRequest      = UndoRequest::None;
+        std::snprintf(m_status, sizeof(m_status), "%s", StepUndoStack(forward).c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Open Scene..., the dialog Ctrl+O opens.
+//
+//  Reads the SAME discovered list the File menu's submenu does, so a scene
+//  dropped into assets/scenes/ appears in both with no rebuild.
+// ---------------------------------------------------------------------------
+void EditorApp::DrawOpenScenePopup() {
+    if (m_openOpenScenePopup) {
+        ImGui::OpenPopup("Open Scene");
+        m_openOpenScenePopup = false;
+    }
+
+    const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (!ImGui::BeginPopupModal("Open Scene", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    if (m_sceneList.empty()) {
+        ImGui::TextDisabled("no scenes found in assets/scenes/");
+    }
+
+    const std::string& open = eng::Engine::Get().GetScene().SourcePath();
+    for (const std::string& path : m_sceneList) {
+        const bool current = (path == open);
+
+        // The one already open is marked and not offered, the same way the
+        // submenu does it - reopening the scene you are in is Reload Scene,
+        // and it is on the File menu where it says so.
+        if (ImGui::Selectable(path.c_str(), current, current ? ImGuiSelectableFlags_Disabled
+                                                             : 0)) {
+            ImGui::CloseCurrentPopup();
+            RequestOpenScene(path);
+        }
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Cancel", ImVec2(110, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
+//  "You have unsaved changes" - for New Scene and Open Scene.
+//
+//  THREE ANSWERS, NOT TWO, for the same reason ProjectMenu's version has
+//  three: somebody who deliberately wants to abandon an experiment should not
+//  have to save it first. Discard is the honest third option and it is not
+//  the default.
+//
+//  WHY THIS EXISTS AT ALL. Opening a scene used to discard unsaved work
+//  silently, which was survivable while it took a deliberate trip through a
+//  submenu. Ctrl+N and Ctrl+O are one keystroke each, and undo does not
+//  survive a scene change - so without this, the two most standard shortcuts
+//  in any editor would be the two fastest ways to lose an hour.
+// ---------------------------------------------------------------------------
+// What to do once the question has been answered either way.
+//
+// ONE COPY, because "Save and continue" and "Discard and continue" differ only
+// in whether they save first - and the continuing part was written out twice
+// before Close Scene became a third thing it could be.
+void EditorApp::Continue(Pending what, const std::string& scene) {
+    switch (what) {
+        case Pending::NewScene:
+            StartNewScene();
+            break;
+        case Pending::CloseScene:
+            CloseScene();
+            break;
+        case Pending::OpenScene:
+            // Back round through the field every route uses. The dirty flag
+            // is clear or the work was discarded by now, so the gate in Run()
+            // will let it through rather than asking again.
+            EditorState::Get().requestedScene = scene;
+            break;
+        case Pending::None:
+            break;
+    }
+}
+
+void EditorApp::DrawDiscardChangesPopup() {
+    if (m_openDiscardPopup) {
+        ImGui::OpenPopup("Unsaved Scene");
+        m_openDiscardPopup = false;
+    }
+
+    const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (!ImGui::BeginPopupModal("Unsaved Scene", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    const eng::Scene& scene = eng::Engine::Get().GetScene();
+
+    // NAMES THE FILE. "You have unsaved changes" on its own leaves somebody
+    // working out which of several things they have been editing it means.
+    if (scene.SourcePath().empty()) {
+        ImGui::TextUnformatted("This scene has never been saved anywhere.");
+    } else {
+        ImGui::Text("%s has unsaved changes.", scene.SourcePath().c_str());
+    }
+    switch (m_pending) {
+        case Pending::NewScene:
+            ImGui::TextDisabled("Starting a new scene will discard them.");
+            break;
+        case Pending::CloseScene:
+            ImGui::TextDisabled("Closing the scene will discard them.");
+            break;
+        default:
+            ImGui::TextDisabled("Opening another scene will discard them.");
+            break;
+    }
+    ImGui::Separator();
+
+    // A scene with nowhere to be saved to cannot be saved from here; Save As
+    // needs a name, and asking for one inside this dialog would be a second
+    // question stacked on the first.
+    const bool canSave = !scene.SourcePath().empty();
+
+    ImGui::BeginDisabled(!canSave);
+    if (ImGui::Button("Save and continue", ImVec2(150, 0))) {
+        std::string error;
+        if (eng::Engine::Get().SaveScene({}, error)) {
+            EditorState::Get().ClearDirty();
+            Undo::NoteSaved();
+            const Pending     what  = m_pending;
+            const std::string where = m_pendingScene;
+            m_pending = Pending::None;
+            ImGui::CloseCurrentPopup();
+            Continue(what, where);
+        } else {
+            // STAYS OPEN. Carrying on after a failed save would discard
+            // exactly the work this dialog exists to protect.
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "not changing scene: the save failed: {}", error);
+            std::snprintf(m_status, sizeof(m_status), "save failed: %s", error.c_str());
+        }
+    }
+    ImGui::EndDisabled();
+    if (!canSave && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("This scene has no file yet - use File -> Save Scene As... "
+                          "first.");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Discard and continue", ImVec2(150, 0))) {
+        const Pending     what  = m_pending;
+        const std::string where = m_pendingScene;
+        m_pending = Pending::None;
+        ImGui::CloseCurrentPopup();
+        Continue(what, where);
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(110, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        // Nothing happens at all, including to the request.
+        m_pending = Pending::None;
+        m_pendingScene.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void EditorApp::DrawSaveAsPopup() {
@@ -254,6 +756,77 @@ void EditorApp::DrawSaveAsPopup() {
     ImGui::EndPopup();
 }
 
+bool EditorApp::AskedAboutUnsavedWork(Pending what, const std::string& scene) {
+    if (!EditorState::Get().IsDirty()) {
+        return false;
+    }
+    m_pending          = what;
+    m_pendingScene     = scene;
+    m_openDiscardPopup = true;
+    return true;
+}
+
+void EditorApp::RequestNewScene() {
+    if (eng::Engine::Get().IsInPlayMode()) {
+        // REFUSED RATHER THAN DONE. Starting a new scene mid-play would be
+        // undone by Stop a moment later, which restores the pre-play snapshot
+        // over whatever is open - leaving the old scene's entities with the
+        // new scene's empty source path. Undo refuses while playing for the
+        // same reason and says so the same way.
+        std::snprintf(m_status, sizeof(m_status),
+                      "stop playing first - Stop puts the scene back");
+        return;
+    }
+    if (AskedAboutUnsavedWork(Pending::NewScene, {})) {
+        return;
+    }
+    StartNewScene();
+}
+
+void EditorApp::RequestOpenScene(const std::string& virtualPath) {
+    if (virtualPath.empty()) {
+        return;
+    }
+
+    // ONLY RECORDED. Not checked for unsaved work here and not loaded here -
+    // both happen where requestedScene is applied, in Run(), because five
+    // other routes set that field directly and the question has to be asked
+    // for all six rather than for the one that remembered.
+    EditorState::Get().requestedScene = virtualPath;
+}
+
+void EditorApp::RequestCloseScene() {
+    if (AskedAboutUnsavedWork(Pending::CloseScene, {})) {
+        return;
+    }
+    CloseScene();
+}
+
+void EditorApp::CloseScene() {
+    EditorState::Get().ClearSelection();
+    eng::Engine::Get().GetScene().Unload();
+
+    // The history described the scene that has just been put away.
+    Undo::Reset();
+}
+
+void EditorApp::StartNewScene() {
+    EditorState::Get().ClearSelection();
+    eng::Engine::Get().GetScene().StartNewScene();
+
+    // NOT dirty. An empty scene with no file is not unsaved work; it is
+    // nothing. The first edit will set this, and that is the right moment.
+    EditorState::Get().ClearDirty();
+
+    // THE HISTORY GOES WITH THE OLD SCENE. Stepping back from a new scene into
+    // the one before it would be a Ctrl+Z that reopens a file, which is not
+    // what undo means anywhere.
+    Undo::Reset();
+
+    std::snprintf(m_status, sizeof(m_status),
+                  "new scene - add an object, then Save Scene As");
+}
+
 void EditorApp::LoadScene(const std::string& virtualPath) {
     // THE SELECTION IS CLEARED FIRST, and it matters. Loading destroys every
     // entity, and a selection surviving into the new scene would name a slot
@@ -267,6 +840,12 @@ void EditorApp::LoadScene(const std::string& virtualPath) {
         ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not open '{}': {}", virtualPath,
                          error);
     }
+
+    // EITHER WAY. A load that failed has left the scene in whatever state it
+    // got to, and a stack of snapshots from before it describes a scene that is
+    // no longer there - so there is even less to be gained from keeping the
+    // history after a failure than after a success.
+    Undo::Reset();
 }
 
 void EditorApp::DrawMenuBar() {
@@ -282,6 +861,15 @@ void EditorApp::DrawMenuBar() {
         // read in that order.
         ProjectMenu::Draw();
         ImGui::Separator();
+
+        if (ImGui::MenuItem("New Scene", Shortcuts::Hint(Shortcuts::Action::NewScene))) {
+            RequestNewScene();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Empties the scene and forgets its file, so the next save "
+                              "asks where to put it. Asks first if there is unsaved "
+                              "work.");
+        }
 
         // The list of scenes is DISCOVERED, not written down. Dropping a
         // .oscene into assets/scenes/ puts it in this menu with no rebuild.
@@ -300,7 +888,12 @@ void EditorApp::DrawMenuBar() {
             for (const std::string& path : m_sceneList) {
                 const bool current = (path == scene.SourcePath());
                 if (ImGui::MenuItem(path.c_str(), nullptr, current)) {
-                    LoadScene(path);
+                    // Through the same door as every other route - the unsaved
+                    // question is asked where this is applied. It used to call
+                    // LoadScene straight from here, which is why the submenu
+                    // was the one route that discarded work silently while the
+                    // guide said otherwise.
+                    RequestOpenScene(path);
                 }
             }
             ImGui::Separator();
@@ -312,45 +905,76 @@ void EditorApp::DrawMenuBar() {
             m_sceneList.clear();   // read it again next time the menu opens
         }
 
+        // ---- the same list again, as a dialog -----------------------------
+        //
+        // TWO ROUTES TO ONE THING, deliberately, because they are good at
+        // different jobs. The submenu above is the quickest way to pick a
+        // scene with the mouse and shows the list without a click. This is
+        // what Ctrl+O opens: a dialog the keyboard can reach, which is also
+        // the only way the chord is discoverable - ImGui::BeginMenu takes no
+        // shortcut hint, so a submenu cannot advertise one.
+        //
+        // The "..." is the usual mark for "this opens something", which is
+        // what keeps the two from reading as duplicates.
+        if (ImGui::MenuItem("Open Scene...",
+                            Shortcuts::Hint(Shortcuts::Action::OpenScene))) {
+            RefreshSceneList();
+            m_openOpenScenePopup = true;
+        }
+
         const bool hasPath = !scene.SourcePath().empty();
 
         // Greyed out rather than hidden when there is nothing to reload, so
         // the menu does not change shape underneath somebody.
         ImGui::BeginDisabled(!hasPath);
         if (ImGui::MenuItem("Reload Scene", nullptr, false, hasPath)) {
-            LoadScene(scene.SourcePath());
+            // ---- THE ONE SCENE CHANGE THAT DOES NOT ASK FIRST ------------
+            //
+            // Deliberately. "Reload" means "throw away what I have done and
+            // read the file again" - discarding IS the request, so a dialog
+            // asking whether to discard would be asking whether somebody
+            // meant what they just clicked. The tooltip says so instead.
+            //
+            // It goes through requestedScene like every other route, so the
+            // loading still happens at the one safe point in the frame.
+            EditorState::Get().requestedScene = scene.SourcePath();
         }
         ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Reads the file again and DISCARDS unsaved changes "
+                              "without asking - that is what reloading means. Undo "
+                              "does not survive it either.");
+        }
 
         ImGui::Separator();
 
-        ImGui::BeginDisabled(!hasPath || !scene.IsLoaded());
-        if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, hasPath && scene.IsLoaded())) {
+        // ---- AN EMPTY SCENE IS SAVEABLE, and it was not ------------------
+        //
+        // Both of these used to require scene.IsLoaded(), which means "has at
+        // least one entity". Two things that ought to work did not: saving a
+        // scene you have just emptied on purpose, and saving the first scene
+        // of a brand new project at all. Only Save needs a FILE to save to;
+        // neither needs contents.
+        ImGui::BeginDisabled(!hasPath);
+        if (ImGui::MenuItem("Save Scene", Shortcuts::Hint(Shortcuts::Action::SaveScene),
+                            false, hasPath)) {
             SaveScene({});
         }
         ImGui::EndDisabled();
 
-        ImGui::BeginDisabled(!scene.IsLoaded());
-        if (ImGui::MenuItem("Save Scene As...", nullptr, false, scene.IsLoaded())) {
+        if (ImGui::MenuItem("Save Scene As...",
+                            Shortcuts::Hint(Shortcuts::Action::SaveSceneAs))) {
             // Pre-filled with the current name, so "save a variant of this" is
             // an edit rather than retyping the whole path.
-            if (hasPath) {
-                std::snprintf(m_saveAsPath, sizeof(m_saveAsPath), "%s",
-                              scene.SourcePath().c_str());
-            } else {
-                std::snprintf(m_saveAsPath, sizeof(m_saveAsPath), "scenes/untitled%s",
-                              eng::kSceneExtension);
-            }
+            PrefillSaveAsPath(m_saveAsPath, sizeof(m_saveAsPath));
             m_openSaveAsPopup = true;
         }
-        ImGui::EndDisabled();
 
         ImGui::Separator();
 
         ImGui::BeginDisabled(!scene.IsLoaded());
         if (ImGui::MenuItem("Close Scene", nullptr, false, scene.IsLoaded())) {
-            EditorState::Get().ClearSelection();
-            scene.Unload();
+            RequestCloseScene();
         }
         ImGui::EndDisabled();
 
@@ -385,6 +1009,12 @@ void EditorApp::DrawMenuBar() {
         ImGui::EndMenu();
     }
 
+    // ---- Edit --------------------------------------------------------------
+    if (ImGui::BeginMenu("Edit")) {
+        DrawEditMenu();
+        ImGui::EndMenu();
+    }
+
     // ---- Objects -----------------------------------------------------------
     //
     // The same items the Hierarchy's right-click menu offers, drawn from the
@@ -392,7 +1022,7 @@ void EditorApp::DrawMenuBar() {
     if (ImGui::BeginMenu("Objects")) {
         if (const eng::EntityId created = DrawObjectMenuItems(); !created.IsNull()) {
             EditorState::Get().SelectOnly(created);
-            EditorState::Get().dirty    = true;
+            EditorState::Get().MarkDirty();
         }
         ImGui::EndMenu();
     }
@@ -413,7 +1043,7 @@ void EditorApp::DrawMenuBar() {
     ImGui::Separator();
     ImGui::Text("%.1f FPS", static_cast<double>(ImGui::GetIO().Framerate));
 
-    if (EditorState::Get().dirty) {
+    if (EditorState::Get().IsDirty()) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f), "| UNSAVED");
     }
@@ -657,6 +1287,8 @@ void EditorApp::Run(int frameLimit) {
         EditorGui::EndDockspace();
         DrawPanels();
         DrawSaveAsPopup();
+        DrawOpenScenePopup();
+        DrawDiscardChangesPopup();
 
         // OUTSIDE the menu, because a modal opened inside a BeginMenu block
         // closes the moment the menu does - it would appear for one frame and
@@ -672,17 +1304,6 @@ void EditorApp::Run(int frameLimit) {
         // only touches the window when the string is actually different.
         ProjectMenu::UpdateWindowTitle();
 
-        // Ctrl+S. Checked here rather than going through InputMap, because a
-        // tool shortcut is not a game action - binding it through the game's
-        // input system would put an editor concern in the game's settings file.
-        // WantTextInput stops it firing while somebody is typing in a box.
-        const ImGuiIO& io = ImGui::GetIO();
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !io.WantTextInput) {
-            if (!engine.GetScene().SourcePath().empty()) {
-                SaveScene({});
-            }
-        }
-
         // Step 4: the two views draw the world into their own pictures.
         if (m_scenePanel != nullptr && m_scenePanel->IsOpen()) {
             m_scenePanel->RenderView();
@@ -691,14 +1312,65 @@ void EditorApp::Run(int frameLimit) {
             m_gamePanel->RenderView();
         }
 
-        // A scene somebody asked to open, applied HERE - after every panel has
-        // finished with the entities it was describing. See
-        // EditorState::requestedScene.
+        // ==================================================================
+        //  THE KEYBOARD, HERE AND NOT EARLIER.
+        //
+        //  This is where Ctrl+S used to be checked by hand, and it had a bug
+        //  the move fixes: the old line tested io.KeyCtrl without checking
+        //  that Shift and Alt were UP, so Ctrl+Shift+S already triggered a
+        //  plain Save. Adding Save As on that chord would have fired both -
+        //  the scene saved to its old path AND the dialog opened.
+        //  ImGui::IsKeyChordPressed compares the whole modifier state, so the
+        //  two cannot overlap. See Shortcuts.h.
+        //
+        //  It is also the right place for a different reason: undo replaces
+        //  every entity in the scene, which is the same thing opening a scene
+        //  does, and therefore has to happen at the same point - after both
+        //  views have rendered and no panel is still describing an entity.
+        //
+        //  Checked here rather than through InputMap because a tool shortcut
+        //  is not a game action; binding it through the game's input system
+        //  would put an editor concern in the game's settings file.
+        // ==================================================================
+        HandleShortcuts();
+
+        // ==================================================================
+        //  A SCENE SOMEBODY ASKED TO OPEN, APPLIED HERE - and the unsaved
+        //  question asked here too.
+        //
+        //  After every panel has finished with the entities it was describing,
+        //  which is why the load is deferred at all. See
+        //  EditorState::requestedScene.
+        //
+        //  THE QUESTION BELONGS AT THIS POINT, not at the call sites. Six
+        //  things open scenes - the File menu's list, the Ctrl+O dialog, a
+        //  double-click or a right-click in the Assets panel, a scene dropped
+        //  on the Scene view, and the Build panel's Open button - and every
+        //  one of them sets this field. Asking here asks for all six; asking
+        //  at the call sites asked for one, which is how the guide came to
+        //  promise a dialog that four routes never showed.
+        // ==================================================================
         if (!EditorState::Get().requestedScene.empty()) {
             const std::string path = EditorState::Get().requestedScene;
             EditorState::Get().requestedScene.clear();
-            LoadScene(path);
+
+            if (engine.IsInPlayMode()) {
+                // Same refusal as New Scene, for the same reason: Stop would
+                // put the old scene back over the one just opened.
+                std::snprintf(m_status, sizeof(m_status),
+                              "stop playing first - Stop puts the scene back");
+            } else if (!AskedAboutUnsavedWork(Pending::OpenScene, path)) {
+                LoadScene(path);
+            }
         }
+
+        // ---- undo's bookkeeping, LAST -------------------------------------
+        //
+        // After every edit this frame, after any undo applied just above, and
+        // after any scene load - so what it compares against is the state the
+        // next frame will actually start from. Nothing happens on the vast
+        // majority of frames. See UndoStack.h.
+        Undo::Poll();
 
         // The gizmo queue is aged ONCE, after BOTH views have drawn it. Doing
         // it inside the drawing would leave whichever view went second with

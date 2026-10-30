@@ -505,7 +505,7 @@ void HierarchyPanel::ApplyPendingReparent() {
     if (moved == 0) {
         return;
     }
-    state.dirty = true;
+    state.MarkDirty();
 
     if (parentTransform == nullptr) {
         ENGINE_LOG_INFO(eng::Channels::kEditor, "{} entit{} now have no parent", moved,
@@ -530,7 +530,7 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
     if (ImGui::BeginMenu("New Object")) {
         if (const eng::EntityId created = DrawObjectMenuItems(); !created.IsNull()) {
             EditorState::Get().SelectOnly(created);
-            EditorState::Get().dirty    = true;
+            EditorState::Get().MarkDirty();
         }
         ImGui::EndMenu();
     }
@@ -573,7 +573,7 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
             // Select the copy, because the next thing anybody does after
             // duplicating something is move it.
             EditorState::Get().SelectOnly(copy);
-            EditorState::Get().dirty    = true;
+            EditorState::Get().MarkDirty();
         }
     }
 
@@ -593,15 +593,13 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
         // from inside a panel, mid-frame, is exactly the problem DeferredOps
         // exists to prevent - and the editor does not get an exemption from
         // the engine's own rules. The entity disappears at the end of the tick.
+        // Both through the shared doors, which is what marks the scene for
+        // undo - see DestroySelection and DestroyEntity in EditorApp.h.
         if (bulk) {
-            for (const eng::EntityId id : state.selection) {
-                eng::DeferredOps::QueueDestroy(id);
-            }
-            state.ClearSelection();
+            DestroySelection();
         } else {
-            eng::DeferredOps::QueueDestroy(entity.Id());
+            DestroyEntity(entity.Id());
         }
-        state.dirty = true;
     }
     ImGui::EndPopup();
 }
@@ -653,7 +651,7 @@ void HierarchyPanel::DrawRenamePopup() {
     ImGui::BeginDisabled(taken || m_renameBuffer[0] == '\0');
     if ((submitted && !taken) || ImGui::Button("Rename", ImVec2(120, 0))) {
         if (scene.RenameEntity(m_renameTarget, m_renameBuffer)) {
-            EditorState::Get().dirty = true;
+            EditorState::Get().MarkDirty();
         }
         ImGui::CloseCurrentPopup();
     }
@@ -677,7 +675,7 @@ void HierarchyPanel::Draw() {
     if (ImGui::Button("+ Create Entity")) {
         if (const eng::EntityId created = CreateObject("Empty"); !created.IsNull()) {
             EditorState::Get().SelectOnly(created);
-            EditorState::Get().dirty    = true;
+            EditorState::Get().MarkDirty();
         }
     }
     ImGui::SameLine();
@@ -687,7 +685,7 @@ void HierarchyPanel::Draw() {
     if (ImGui::BeginPopup("newobject")) {
         if (const eng::EntityId created = DrawObjectMenuItems(); !created.IsNull()) {
             EditorState::Get().SelectOnly(created);
-            EditorState::Get().dirty    = true;
+            EditorState::Get().MarkDirty();
         }
         ImGui::EndPopup();
     }
@@ -776,7 +774,7 @@ void HierarchyPanel::Draw() {
                                            ImGuiPopupFlags_NoOpenOverItems)) {
         if (const eng::EntityId created = DrawObjectMenuItems(); !created.IsNull()) {
             EditorState::Get().SelectOnly(created);
-            EditorState::Get().dirty    = true;
+            EditorState::Get().MarkDirty();
         }
         ImGui::EndPopup();
     }
@@ -794,20 +792,12 @@ void HierarchyPanel::Draw() {
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
         !io.WantTextInput) {
 
-        // DELETE ACTS ON THE WHOLE SELECTION. Taking a copy of the list
-        // first, because queueing a destroy does not remove anything from
-        // the selection but the prune at the top of the next frame will.
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
-            !EditorState::Get().selection.empty()) {
-
-            const std::vector<eng::EntityId> doomed = EditorState::Get().selection;
-            for (const eng::EntityId id : doomed) {
-                eng::DeferredOps::QueueDestroy(id);
-            }
-            EditorState::Get().ClearSelection();
-            EditorState::Get().dirty = true;
-            ENGINE_LOG_INFO(eng::Channels::kEditor, "destroyed {} entit{}",
-                            doomed.size(), doomed.size() == 1 ? "y" : "ies");
+        // DELETE ACTS ON THE WHOLE SELECTION, through the one shared
+        // implementation - see DestroySelection in EditorApp.h. This used to
+        // be written out here and again in the Scene view, and the two had
+        // already stopped matching.
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+            DestroySelection();
         }
 
         if (eng::Entity* selected = scene.Get(EditorState::Get().selected)) {

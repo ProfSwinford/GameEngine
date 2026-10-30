@@ -22,7 +22,7 @@ void GamePanel::Draw() {
     ImGui::SetNextItemWidth(180.0f);
     if (ImGui::DragFloat2("Camera", position, 1.0f)) {
         camera.SetPosition(eng::Vec2{position[0], position[1]});
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     ImGui::SameLine();
@@ -30,13 +30,13 @@ void GamePanel::Draw() {
     ImGui::SetNextItemWidth(120.0f);
     if (ImGui::DragFloat("Zoom", &zoom, 0.01f, 0.05f, 20.0f, "%.2fx")) {
         camera.SetZoom(zoom);
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     ImGui::SameLine();
     if (ImGui::SmallButton("Reset")) {
         camera.Reset();
-        EditorState::Get().dirty = true;
+        EditorState::Get().MarkDirty();
     }
 
     // How much room is left inside this panel, in pixels. The off-screen

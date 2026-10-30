@@ -679,8 +679,10 @@ void AssetBrowserPanel::DrawDeletePopup() {
     }
 
     // ALWAYS ASKS, and this is the one dialog in the editor that genuinely
-    // has to. Deleting an entity goes through the undo stack; deleting a FILE
-    // does not and cannot - it is gone from the disk.
+    // has to. Deleting an entity goes through the undo stack - which, as of
+    // editor/src/UndoStack.h, actually exists rather than being the plan this
+    // comment described. Deleting a FILE does not and cannot: it is gone from
+    // the disk, and no snapshot of the scene reaches it.
     if (m_deleteIsDirectory) {
         ImGui::Text("Delete the folder '%s'", m_deleteName.c_str());
         ImGui::Text("and the %zu file(s) inside it?", m_deleteCount);

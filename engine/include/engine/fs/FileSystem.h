@@ -70,6 +70,23 @@ public:
     // that found nothing.
     static bool HasRoot();
 
+    // The environment variable that names a project, SPELLED ONCE. Public so
+    // that a message about it cannot drift from the thing that reads it.
+    static constexpr const char* kRootVariable = "ENGINE_ASSET_ROOT";
+
+    // The project folder named in the environment, or an empty string when the
+    // variable is unset or empty.
+    //
+    // Asked by the editor, which opens the launcher rather than guessing when
+    // nobody has named a project at all - setting this variable IS naming one,
+    // so it has to count. See editor/src/main.cpp.
+    //
+    // THE FOLDER IS NOT CHECKED HERE. Init is deliberately lenient about a bad
+    // value - it warns and falls back to the upward search - and the caller
+    // decides whether that leniency suits it. The editor does not and checks
+    // the folder itself; the player and the tests do and rely on it.
+    static std::string RootFromEnvironment();
+
     static const std::string& AssetRoot();
 
     // Turns "textures/player.bmp" into a real path on this machine. It never

@@ -4,9 +4,15 @@
 //  Deliberately dull: build the application object, start it, run it, stop it.
 //  Everything interesting is in EditorApp or in one of the panels.
 //
-//  There are two programs in this project:
+//  There are three programs in this project:
 //    editor   - this one, the development environment
 //    player   - a game running on its own, with no editor at all
+//    hub      - the launcher: a list of projects and a list of engines
+//
+//  The editor opens a project it was NAMED and nothing else. Run with no
+//  project it starts the launcher and exits rather than guessing - see the
+//  long note further down, which is the one decision in this file worth
+//  reading before changing anything.
 // ============================================================================
 
 #include "EditorApp.h"
@@ -19,9 +25,12 @@
 #include <engine/core/Log.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/project/EngineBuild.h>
+#include <engine/project/Project.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 #if defined(_WIN32)
@@ -95,6 +104,130 @@ constexpr int kExitOk        = 0;
 constexpr int kExitUsage     = 1;   // bad arguments, or a build that failed
 constexpr int kExitNoProject = 2;   // the named folder is not a project
 constexpr int kExitEngine    = 3;   // the project was fine; the engine would not start
+
+// ---------------------------------------------------------------------------
+//  DOES THE ENVIRONMENT NAME A PROJECT THE EDITOR CAN OPEN?
+//
+//  NOT THE SAME QUESTION AS "IS THE VARIABLE SET", and the difference is a
+//  hole big enough to drive the whole feature through.
+//
+//  FileSystem::Init is deliberately LENIENT about a bad ENGINE_ASSET_ROOT: it
+//  warns and falls back to the upward search. That leniency is load-bearing
+//  for the player and the tests, and kind to anybody with an old variable
+//  exported in their shell.
+//
+//  For the editor it is the one door left open. A variable pointing at a
+//  folder that is no longer a project would count as "somebody named one",
+//  skip the hand-off, fall through to the search, and open whichever project
+//  happens to sit above the executable - a stale reference loading itself on a
+//  cold start, which is precisely what this change exists to stop. Measured
+//  before it was closed:
+//
+//      ENGINE_ASSET_ROOT=C:/gone editor
+//        Warning: ... no 'assets' folder there; searching instead
+//        Info:    assets found in 'C:\dev\GameEngine'
+//
+//  So the editor checks the folder HERE and hands off when it does not hold a
+//  project, which leaves Init's leniency untouched for everybody else.
+// ---------------------------------------------------------------------------
+bool TheEnvironmentNamesAProject() {
+    const std::string named = eng::FileSystem::RootFromEnvironment();
+    if (named.empty()) {
+        return false;
+    }
+
+    // ---- ABSOLUTE FIRST, WHICH IS NOT A FORMALITY ------------------------
+    //
+    // These are the same two steps FileSystem::Init takes before accepting a
+    // root, and they have to stay the same two: if this is stricter than Init
+    // the editor opens the launcher for a value the player and
+    // `--build-scripts` open happily, which looks like the editor being
+    // broken.
+    //
+    // fs::absolute is what does the reconciling. A value may be relative -
+    // ENGINE_ASSET_ROOT=. is reasonable and works - and on Windows it may
+    // have trailing spaces that the file system itself ignores. Measured:
+    // 'C:/dev/GameEngine ' with a trailing space IS accepted by Init, and was
+    // refused here until this call was added.
+    std::error_code             ec;
+    const std::filesystem::path candidate =
+        std::filesystem::absolute(std::filesystem::path(named), ec);
+    if (!ec && eng::Project::Looks(candidate.generic_string())) {
+        return true;
+    }
+
+    // SAID, not silently ignored. Somebody who exported that variable
+    // believes it is doing something, and a launcher appearing instead of
+    // their project is otherwise inexplicable.
+    std::fprintf(stderr,
+                 "%s names '%s', which is not a project - opening the launcher rather "
+                 "than searching for one.\n",
+                 eng::FileSystem::kRootVariable, named.c_str());
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+//  HANDING OVER TO THE LAUNCHER.
+//
+//  Reached when nobody named a project. See the note at the call site for why
+//  that is a hand-off rather than a search.
+//
+//  EXIT ZERO ON SUCCESS, because nothing went wrong: the editor was asked to
+//  open a project, was given none, and did the useful thing instead. A
+//  non-zero code here would make every `editor` with no arguments look like a
+//  failure to whatever started it.
+// ---------------------------------------------------------------------------
+int OpenTheLauncherInstead(int frameLimit) {
+    if (!editor::HubIsInstalled()) {
+        // NOTHING TO HAND OFF TO. Falling back to the upward search here
+        // would quietly reinstate the behaviour this exists to remove, in the
+        // one case where nobody would notice - so it says what would fix it
+        // instead.
+        //
+        // IT NAMES THE PATH IT LOOKED AT rather than asserting that no
+        // launcher exists, because the check can be wrong: see the note on
+        // HubIsInstalled, which cannot see its own folder when that folder's
+        // name is not ASCII. Printing the path turns "this is impossible, the
+        // file is right there" into something somebody can act on, and the
+        // path prints correctly even in the case where the check did not.
+        std::fprintf(stderr,
+                     "no project was named, and no launcher was found to pick one in.\n"
+                     "  looked for:           %s\n"
+                     "  name a project with:  editor --project <folder>\n",
+                     editor::LauncherPath().c_str());
+        return kExitNoProject;
+    }
+
+    // WAITED FOR WHEN --frames WAS GIVEN, and let go of otherwise.
+    //
+    // `editor --frames N` promises a command that ends by itself, and a
+    // caller writing `editor --frames 2 && cmake --build ...` is entitled to
+    // assume nothing of ours is still running when it returns. Letting go here
+    // breaks that: the editor exits in about a quarter of a second and leaves
+    // the launcher running, so the build that follows races it - and since
+    // hub.exe IS a build output, the way that surfaces is
+    //
+    //    LINK : fatal error LNK1168: cannot open bin\hub.exe for writing
+    //
+    // which names nothing to do with the cause. Measured at 267ms with the
+    // launcher still alive, before the wait was added.
+    //
+    // Interactively the opposite is right: let go, so the terminal comes back
+    // and the launcher is nobody's child.
+    std::string error;
+    if (!editor::RelaunchHub(error, editor::HubRequest{.becauseNoProject = true,
+                                                       .frameLimit      = frameLimit,
+                                                       .waitForIt = frameLimit > 0})) {
+        std::fprintf(stderr, "could not open the launcher: %s\n", error.c_str());
+        return kExitEngine;
+    }
+
+    // SAID OUT LOUD, for whoever ran this from a terminal. A program that
+    // exits zero having printed nothing looks like it did nothing, and the
+    // window that does appear is not the one that was asked for.
+    std::printf("no project was named, so the launcher was opened to pick one.\n");
+    return kExitOk;
+}
 
 // --build-game <folder>: export a standalone game and exit, without opening a
 // window.
@@ -211,7 +344,15 @@ int main(int argc, char** argv) {
 
         // A bare folder as the first argument opens it, so that dragging a
         // project folder onto the editor does the obvious thing.
+        //
+        // AN EMPTY NAME IS A MISTAKE, NOT AN ABSENCE - see the note on
+        // --project just below, which is the same point and the likelier way
+        // to arrive at it.
         if (i == 1 && arg[0] != '-') {
+            if (arg[0] == '\0') {
+                std::printf("the folder to open is an empty name\n");
+                return kExitUsage;
+            }
             projectRoot = arg;
             continue;
         }
@@ -222,6 +363,19 @@ int main(int argc, char** argv) {
                 return kExitUsage;
             }
             projectRoot = argv[++i];
+
+            // AN EMPTY VALUE IS A USAGE ERROR, not "no project".
+            //
+            // `editor --project "$ROOT"` with ROOT unset arrives here as an
+            // empty string, and treating that as "nobody named a project"
+            // would open the launcher and exit zero - hiding a scripting bug
+            // from the script that has it. The whole claim of this program is
+            // that it opens what it was NAMED; being named nothing is a
+            // different thing from not being named.
+            if (projectRoot.empty()) {
+                std::printf("--project was given an empty folder name\n");
+                return kExitUsage;
+            }
             continue;
         }
         if (std::strcmp(arg, "--build-scripts") == 0) {
@@ -257,17 +411,22 @@ int main(int argc, char** argv) {
         }
         std::printf(
             "editor - the development environment\n\n"
-            "  (no options)             open the project this editor is installed in\n"
+            "  (no options)             open the launcher, to pick a project\n"
             "  <folder>                 open that project\n"
             "  --project <folder>       open that project; combines with the options below\n"
             "  --build-scripts          compile the project's scripts and exit\n"
             "  --build-game <folder>    export a standalone game and exit\n"
-            "  --frames <N>             open the editor, run N frames, then exit\n"
+            "  --frames <N>             run N frames, then exit\n"
             "  --version                print which engine build this is and exit\n"
             "\n"
             "A project is a folder containing 'project.oproj' or an 'assets' folder.\n"
-            "With no folder named, the editor looks upwards from its own location for\n"
-            "one, which is what opens the project it is installed inside.\n");
+            "The editor opens one it was NAMED and nothing else - by --project, by a\n"
+            "folder argument, or by the ENGINE_ASSET_ROOT environment variable. Given\n"
+            "none of those it opens the launcher rather than guessing, which is what\n"
+            "stops a cold start loading whichever project happens to sit above it.\n"
+            "\n"
+            "--build-scripts and --build-game are the exception and DO look upwards for\n"
+            "a project, because an automated build has nobody to pick one.\n");
         return askedForHelp ? kExitOk : kExitUsage;
     }
 
@@ -281,6 +440,40 @@ int main(int argc, char** argv) {
     }
     if (exportTo != nullptr) {
         return BuildGameAndExit(exportTo);
+    }
+
+    // ======================================================================
+    //  NO PROJECT NAMED? OPEN THE LAUNCHER. DO NOT GUESS.
+    //
+    //  This used to fall through to FileSystem::Init's upward search, which
+    //  walks up from the executable's own folder and opens the first project
+    //  it finds. That is pleasant exactly once - the first time somebody runs
+    //  the editor out of a build tree that happens to sit inside a project -
+    //  and misleading every time after.
+    //
+    //  Once a launcher can point the editor at ANY folder on the machine,
+    //  "the nearest project above the executable" stops being a default and
+    //  becomes a stale reference that loads itself. A cold start would
+    //  compile that project's scripts, write its .editor/session.json and
+    //  show its scenes, none of which anybody asked for. It also quietly
+    //  undoes the point of having a launcher, because the way to open a
+    //  project becomes "be installed next to it".
+    //
+    //  So: an explicit project, or the launcher. One rule, and three ways to
+    //  be explicit - --project, a bare folder argument (which is what
+    //  dragging a project folder onto the editor does), and ENGINE_ASSET_ROOT.
+    //
+    //  THE TWO HEADLESS MODES ARE EXEMPT and still search, which is why they
+    //  are checked above this rather than below it: they exist for when there
+    //  is nobody to pick anything. `editor --build-scripts` inside a freshly
+    //  cloned project is how the scripts get built before anything is opened,
+    //  and tools/fresh-clone-check.sh does exactly that.
+    //
+    //  --frames IS NOT EXEMPT; it is handed to the launcher instead, so a run
+    //  that was meant to end by itself still does. See HubRequest.
+    // ======================================================================
+    if (projectRoot.empty() && !TheEnvironmentNamesAProject()) {
+        return OpenTheLauncherInstead(frameLimit);
     }
 
     editor::EditorApp app;

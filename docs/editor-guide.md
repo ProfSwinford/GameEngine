@@ -11,6 +11,11 @@ build/debug/bin/Debug/editor
 
 (or `build/debug/bin/editor` if your build put it there - see the README).
 
+That opens the **launcher**, not the editor: the editor opens a project it was
+*named* and nothing else. On a first run the launcher offers the project it
+finds beside the engine - this repository - so it is one click to the sample
+game. `editor --project <folder>` skips the launcher entirely.
+
 ---
 
 ## Projects
@@ -26,15 +31,29 @@ the first two are worth committing; a new project's `.gitignore` says so.
 editor --project D:/games/orbit
 ```
 
-With no folder named, the editor looks upwards from its own location until it
-finds a project, which is what opens the one it is installed inside. That is
-the behaviour it always had, and it is unchanged.
+**With no folder named, the editor opens the launcher rather than guessing.**
+It used to search upward from its own location and open the first project it
+found. That is pleasant exactly once - the first time you run it out of a build
+tree that happens to sit inside a project - and misleading every time after.
+Once a launcher can point the editor at any folder on the machine, "the nearest
+project above the executable" is not a default, it is a stale reference that
+loads itself: a cold start would compile that project's scripts and write its
+`.editor/session.json` without anybody asking for it.
+
+Three things count as naming a project: `--project <folder>`, a folder as the
+first argument (which is what dragging a project folder onto the editor does),
+and the `ENGINE_ASSET_ROOT` environment variable - and that last one has to
+hold a project, or the launcher opens and says so.
+
+`--build-scripts` and `--build-game` are the exception and do still search
+upwards, because an automated build has nobody to pick.
 
 **File → New Project...** picks a folder, asks for a name, and creates the
-skeleton. The new project has **no scene** - `Scene → New Scene` makes the
-first one. That is deliberate: shipping a starter scene would mean the project
-creator knowing the scene format, which is a second place to update whenever
-the format changes and the first place to forget.
+skeleton. The new project has **no scene** - **File → New Scene** (`Ctrl+N`)
+starts one, then add an object and **Save Scene As...**. That is deliberate:
+shipping a starter scene would mean the project creator knowing the scene
+format, which is a second place to update whenever the format changes and the
+first place to forget.
 
 **File → Open Project...** picks a folder. Picking one *inside* a project opens
 the project, so you can point it at `assets/scenes/` and it will do the obvious
@@ -74,6 +93,22 @@ and an install layout this project does not have yet.
 
 The launcher closes when it starts an editor. **File → Close Project** opens it
 again, so closing a project lands you somewhere you can open another one.
+
+**The editor opens it too**, whenever it is run without a project. That is what
+stops a cold start loading whichever project happens to sit above the
+executable, and it means there is one way into a project rather than two.
+
+On a first run, when the project list is still empty, the launcher offers the
+project it finds beside the engine - the same folder the editor used to open on
+its own, shown as a row with a button rather than done to you. One click
+instead of none, and nobody is surprised by which project appeared. Once there
+is a list, that row goes away: the folder is either in the list or was left out
+on purpose.
+
+If the launcher is missing - a hand-copied install with no `hub.exe` beside the
+editor - the editor says so and names both ways forward rather than falling
+back to searching. Building normally cannot produce that, because the `editor`
+target depends on the `hub` target.
 
 ### Why your scripts rebuild after an engine change
 
@@ -139,6 +174,86 @@ That is a separate message from "has never been built", because the two are
 different situations and only one of them means you have lost nothing.
 
 ---
+
+## Keyboard shortcuts
+
+| Key            | What it does                                            |
+| -------------- | ------------------------------------------------------- |
+| `Ctrl+Z`       | Undo                                                    |
+| `Ctrl+Y`       | Redo (`Ctrl+Shift+Z` works too)                         |
+| `Ctrl+S`       | Save the scene - or Save As, if it has no file yet      |
+| `Ctrl+Shift+S` | Save Scene As...                                        |
+| `Ctrl+N`       | New Scene                                               |
+| `Ctrl+O`       | Open Scene...                                           |
+| `Ctrl+D`       | Duplicate the selection                                 |
+| `Ctrl+A`       | Select every entity                                     |
+| `Ctrl+Shift+A` | Deselect everything                                     |
+| `Ctrl+P`       | Play / Stop                                             |
+| `Ctrl+Shift+P` | Pause / Resume                                          |
+| `Ctrl+Alt+P`   | One simulation step                                     |
+| `Del`          | Delete - entities, or a file in the Assets panel        |
+| `F2`           | Rename - the selected entity, or a file                 |
+| `F`            | Frame the selection, while the Scene view is hovered    |
+
+Everything from `Ctrl+Z` to `Ctrl+Shift+A` is in the **File** or **Edit** menu
+with the key printed beside it, which is where you would expect to find it. The
+three play chords are on the toolbar buttons' tooltips instead, since Play,
+Pause and Step are buttons rather than menu items.
+
+The last three have **no modifier on purpose**, which is why they are not in
+the first group: what they mean depends on which panel has the keyboard. `Del`
+removes the selected entities in the Hierarchy and the Scene view, and a *file
+from the disk* in the Assets panel - two different and equally correct answers
+to the same key, chosen by focus. A global shortcut cannot make that choice, so
+those keys live next to the thing they act on.
+
+There is no `Ctrl+Q`. Closing the editor does not yet ask about an unsaved
+scene - only switching *project* does - so a single keystroke that quit would
+be a single keystroke that discarded an hour. The keystroke can come after the
+question.
+
+### Undo
+
+**`Ctrl+Z` takes back whatever you last did to the scene**, and it does not
+have a list of things it knows how to reverse. It works by snapshotting the
+whole scene - the same mechanism that makes **Play** non-destructive - so
+anything that is part of the scene is covered:
+
+- moving, rotating and scaling, including a gizmo drag
+- every field of every component in the Inspector, and script variables
+- creating, deleting, renaming, reparenting and duplicating entities
+- **painting tiles**, including *Clear every cell* - a whole brush stroke is
+  one step, not one step per cell
+
+**One step is one action.** A drag across the screen is a single `Ctrl+Z`, not
+a hundred - the snapshot is taken when you let go, not while you are holding
+on. The same goes for typing a value: the step is recorded when you click away
+or press Enter, so `Ctrl+Z` does not walk back a letter at a time.
+
+**It remembers 64 steps**, and the oldest is dropped rather than refusing to
+record a new one.
+
+**What it does not cover**, and these are honest limits rather than bugs:
+
+- **Anything that is not the scene.** Files on disk above all: deleting an
+  asset in the **Assets** panel is gone, which is why that is the one dialog
+  in the editor that always asks. Editing a `.otile` is the same - a tile asset
+  is its own file.
+- **The scene view camera.** Undo deliberately does not move your viewport,
+  because you are looking at the thing you are undoing.
+- **Align game camera**, when the scene has no camera entity. With no camera
+  entity there is nothing in the scene to change, so it writes to the engine's
+  camera directly and no snapshot can see it.
+- **Play sessions.** Undo is unavailable while playing, because **Stop**
+  already puts the scene back - the menu item says so if you hover it.
+- **A scene change.** Opening a scene, starting a new one or closing one clears
+  the history, because stepping back from one scene into another is not what
+  undo means anywhere. That is also why those three now **ask first** when
+  there is unsaved work - every route to them, not just the menu items.
+  **Reload Scene** is the one exception, because discarding is what reloading
+  means.
+
+The menu item's tooltip tells you how many steps are left.
 
 ## The layout
 
@@ -295,10 +410,21 @@ editor while the game runs.
 ## Editing a scene
 
 **File → Open Scene** lists everything in `assets/scenes/`. Dropping a
-`.oscene` in there puts it in the menu with no rebuild.
+`.oscene` in there puts it in the menu with no rebuild. **Open Scene...**
+(`Ctrl+O`) is the same list as a dialog, for when your hands are on the
+keyboard. Either way, you are asked first if the open scene has unsaved work -
+and so are the other four routes, since double-clicking a scene in **Assets**,
+right-clicking one there, dropping one on the Scene view and the **Build**
+panel's *Open* button all go through the same gate.
 
-**File → Save Scene**, or **Ctrl+S**. **Save Scene As...** for a new file. The
-menu bar shows **UNSAVED** once anything has been changed.
+**Reload Scene is the exception and asks nothing**, deliberately: reloading
+*means* "read the file again and throw away what I have done", so a dialog
+would be asking whether you meant what you just clicked. Undo does not survive
+it either. The menu item's tooltip says so.
+
+**File → Save Scene**, or **Ctrl+S** - which opens **Save Scene As...** when
+the scene has no file yet, rather than doing nothing. The menu bar shows
+**UNSAVED** once anything has been changed.
 
 Two things worth knowing:
 
@@ -306,7 +432,8 @@ Two things worth knowing:
   simulation step rather than the instant you click, because the editor obeys
   the same rules as the engine. See
   `engine/include/engine/scene/DeferredOps.h`.
-- **There is no undo.** Save before you experiment.
+- **`Ctrl+Z` undoes it**, and so does **Edit → Undo**. See
+  [Undo](#undo) for what that covers and the few things it does not.
 
 Things the editor deliberately does not do: no rotate or scale handles (move
 only), no dragging to reparent in the Hierarchy, and the Assets panel creates
@@ -479,8 +606,10 @@ clicking does not select, and right-drag erases rather than pans. **Middle-drag
 still pans**, so there is always a way to move around without putting the brush
 down. The current tool is written across the bottom of the view.
 
-**There is no undo.** Erase is how a stroke is taken back. This is worth
-knowing before a long session rather than after one.
+**`Ctrl+Z` takes back a whole stroke.** A tilemap's cells are part of the
+scene, so painting is undone like any other edit - and the step covers the
+whole stroke rather than one cell, because it is recorded when you let go.
+Erase is still the quicker fix for a single wrong cell.
 
 ### Why nothing appears
 

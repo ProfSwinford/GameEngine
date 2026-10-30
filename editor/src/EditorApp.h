@@ -42,6 +42,7 @@
 
 #include <engine/Engine.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -94,10 +95,50 @@ struct EditorState {
     // panel ever sees a selection containing something that is not there.
     void PruneSelection();
 
-    // Set by any panel that changes the scene, cleared when it is saved.
-    // Purely a prompt for the user - nothing is blocked on it, because a tool
-    // that refuses to close is worse than one that loses an edit.
-    bool dirty = false;
+    // ======================================================================
+    //  HAS THE SCENE BEEN EDITED?
+    //
+    //  Set by any panel that changes the scene, cleared when it is saved.
+    //  Nothing is blocked on it, because a tool that refuses to close is
+    //  worse than one that loses an edit - it is a prompt for the user and,
+    //  now, the signal undo listens to.
+    //
+    //  PRIVATE, AND IT WAS NOT. This was a public `bool dirty` that seventy
+    //  places set directly, which was perfectly adequate while the only
+    //  reader was the title bar's asterisk. It stopped being adequate when
+    //  undo needed to know the MOMENT an edit happened: a flag that is
+    //  already true says nothing about the edit that just occurred, and
+    //  there is no "it changed again" in a bool.
+    //
+    //  So writes go through MarkDirty, which also advances a counter that
+    //  only ever goes up, and the flag itself is private. That last part is
+    //  the load-bearing half: a new edit site cannot quietly go round the
+    //  counter, because it will not compile. The alternative was a comment
+    //  asking people to remember, and the thing it would cost when somebody
+    //  did not is Ctrl+Z silently skipping their edit.
+    // ======================================================================
+    bool IsDirty() const { return m_dirty; }
+
+    void MarkDirty() {
+        m_dirty = true;
+        ++m_editSerial;
+    }
+
+    // Saving is the only thing that makes it clean. NOT undo - undo works out
+    // whether the scene matches the file by comparing against what was
+    // saved, which is a different question and a more honest answer.
+    void ClearDirty() { m_dirty = false; }
+
+    // ---- "is this frame worth serialising the scene for?" ----------------
+    //
+    // Advances on every MarkDirty and never goes back, so undo can answer
+    // that question by comparing one integer. It has to be answerable that
+    // cheaply, because taking a snapshot of the scene is expensive enough to
+    // cost a frame - the figure and how it was measured are beside
+    // g_seenSerial in editor/src/UndoStack.cpp. A design that snapshotted
+    // speculatively would halve the editor's frame rate to find out that
+    // nothing had happened.
+    unsigned long long EditSerial() const { return m_editSerial; }
 
     // Raised by the Toolbar when Play is pressed, and acted on by EditorApp,
     // which is the only thing that holds the Game panel. A flag rather than a
@@ -116,14 +157,60 @@ struct EditorState {
     std::string requestedScene;
 
     static EditorState& Get();
+
+private:
+    bool               m_dirty      = false;
+    unsigned long long m_editSerial = 0;
 };
+
+// ---- acting on the selection ----------------------------------------------
+
+// Destroys everything selected, clears the selection, and marks the scene
+// dirty. Returns how many were queued, which is 0 when nothing was selected.
+//
+// ONE COPY, AND IT WAS NOT ALWAYS. This existed twice - once for the
+// Hierarchy's Delete key, once for the Scene view's - and the two had already
+// drifted: one logged what it had done and the other said nothing. A third
+// copy was about to be written for the Edit menu, which is the point at which
+// collecting them stopped being tidying and started being necessary.
+//
+// IT DESTROYS THROUGH THE DEFERRED QUEUE, like every other delete in the
+// editor: every caller is a panel that is still drawing and still describing
+// the thing being removed. See scene/DeferredOps.h.
+//
+// THE ASSETS PANEL'S Delete IS NOT THIS, and must not become it. That one
+// removes a FILE from the disk - a different act, with a different
+// confirmation, and no undo.
+std::size_t DestroySelection();
+
+// Destroys one entity, selected or not, and marks the scene.
+//
+// ===========================================================================
+//  THESE TWO ARE THE ONLY EDITOR-SIDE DOORS TO DeferredOps::QueueDestroy,
+//  AND THAT IS A CORRECTNESS RULE RATHER THAN A STYLE ONE.
+//
+//  Undo learns that something happened through MarkDirty - see the note above
+//  on why that flag is private. A destroy that forgets to mark is a destroy
+//  undo cannot see: the entity goes, no step is recorded, and the baseline is
+//  left describing a scene that still contains it. The next Ctrl+Z then
+//  resurrects it along with whatever else it undoes.
+//
+//  That was not hypothetical. Of the four places the editor destroyed
+//  entities, three marked and the Inspector's own Destroy button did not -
+//  harmless while there was no undo, wrong data the day there was. Collecting
+//  them here is what stops the fourth one being written again.
+// ===========================================================================
+void DestroyEntity(eng::EntityId id);
 
 class EditorApp {
 public:
-    // `projectRoot` is a real folder on this machine, or empty for "look
-    // upwards from this executable until a project turns up" - which is the
-    // original behaviour and what opens the project the editor is installed
-    // inside.
+    // `projectRoot` is a real folder on this machine, or empty for "the
+    // environment named it" - ENGINE_ASSET_ROOT, which FileSystem::Init reads
+    // for itself.
+    //
+    // IT IS NEVER EMPTY BECAUSE NOBODY NAMED A PROJECT. main() opens the
+    // launcher in that case rather than searching upward for one, so the
+    // editor is always opening something it was told about.
     //
     // A NAMED FOLDER THAT IS NOT A PROJECT FAILS. It does not fall back to
     // the search: somebody who asked for one particular project must not be
@@ -142,8 +229,50 @@ public:
     void AddPanel(std::unique_ptr<Panel> panel);
 
 private:
+    // Which scene change is waiting on the "you have unsaved work" question.
+    // Declared up here because the methods below take it.
+    enum class Pending { None, NewScene, OpenScene, CloseScene };
+
     void DrawMenuBar();
+    void DrawEditMenu();
     void DrawPanels();
+
+    // The keyboard, once a frame. One call, because the table it reads is in
+    // one place - see Shortcuts.h.
+    void HandleShortcuts();
+
+    // ---- scene changes that can lose work --------------------------------
+    //
+    // New Scene and Open Scene both throw the open scene away, and undo does
+    // not survive either of them - a stack of snapshots belonging to a
+    // different scene would be worse than none. So both go through these,
+    // which ask first when there is unsaved work.
+    //
+    // THE MENU ITEMS AND THE SHORTCUTS CALL THE SAME ONES. A keyboard route
+    // that is more dangerous than the menu route is the worst kind of
+    // shortcut: it is faster, so it is what gets used.
+    //
+    // AND SO DOES EVERY OTHER ROUTE. There are six ways to open a scene - the
+    // File menu's list, the Ctrl+O dialog, double-clicking or right-clicking
+    // one in the Assets panel, dropping one on the Scene view, and the Build
+    // panel's Open button - and all six funnel through
+    // EditorState::requestedScene. The question is therefore asked where that
+    // is APPLIED, in Run(), rather than at six call sites of which five would
+    // be forgotten. Reload Scene is deliberately exempt; see the menu item.
+    void RequestNewScene();
+    void RequestOpenScene(const std::string& virtualPath);
+    void RequestCloseScene();
+    void StartNewScene();
+    void CloseScene();
+    void DrawOpenScenePopup();
+    void DrawDiscardChangesPopup();
+
+    // Answers "would changing scene now lose work?", and if so puts the
+    // question up and returns true. The caller does nothing further.
+    bool AskedAboutUnsavedWork(Pending what, const std::string& scene);
+
+    // Carries out a scene change once the question has been answered.
+    void Continue(Pending what, const std::string& scene);
 
     // The list of scenes in the File menu is DISCOVERED from assets/scenes/
     // rather than written down, so dropping a .oscene in there puts it in the
@@ -193,6 +322,31 @@ private:
     char m_saveAsPath[256] = {};
     bool m_openSaveAsPopup = false;
     char m_status[256]     = {};
+
+    // ---- a scene change waiting on an answer -----------------------------
+    //
+    // Recorded rather than acted on, because "do you want to save first?" has
+    // three answers and two of them continue. The path is kept so that
+    // nobody has to pick the same scene twice.
+    Pending     m_pending = Pending::None;
+    std::string m_pendingScene;
+
+    // ---- an undo step waiting to be applied ------------------------------
+    //
+    // THE EDIT MENU CANNOT UNDO WHERE IT IS DRAWN. DrawMenuBar runs before
+    // DrawPanels, and undo replaces every entity in the scene - so acting
+    // there would pull the ground out from under every panel that is about to
+    // describe them, which is the one thing this editor's deferral rules exist
+    // to prevent. It was written that way first and that was a bug.
+    //
+    // So the menu records what it wants and the frame loop acts on it at the
+    // same point the chords are read: after both views have rendered and no
+    // panel is still holding an entity. One apply point, two routes in.
+    enum class UndoRequest { None, Back, Forward };
+    UndoRequest m_undoRequest = UndoRequest::None;
+
+    bool m_openOpenScenePopup   = false;
+    bool m_openDiscardPopup     = false;
 
     // True when the last script build failed. Shown in the menu bar, because a
     // failed build means the scripts that were running have just stopped and

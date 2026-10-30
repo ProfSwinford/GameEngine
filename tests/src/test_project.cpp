@@ -12,8 +12,10 @@
 //  The case that matters most is the one that looks like nothing: a folder
 //  with an `assets` folder and NO manifest is a project. That is this
 //  repository, it is every project made before manifests existed, and if it
-//  ever stops being true then opening the editor with no arguments stops
-//  working. There is a test for it below, and it is the important one.
+//  ever stops being true then the player stops finding its own game, `editor
+//  --build-scripts` stops finding anything to build, and these tests stop
+//  finding the repository they run inside. There is a test for it below, and
+//  it is the important one.
 //
 //  ==========================================================================
 //  NO FILESYSTEM, NO ENGINE_ASSET_ROOT, NOTHING MOUNTED.
@@ -104,8 +106,16 @@ TEST_CASE("a folder with a manifest is a project") {
 
 TEST_CASE("a folder with only an assets folder is a project") {
     // THE BACKWARD-COMPATIBILITY CASE, and the most important test in this
-    // file. This repository has no manifest; if this stops passing, opening
-    // the editor with no arguments stops finding the project.
+    // file. This repository has no manifest; if this stops passing, every
+    // program that finds a project by WALKING UP from its own folder stops
+    // finding this one - the player, `editor --build-scripts`, and the test
+    // sandboxes.
+    //
+    // It used to say "opening the editor with no arguments stops finding the
+    // project". That is no longer one of the reasons: the editor opens a
+    // project it was named and starts the launcher when it was given none.
+    // The test still matters just as much, which is exactly why the reason
+    // for it was worth correcting rather than leaving to rot.
     TempDir dir("looks-assets");
     dir.Sub("assets");
 

@@ -261,7 +261,7 @@ having on its own.
 | # | Stage | Done when |
 | --- | --- | --- |
 | 0 | Spike: host the runtime from a scratch `.exe`, call one managed method, call back | A number printed from C# through the engine's log, and **the per-call cost measured** |
-| 1 | `CSharpSubsystem` in the engine: init, shutdown, load an assembly, in the subsystem list | `editor --frames 60` brings the runtime up and down cleanly |
+| 1 | `CSharpSubsystem` in the engine: init, shutdown, load an assembly, in the subsystem list | `editor --project . --frames 60` brings the runtime up and down cleanly |
 | 2 | The function table, blittable `Vec2`/`EntityId`, `Log` + `Time` bound | A C# method logs the fixed delta every step |
 | 3 | Managed `ScriptBehaviour`, hooks by reflection, `CSharpScriptComponent` | A `.cs` script attaches from the Inspector, runs, and shows UNRESOLVED in red when it is not compiled in |
 | 4 | Transform, Entity, Scene, Input, Rigidbody2D, Physics2D bound (§5) | `Orbiter.cs` and `TilemapWalker.cs` behave the same as their C++ twins |
