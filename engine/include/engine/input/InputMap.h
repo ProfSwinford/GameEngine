@@ -87,6 +87,7 @@ public:
     // straight, which players notice immediately.
     static Vec2 GetAxis2D(std::string_view negX, std::string_view posX,
                           std::string_view negY, std::string_view posY);
+    static Vec2 GetAxis2D(); // the four default movement actions
 
     // Refreshes every action from this frame's events. Called once per frame,
     // before anything asks a question.

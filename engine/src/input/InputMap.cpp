@@ -193,7 +193,11 @@ ActionState InputMap::GetState(std::string_view action) {
 float InputMap::GetAxis(std::string_view action) {
     return IsDown(action) ? 1.0f : 0.0f;
 }
-
+Vec2 InputMap::GetAxis2D(){
+    const Vec2 raw{GetAxis("MoveRight") - GetAxis("MoveLeft"), GetAxis("MoveUp") - GetAxis("MoveDown")};
+    
+    return raw.Normalized();
+}
 Vec2 InputMap::GetAxis2D(std::string_view negX, std::string_view posX,
                          std::string_view negY, std::string_view posY) {
     const Vec2 raw{GetAxis(posX) - GetAxis(negX), GetAxis(posY) - GetAxis(negY)};
