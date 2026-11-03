@@ -54,6 +54,7 @@
 
 namespace eng {
 
+class Entity;
 class Scene;
 
 class DeferredOps {
@@ -66,9 +67,74 @@ public:
     // walking, and that is what this queue exists to make safe.
     static void QueueDestroy(EntityId id);
 
+    // The same, for when you are holding the thing rather than its id. Saves
+    // writing QueueDestroy(entity.Id()) and, more to the point, saves the
+    // Owner()-might-be-null dance when a script wants to remove itself.
+    static void QueueDestroy(Entity& entity);
+
     // True between QueueDestroy and the moment the queue is applied. Systems
     // that must not act on something already dying check this - see rule 1.
     static bool IsPendingDestroy(EntityId id);
+
+    // ========================================================================
+    //  DESTROY IT LATER - Unity's Destroy(obj, t), and the usual way a bullet
+    //  that hits nothing stops existing.
+    //
+    //  WHILE THE FUSE BURNS, NOTHING HAS CHANGED. The entity is not pending
+    //  destruction, IsPendingDestroy is FALSE for it, and it collides, draws
+    //  and updates exactly as it did before.
+    //
+    //  That sentence is the whole design, and the obvious implementation gets
+    //  it wrong. Storing the fuse by marking the entity pending and checking
+    //  the clock later would make IsPendingDestroy true for the entire delay -
+    //  and CollisionSystem skips anything pending (rule 1, enforced in
+    //  physics/Collider.cpp). So QueueDestroyAfter(bullet, 2.0f) would produce
+    //  a bullet that passes straight through everything for two seconds and
+    //  then vanishes. It would look like a collision-layer mistake, there
+    //  would be no message, and the fuse is the last thing anybody would
+    //  suspect. So fuses are a SEPARATE list and only move into the destroy
+    //  queue when they run out.
+    //
+    //  ON THE GAME CLOCK, NOT THE WALL CLOCK. A fuse stops burning while the
+    //  game is paused, because a grenade that goes off behind a pause menu is
+    //  not what anybody means by a three-second fuse. Time::FixedDeltaTime is
+    //  what advances it, which also makes it identical on every machine.
+    //
+    //  ASKING TWICE REPLACES THE FUSE rather than queueing a second one, so
+    //  "reset the timer" is just asking again. A delay of zero or less is
+    //  exactly QueueDestroy, so there is no edge case to remember.
+    // ========================================================================
+    static void QueueDestroyAfter(EntityId id, float delaySeconds);
+    static void QueueDestroyAfter(Entity& entity, float delaySeconds);
+
+    // How long until it goes, or a NEGATIVE number when nothing is waiting on
+    // it. Negative rather than zero, because zero is a real answer - it means
+    // "this tick" - and a caller cannot tell those apart otherwise.
+    static float SecondsUntilDestroy(EntityId id);
+
+    // Calls off a destroy that has not happened yet, fused or queued. False
+    // when there was nothing to call off.
+    //
+    // THIS IS THE ONE PLACE THE FOUR RULES BEND, so it is worth saying why: a
+    // shield that absorbs the killing blow later in the same step is an
+    // ordinary thing to write, and without this the only way to express it is
+    // to not queue the destroy in the first place and hope nothing else did.
+    //
+    // It cannot resurrect something already destroyed. Once Apply has run the
+    // entity is gone and the id is stale, so this answers false - which is the
+    // honest answer rather than a half-undo.
+    static bool CancelQueuedDestroy(EntityId id);
+
+    static std::size_t PendingFuseCount();
+
+    // Advances the fuses, moving any that have run out into the destroy
+    // queue. Called once per simulation step by Engine, immediately before
+    // Apply, and never from inside a system's Update.
+    //
+    // `fixedStepSeconds` is the FIXED STEP, not a scaled delta. GameClock
+    // applies the time scale to its accumulator, so the step itself is
+    // constant and multiplying by TimeScale again here would scale it twice.
+    static void TickFuses(float fixedStepSeconds);
 
     // Applies everything queued. Called once per simulation step, at stage
     // 600, and never from inside a system's Update.

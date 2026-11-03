@@ -857,9 +857,7 @@ void TilemapComponent::Render(Camera& camera, double seconds, bool editorTints) 
                     ys[2] = std::round(screenMin.y);
                 }
 
-                const unsigned char  mask  = NeighbourMask(x, y);
-                const QuadrantSlots  slots = ResolveQuadrants(mask);
-                const int            frame = asset->FrameForCell(x, y, seconds);
+                const int frame = asset->FrameForCell(x, y, seconds);
 
                 Color tint = m_tint;
                 if (editorTints && asset->EditorTint().a != 0) {
@@ -867,7 +865,7 @@ void TilemapComponent::Render(Camera& camera, double seconds, bool editorTints) 
                 }
 
                 // ---- a connector draws nothing, or a marker in the editor ---
-                if (!asset->HasSheet()) {
+                if (!asset->HasArt()) {
                     if (editorTints && asset->EditorTint().a != 0) {
                         const Vec2 cornerA =
                             camera.WorldToScreen(world.TransformPoint(bounds.min));
@@ -883,6 +881,40 @@ void TilemapComponent::Render(Camera& camera, double seconds, bool editorTints) 
                     ++g_cellsDrawn;
                     continue;
                 }
+
+                // ---- an image tile is ONE picture, drawn whole --------------
+                //
+                // No neighbour mask, no quarters, and a quarter of the draw
+                // calls. The four below exist only to assemble a shape out of
+                // five bands; an image has no bands and every cell of it looks
+                // the same. See TileAsset.h on the two kinds.
+                if (!asset->IsAutoTile()) {
+                    const SpriteRect source{frame * asset->TileSize(), 0,
+                                            asset->TileSize(), asset->TileSize()};
+                    if (snapped) {
+                        const Vec2 size{std::max(xs[2] - xs[0], 1.0f),
+                                        std::max(ys[2] - ys[0], 1.0f)};
+                        const Vec2 middle{(xs[0] + xs[2]) * 0.5f,
+                                          (ys[0] + ys[2]) * 0.5f};
+                        Renderer::DrawSprite(asset->ArtTexture(), middle, size, 0.0f,
+                                             tint, &source);
+                    } else {
+                        const Vec2 onScreen{cellSize.x * scale.x * camera.Zoom(),
+                                            cellSize.y * scale.y * camera.Zoom()};
+                        Renderer::DrawSprite(
+                            asset->ArtTexture(),
+                            camera.WorldToScreen(world.TransformPoint(centre)),
+                            onScreen, rotation * kRadToDeg, tint, &source);
+                    }
+                    ++g_cellsDrawn;
+                    continue;
+                }
+
+                // THE MASK IS WORKED OUT HERE AND NOT ABOVE, because it is the
+                // auto-tile's question. An image tile has already drawn itself
+                // and never needed to know what was beside it.
+                const unsigned char mask  = NeighbourMask(x, y);
+                const QuadrantSlots slots = ResolveQuadrants(mask);
 
                 for (int q = 0; q < kQuadrantCount; ++q) {
                     const auto       quadrant = static_cast<Quadrant>(q);
@@ -908,7 +940,7 @@ void TilemapComponent::Render(Camera& camera, double seconds, bool editorTints) 
                                         std::max(y1 - y0, 1.0f)};
                         const Vec2 middle{(x0 + x1) * 0.5f, (y0 + y1) * 0.5f};
 
-                        Renderer::DrawSprite(asset->Sheet(), middle, size, 0.0f,
+                        Renderer::DrawSprite(asset->ArtTexture(), middle, size, 0.0f,
                                              tint, &source);
                     } else {
                         // Rotated: no pixel grid to snap to, so the quarter is
@@ -922,7 +954,7 @@ void TilemapComponent::Render(Camera& camera, double seconds, bool editorTints) 
                             cellSize.y * 0.5f * scale.y * camera.Zoom(),
                         };
                         Renderer::DrawSprite(
-                            asset->Sheet(),
+                            asset->ArtTexture(),
                             camera.WorldToScreen(world.TransformPoint(localCentre)),
                             onScreen, rotation * kRadToDeg, tint, &source);
                     }
@@ -988,6 +1020,11 @@ void TilemapRenderSystem::RenderRange(Camera& camera, int minLayer, int maxLayer
     for (const TilemapComponent* tilemap : tilemaps) {
         const int layer = tilemap->Layer();
         if (layer < minLayer || layer >= maxLayer) {
+            continue;
+        }
+        // A switched-off entity's tilemap is not drawn, exactly as its sprites
+        // are not. See Entity::IsActiveInHierarchy.
+        if (!tilemap->OwnerIsActive()) {
             continue;
         }
         tilemap->Render(camera, seconds, editorTints);

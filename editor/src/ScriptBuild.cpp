@@ -2086,6 +2086,23 @@ ScriptBuild::Result ScriptBuild::BuildBundle() {
     const bool      stampChanged = CurrentBuildStamp() != ReadWholeFile(BuildStampFile());
     const BuildPlan plan         = PlanBuild(sources, stampChanged);
 
+    // ======================================================================
+    //  THE PREVIOUS BUNDLE GOES BEFORE THE LINKER RUNS, and it is the test
+    //  below that needs it gone.
+    //
+    //  Success here is decided by `fs::exists(output)` after the link. With a
+    //  bundle from an earlier export still sitting there, that question
+    //  answers "yes" whether this link worked or not - so a failed link
+    //  reported a successful export and shipped the OLD scripts, with the
+    //  compiler's complaint sitting unread in bundle.log.
+    //
+    //  Nothing else wants this file: PlanBuild has just deleted every object
+    //  it is about to rebuild, and ScriptLibrary::FindLibraryPath no longer
+    //  looks in .build at all. Deleting it costs a relink that was going to
+    //  happen anyway - this function always links - and buys an honest answer.
+    // ======================================================================
+    fs::remove(output, ec);
+
     const fs::path              buildDir  = BuildDirectory();
     const fs::path              scriptLog = buildDir / "bundle.log";
     const fs::path              engineLib = EngineLinkLibrary();

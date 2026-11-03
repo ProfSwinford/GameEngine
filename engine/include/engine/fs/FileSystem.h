@@ -126,6 +126,24 @@ public:
         std::string       virtualPath;   // ready to pass back to ReadFile
         bool              isDirectory = false;
         unsigned long long byteSize   = 0;   // 0 for folders
+
+        // When the file was last written, as a plain count of clock ticks.
+        //
+        // AN OPAQUE NUMBER, GOOD ONLY FOR COMPARING WITH ANOTHER ONE FROM HERE.
+        // It is std::filesystem's own file clock, whose epoch and tick length
+        // are not specified, so it cannot be turned into a date and must not
+        // be written to a file. What it IS good for is "is this the same file
+        // I read a moment ago?", which is what a tool that caches anything off
+        // the disk needs and has no other way to ask.
+        //
+        // A plain integer rather than the clock's own type so that this header
+        // does not drag <filesystem> into everything that lists a folder.
+        //
+        // Free to collect: directory_iterator has already stat-ed the entry to
+        // answer is_directory and file_size, and this reads the same cached
+        // status. 0 when it could not be read, which compares equal to itself
+        // and so simply means "assume unchanged".
+        long long          modifiedAt = 0;
     };
 
     // The listing a BROWSER needs, as opposed to the one a menu needs.
@@ -137,6 +155,19 @@ public:
     // every file manager does.
     static bool ListDirectory(std::string_view virtualDirectory,
                               std::vector<DirEntry>& out);
+
+    // ======================================================================
+    //  When one file was last written, as DirEntry::modifiedAt reports it.
+    //
+    //  Same opaque number, same rule: only ever compared with another one
+    //  from here. 0 when the file is not there or the time cannot be read,
+    //  which compares equal to itself and so reads as "assume unchanged".
+    //
+    //  NOT ARCHIVE-AWARE, on purpose. A packed asset cannot change while the
+    //  game is running, and the only caller is the editor asking "has
+    //  somebody edited this in another program?" about a loose file.
+    // ======================================================================
+    static long long ModifiedAt(std::string_view virtualPath);
 
     // Creates a folder, including any missing parent folders.
     static bool CreateDirectory(std::string_view virtualDirectory, std::string& outError);

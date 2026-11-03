@@ -73,6 +73,12 @@ public:
     const char* Title() const override { return "Inspector"; }
     void        Draw() override;
 
+    // DECLARED ONLY TO LET THE PREVIEWED IMAGE GO. The panel holds the
+    // selected image loaded between frames, and a texture outliving the
+    // renderer is a call to SDL_DestroyTexture on freed memory - see
+    // ForgetHeldTexture in InspectorPanel.cpp, which this calls.
+    ~InspectorPanel() override;
+
 private:
     void ApplyPendingRemoval();
 

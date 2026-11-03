@@ -73,6 +73,10 @@
 
 namespace eng {
 
+// Declared rather than included: the full type is only needed by whoever
+// builds one, and they have to include EngineBuild.h for that anyway.
+struct EngineBuildInfo;
+
 struct ScriptAbiCheck {
     enum class Verdict {
         Match,          // built for this engine
@@ -101,9 +105,46 @@ public:
     // else in this file compares against it.
     static std::string Stamp();
 
+    // The stamp a GIVEN engine build would write, rather than the one running.
+    //
+    // ======================================================================
+    //  WHY A FOREIGN BUILD CAN BE ASKED ABOUT AT ALL.
+    //
+    //  The launcher picks a project and an engine INDEPENDENTLY, and then
+    //  starts that engine's editor. So the one program that most needs to
+    //  know whether a project's scripts match an engine is the one program
+    //  for which "this engine" is the wrong engine - its own build has
+    //  nothing to do with the pair it is about to put together.
+    //
+    //  THE C RUNTIME IS DERIVED FROM THE RECORDED CONFIGURATION rather than
+    //  from a compile-time macro, because a macro can only speak for the
+    //  binary it was compiled into. Debug means /MDd and Release means /MD,
+    //  which is the same mapping Stamp() gets from ENGINE_IS_DEBUG - and for
+    //  the running build the two agree, which is the only reason it is safe
+    //  to have both.
+    //
+    //  An engine whose engine-version.json could not be read has nothing to
+    //  derive from, and CheckAgainst answers Unverifiable rather than
+    //  guessing: a wrong mismatch would send somebody to rebuild for no
+    //  reason, and a wrong match is the heap corruption this file exists to
+    //  prevent.
+    // ======================================================================
+    static std::string StampFor(const EngineBuildInfo& engine);
+
     // Compares a recorded stamp against Stamp(). Keys this engine does not
     // know about are ignored - see the header.
     static ScriptAbiCheck Check(std::string_view recorded);
+
+    // The same comparison, against an engine that is NOT this one.
+    static ScriptAbiCheck CheckAgainst(std::string_view recorded,
+                                       const EngineBuildInfo& engine);
+
+    // Which engine a recorded stamp says built the scripts, for a message.
+    // Empty when the stamp does not say.
+    //
+    // Here rather than in the caller so that nothing else has to know the
+    // stamp's format - the reason StampVirtualPath is here too.
+    static std::string RecordedEngine(std::string_view recorded);
 
     // Reads the stamp from the project and checks it. The one call
     // ScriptLibrary makes at start-up.
@@ -111,6 +152,13 @@ public:
     // Needs the file system to be up, which it is: FileSystem is the second
     // subsystem to start and scripts are the ninth.
     static ScriptAbiCheck CheckRecorded();
+
+private:
+    // The comparison both Check and CheckAgainst run, with neither side
+    // assumed. Private because a caller should say WHICH engine it means
+    // rather than hand over two stamps and hope they were built the same way.
+    static ScriptAbiCheck CompareStamps(std::string_view recorded,
+                                        std::string_view expected);
 };
 
 } // namespace eng

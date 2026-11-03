@@ -119,6 +119,7 @@ private:
     // explain itself. An editor that silently deleted the explanation from a
     // file each time somebody ticked a checkbox would be worse than no editor.
     void DrawTileEditor();
+    void DrawImagePreview(const eng::TileAsset& asset);
     void DrawBandStrip(const eng::TileAsset& asset);
     void DrawCombinations(const eng::TileAsset& asset);
 

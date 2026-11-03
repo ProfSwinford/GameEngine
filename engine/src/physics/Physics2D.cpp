@@ -30,6 +30,14 @@ bool Visible(const ColliderComponent& collider, const QueryFilter& filter) {
     if (!collider.Enabled()) {
         return false;   // a disabled collider is invisible to everything
     }
+
+    // AND SO IS ONE ON A SWITCHED-OFF ENTITY. This is the line that makes
+    // Entity::SetActive(false) a complete switch rather than a visual one: a
+    // raycast must not report something the renderer is not drawing and the
+    // collision system is ignoring. See Entity::IsActiveInHierarchy.
+    if (!collider.OwnerIsActive()) {
+        return false;
+    }
     if (!filter.hitTriggers && collider.IsTrigger()) {
         return false;
     }
@@ -126,12 +134,64 @@ int Physics2D::RaycastAll(Vec2 origin, Vec2 direction, float distance,
 
 RaycastHit2D Physics2D::Raycast(Vec2 origin, Vec2 direction, float distance,
                                 const QueryFilter& filter) {
-    // Collects every hit and keeps the nearest, rather than stopping at the
-    // first collider that happens to be early in the list. "The nearest thing"
-    // is the only useful meaning of a single-result raycast.
-    RaycastHit2D hits[64];
-    const int    count = RaycastAll(origin, direction, distance, hits, 64, filter);
-    return (count > 0) ? hits[0] : RaycastHit2D{};
+    // ======================================================================
+    //  KEEPS THE NEAREST AS IT GOES, rather than collecting hits into a
+    //  buffer and sorting them.
+    //
+    //  IT USED TO DO THE LATTER, and it was wrong. RaycastAll fills a
+    //  fixed-size buffer in COLLIDER-REGISTRATION ORDER and only sorts what it
+    //  managed to fit, so once the ray crossed more colliders than the buffer
+    //  held, the ones that did not fit were dropped BEFORE the sort - and the
+    //  nearest hit could be among them. The result was a raycast that
+    //  occasionally reported something further away than what it actually hit,
+    //  in big scenes only, with no message and no obvious cause. Reading
+    //  "the nearest thing" as "the nearest of the first sixty-four" is not a
+    //  limit anybody would guess from the name.
+    //
+    //  Keeping a running minimum has no buffer and therefore no limit. It is
+    //  also less work: no array to fill, nothing to sort.
+    //
+    //  NOT WRITTEN IN TERMS OF RaycastAll, deliberately. RaycastAll's contract
+    //  is "as many as fit, nearest first", which is the right contract for a
+    //  caller that wants a list and the wrong one to build this on.
+    // ======================================================================
+    ++g_queries;
+
+    const Vec2 unit = direction.Normalized();
+    if (unit.LengthSquared() <= 0.0f) {
+        return RaycastHit2D{};
+    }
+
+    const Ray ray{origin, unit, std::max(distance, 0.0f)};
+
+    RaycastHit2D             nearest;
+    std::vector<ConvexShape> shapes;   // reused across the loop
+
+    for (ColliderComponent* collider : CollisionSystem::All()) {
+        if (collider == nullptr || !Visible(*collider, filter)) {
+            continue;
+        }
+
+        const int count = GatherWorldShapes(*collider, shapes);
+        for (int i = 0; i < count; ++i) {
+            RaycastHit hit;
+            if (!eng::Raycast(ray, shapes[i], hit)) {
+                continue;
+            }
+            // `nearest.collider == nullptr` is how RaycastHit2D says "nothing
+            // yet" - see its operator bool.
+            if (nearest.collider != nullptr && hit.distance >= nearest.distance) {
+                continue;
+            }
+            nearest.collider = collider;
+            nearest.entity   = collider->OwnerId();
+            nearest.point    = hit.point;
+            nearest.normal   = hit.normal;
+            nearest.distance = hit.distance;
+            nearest.fraction = hit.fraction;
+        }
+    }
+    return nearest;
 }
 
 // ---------------------------------------------------------------------------

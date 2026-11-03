@@ -27,6 +27,7 @@ set(ENGINE_SOURCES
     src/fs/UserPaths.cpp              # where this user's own settings live
 
     src/input/InputMap.cpp            # key presses -> named actions
+    src/input/Pointer.cpp              # where the mouse is, in view and world space
 
     src/math/Mat3.cpp
     src/math/Overlap.cpp
@@ -52,6 +53,7 @@ set(ENGINE_SOURCES
     src/render/Gizmos.cpp             # helper shapes drawn over the world
     src/render/Renderer.cpp           # lines, rectangles, text and sprites
 
+    src/resource/ImportSettings.cpp   # .oimport: how an asset is loaded
     src/resource/ResourceManager.cpp  # loading images
     src/resource/StbImage.cpp         # compiles the .png/.jpg decoder, once
 
@@ -62,10 +64,12 @@ set(ENGINE_SOURCES
     src/scene/Entity.cpp
     src/scene/EntityRef.cpp            # one entity referring to another
     src/scene/Messaging.cpp           # entities talking to each other
+    src/scene/Prefab.cpp              # saved entities, and the link back to them
     src/scene/Scene.cpp               # loading and saving levels
     src/scene/ScriptComponent.cpp     # your own behaviour classes
     src/scene/ScriptFields.cpp        # the variables a script shows in the Inspector
     src/scene/SpinComponent.cpp
+    src/scene/SpriteAnimation.cpp   # flipbook playback, one frame at a time
     src/scene/UI.cpp                  # the in-game interface
     src/scene/SystemOrder.cpp         # what updates, in what order
     src/scene/ScriptLibrary.cpp       # loading the project's compiled scripts
@@ -91,6 +95,7 @@ set(ENGINE_HEADERS
     include/engine/fs/FileSystem.h
     include/engine/fs/UserPaths.h
     include/engine/input/InputMap.h
+    include/engine/input/Pointer.h
     include/engine/math/Mat3.h
     include/engine/math/Overlap.h
     include/engine/math/Random.h
@@ -111,6 +116,7 @@ set(ENGINE_HEADERS
     include/engine/render/Gizmos.h
     include/engine/render/Renderer.h
     include/engine/render/Texture.h
+    include/engine/resource/ImportSettings.h
     include/engine/resource/ResourceManager.h
     include/engine/scene/Component.h
     include/engine/scene/DeferredOps.h
@@ -118,11 +124,14 @@ set(ENGINE_HEADERS
     include/engine/scene/EntityId.h
     include/engine/scene/EntityRef.h
     include/engine/scene/Messaging.h
+    include/engine/scene/Prefab.h
+    include/engine/scene/PrefabRef.h
     include/engine/scene/Scene.h
     include/engine/scene/ScriptComponent.h
     include/engine/scene/ScriptFields.h
     include/engine/scene/ScriptHooks.h
     include/engine/scene/SpinComponent.h
+    include/engine/scene/SpriteAnimation.h
     include/engine/scene/SystemOrder.h
     include/engine/scene/ScriptLibrary.h
     include/engine/tilemap/AutoTile.h

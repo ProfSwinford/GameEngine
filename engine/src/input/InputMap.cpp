@@ -368,6 +368,17 @@ void InputMap::ClearBindings() {
     g_stack.clear();
 }
 
+bool InputMap::HasBindings() {
+    for (const auto& [contextName, context] : g_contexts) {
+        for (const auto& [actionName, action] : context.actions) {
+            if (!action.bindings.empty()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void InputMap::Snapshot(std::vector<BindingInfo>& out) {
     out.clear();
     for (const auto& [contextName, context] : g_contexts) {

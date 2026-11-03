@@ -105,6 +105,12 @@ CameraComponent* CameraSystem::Active() {
         if (camera == nullptr || !camera->Enabled()) {
             continue;
         }
+        // A camera on a switched-off entity cannot be the active one. Without
+        // this, switching off a whole menu or cut-scene subtree would leave
+        // its camera still framing the shot. See Entity::IsActiveInHierarchy.
+        if (!camera->OwnerIsActive()) {
+            continue;
+        }
         // STRICTLY GREATER, so a tie goes to whichever was found first rather
         // than to whichever happens to be last in the list. Two cameras with
         // the same priority should at least pick the same one every frame.

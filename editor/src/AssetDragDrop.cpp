@@ -7,6 +7,10 @@
 #include "EditorApp.h"
 #include "ScriptBuild.h"
 
+#include <engine/resource/ImportSettings.h>
+#include <engine/scene/Prefab.h>
+#include <engine/scene/SpriteAnimation.h>
+
 #include <imgui.h>
 
 #include <cctype>
@@ -32,9 +36,84 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+//  If this path names an ANIMATION, give the entity something that plays it.
+//
+//  A FRAME AND AN ANIMATION ARE THE SAME SHAPE OF PATH - "hero.png#f0" and
+//  "hero.png#walk" - and ClassifyAsset answers Texture for both, correctly,
+//  because each is a picture. So the sprite is set either way by the caller
+//  and this adds the second half only when the name is an animation.
+//
+//  THE TEST IS FindAnimation ON THE SHEET'S SLICE, which is the only thing
+//  that can tell the two apart: nothing about the path itself says which it
+//  is. Asked here rather than in the component so that dropping a FRAME stays
+//  exactly what it was - a still picture, with no component added.
+//
+//  THE SPRITE KEEPS THE ANIMATION'S OWN PATH as its texture, set by the
+//  caller, and that is deliberate: loading an animation's path gives a still
+//  of its first surviving frame, so the entity looks right in the editor where
+//  nothing is playing, and the two fields agree without anything keeping them
+//  in step.
+//
+//  Silent when there is already one: re-dropping onto an animated entity means
+//  "play this instead", which SetAnimationPath does.
+// ---------------------------------------------------------------------------
+void GiveAnimationIfItIsOne(eng::Entity& entity, std::string_view virtualPath) {
+    if (!eng::IsSubAsset(virtualPath)) {
+        return;
+    }
+
+    const std::string sheet = eng::SheetPathOf(virtualPath);
+    const std::string name  = eng::SubAssetNameOf(virtualPath);
+
+    const eng::TextureImport settings = eng::ImportLibrary::ForTexture(sheet);
+    if (settings.sheet.FindAnimation(name) == nullptr) {
+        return;   // a frame, or a name the sheet does not have
+    }
+
+    auto* animation = entity.Find<eng::SpriteAnimationComponent>();
+    if (animation == nullptr) {
+        animation = static_cast<eng::SpriteAnimationComponent*>(
+            entity.AddComponent(eng::SpriteAnimationComponent::kTypeName));
+    }
+    if (animation == nullptr) {
+        ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                         "could not add a SpriteAnimationComponent to '{}'",
+                         entity.Name());
+        return;
+    }
+
+    if (!animation->SetAnimationPath(virtualPath)) {
+        // It refuses only a path that is not part of an image, which cannot
+        // happen here - IsSubAsset was the first thing asked. Reported rather
+        // than ignored, because an impossible branch that stays silent is how
+        // a later change to either side goes unnoticed.
+        ENGINE_LOG_ERROR(eng::Channels::kEditor, "'{}' refused the animation {}: {}",
+                         entity.Name(), virtualPath, animation->Problem());
+        return;
+    }
+
+    ENGINE_LOG_INFO(eng::Channels::kEditor, "'{}' will play {}", entity.Name(),
+                    virtualPath);
+}
+
 } // namespace
 
 AssetKind ClassifyAsset(std::string_view virtualPath) {
+    // ---- a sliced frame is whatever the image it came out of is -----------
+    //
+    // "textures/hero.png#walk_1" ends in "lk_1", so every extension test below
+    // misses it and it would come back Unknown. That is not a cosmetic
+    // mislabel: PayloadIdFor(Unknown) hands out the generic move payload, so a
+    // frame could not be dragged onto an entity at all; the Assets panel would
+    // give it no thumbnail; and the Inspector would send it down the "this kind
+    // of file has no import settings" branch.
+    //
+    // ONE LINE, AND IT CORRECTS EVERY CALLER. Each of them is asking what KIND
+    // of thing a path names, and a frame of an image is an image.
+    if (eng::IsSubAsset(virtualPath)) {
+        return ClassifyAsset(eng::SheetPathOf(virtualPath));
+    }
     // A script is recognised by its extension alone. Everything the browser
     // can see is already under assets/, and every .cpp and .h under assets/ is
     // compiled into the project's script library - so if it is visible here
@@ -74,6 +153,12 @@ AssetKind ClassifyAsset(std::string_view virtualPath) {
     if (EndsWithNoCase(virtualPath, ".otile")) {
         return AssetKind::Tile;
     }
+    // A prefab. Its own extension for the third time and the same reason: it
+    // is JSON, and "is this a level, a tile or a prefab?" has to be answerable
+    // from the name. See eng::kPrefabExtension.
+    if (EndsWithNoCase(virtualPath, eng::kPrefabExtension)) {
+        return AssetKind::Prefab;
+    }
     return AssetKind::Unknown;
 }
 
@@ -84,6 +169,7 @@ const char* PayloadIdFor(AssetKind kind) {
         case AssetKind::Script:  return kPayloadScript;
         case AssetKind::Font:    return kPayloadFont;
         case AssetKind::Tile:    return kPayloadTile;
+        case AssetKind::Prefab:  return kPayloadPrefab;
         case AssetKind::Unknown: break;
     }
     // Not nullptr. See the header: an unrecognised file is still a file that
@@ -92,6 +178,18 @@ const char* PayloadIdFor(AssetKind kind) {
 }
 
 std::string ScriptNameFromPath(std::string_view virtualPath) {
+    // ---- a sliced frame is named after both halves ------------------------
+    //
+    // The last '.' in "hero.png#walk_1" is inside ".png", so the extension
+    // strip below would leave "hero" and twelve frames dropped into a scene
+    // would arrive as hero, hero_1, hero_2... - the indistinguishable naming
+    // the note on PrefabPathFor warns about, and a saved scene records a
+    // parent BY NAME.
+    if (eng::IsSubAsset(virtualPath)) {
+        return ScriptNameFromPath(eng::SheetPathOf(virtualPath)) + "_" +
+               eng::SubAssetNameOf(virtualPath);
+    }
+
     std::string_view name = virtualPath;
 
     // Drop everything up to and including the last '/'.
@@ -156,6 +254,7 @@ bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
                 return false;
             }
             sprite->SetTexture(virtualPath);
+            GiveAnimationIfItIsOne(*entity, virtualPath);
             EditorState::Get().MarkDirty();
             outMessage = entity->Name() + " now uses " + std::string(virtualPath);
             return true;
@@ -218,11 +317,46 @@ bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
             return true;
         }
 
+        case AssetKind::Prefab: {
+            // ==============================================================
+            //  A PREFAB DROPPED ON AN ENTITY BECOMES A CHILD OF IT, which is
+            //  what Unity does and is the only reading that makes sense: a
+            //  prefab is a thing in the world rather than a setting, so there
+            //  is nothing about the target entity for it to change.
+            // ==============================================================
+            std::string         error;
+            const eng::EntityId placed = scene.InstantiatePrefab(virtualPath, error);
+            eng::Entity*        instance = scene.Get(placed);
+            if (instance == nullptr) {
+                outMessage = "could not place that prefab: " + error;
+                return false;
+            }
+
+            // keepWorldTransform, so it lands ON the entity it was dropped
+            // on rather than at whatever its own local numbers mean under a
+            // new parent - which for a prefab authored at the origin is a
+            // jump to wherever the parent is not.
+            instance->Transform().SetParent(&entity->Transform(), true);
+
+            // The record has to agree with the tree, or the next save writes
+            // the instance at the top level. See PrefabInstance::parentName.
+            if (eng::PrefabInstance* record = scene.PrefabInstanceOf(placed)) {
+                record->parentName = entity->Name();
+            }
+
+            EditorState::Get().SelectOnly(placed);
+            EditorState::Get().MarkDirty();
+            outMessage = instance->Name() + " placed under " + entity->Name();
+            return true;
+        }
+
         case AssetKind::Scene:
             outMessage = "a scene cannot be attached to an entity - drop it on the "
                          "Scene view to open it";
             return false;
 
+        case AssetKind::Font:
+        case AssetKind::Tile:
         case AssetKind::Unknown:
             break;
     }
@@ -240,9 +374,10 @@ bool AcceptAssetDropOnEntity(eng::EntityId target) {
 
     bool accepted = false;
 
-    // Both kinds are offered here, so a caller does not have to know which
-    // ones can land on an entity - and adding a new kind is one edit.
-    for (const char* payloadId : {kPayloadTexture, kPayloadScript}) {
+    // Every kind that can land on an entity is offered here, so a caller does
+    // not have to know which ones those are - and adding a new kind is one
+    // edit. See ApplyAssetToEntity for what each one does.
+    for (const char* payloadId : {kPayloadTexture, kPayloadScript, kPayloadPrefab}) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payloadId);
         if (payload == nullptr) {
             continue;
@@ -271,14 +406,58 @@ bool AcceptAssetDropOnEntity(eng::EntityId target) {
     return accepted;
 }
 
-eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 worldPosition,
-                                   std::string& outMessage) {
-    if (ClassifyAsset(virtualPath) != AssetKind::Texture) {
-        outMessage = "only an image can be dropped into the scene to make a new entity";
-        return {};
+std::string PrefabPathFor(const eng::Entity& entity, std::string_view virtualDirectory) {
+    std::string name = entity.Name();
+    if (name.empty()) {
+        name = "Prefab";
+    }
+    // Anything a filename cannot hold becomes an underscore. A name is free
+    // text and a filename is not: "Big Door/2" would otherwise be a file in a
+    // folder called "Big Door" that nothing ever created.
+    for (char& c : name) {
+        // '#' IS IN THE LIST FOR A REASON THAT IS NOT THE FILESYSTEM'S. Every
+        // other character here is one a filename cannot hold; '#' can, and is
+        // replaced because it is what separates an image from one of its
+        // sliced frames. An entity called "Boss#2" would otherwise write a
+        // real prefabs/Boss#2.oprefab, and the rule in ImportSettings.h is the
+        // only thing standing between that and being read as a frame.
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' ||
+            c == '<' || c == '>' || c == '|' || c == ' ' || c == '#') {
+            c = '_';
+        }
     }
 
+    std::string folder(virtualDirectory);
+    if (!folder.empty() && folder.back() != '/') {
+        folder += '/';
+    }
+    return folder + name + eng::kPrefabExtension;
+}
+
+eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 worldPosition,
+                                   std::string& outMessage) {
     eng::Scene& scene = eng::Engine::Get().GetScene();
+
+    // ---- a prefab becomes an instance of itself, where it was dropped -----
+    if (ClassifyAsset(virtualPath) == AssetKind::Prefab) {
+        std::string         error;
+        const eng::EntityId placed = scene.InstantiatePrefab(virtualPath, error);
+        eng::Entity*        instance = scene.Get(placed);
+        if (instance == nullptr) {
+            outMessage = "could not place that prefab: " + error;
+            return {};
+        }
+        instance->Transform().SetWorldPosition(worldPosition);
+        EditorState::Get().MarkDirty();
+        outMessage = "placed " + instance->Name();
+        return placed;
+    }
+
+    if (ClassifyAsset(virtualPath) != AssetKind::Texture) {
+        outMessage = "only an image or a prefab can be dropped into the scene to make "
+                     "something new";
+        return {};
+    }
 
     // Named after the file, with a number added if that name is taken.
     // Dropping checker_red.bmp three times gives checker_red, checker_red_1
@@ -306,6 +485,7 @@ eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 world
         return id;
     }
     sprite->SetTexture(virtualPath);
+    GiveAnimationIfItIsOne(*entity, virtualPath);
 
     EditorState::Get().MarkDirty();
     outMessage = "created " + entity->Name();

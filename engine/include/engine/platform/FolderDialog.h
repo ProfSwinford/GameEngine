@@ -50,6 +50,7 @@
 //  Cancelled and Failed are told apart so the caller can say which.
 // ============================================================================
 
+#include <initializer_list>
 #include <string>
 
 namespace eng {
@@ -89,7 +90,31 @@ public:
 
     // Main thread only: takes whatever the picker decided and clears it, so
     // one choice causes one action.
-    static Result Take();
+    //
+    // ======================================================================
+    //  ONLY IF THE ANSWER IS FOR ONE OF `purposes`, AND THIS IS WHAT THE
+    //  `purpose` FIELD ABOVE IS FOR.
+    //
+    //  There is more than one collector - the editor has the project menu and
+    //  the exporter - and they run one after the other in the same frame. A
+    //  Take that cleared unconditionally therefore opened everybody's mail:
+    //  whichever collector ran first took the answer, found it was not its
+    //  own, and dropped it on the floor. Nothing put it back, and two lines
+    //  later the collector it belonged to found nothing pending.
+    //
+    //  WHAT THAT COST: File -> Build Game could not work at all. You picked a
+    //  folder, the project menu's collector ran first and binned the answer,
+    //  and the exporter was never told. No error, no log line, no status - the
+    //  menu item simply did nothing, every time, in every project.
+    //
+    //  Filtering HERE rather than in each caller is the point. The old code
+    //  did check the purpose - both collectors did - but they checked it after
+    //  taking, which is too late. Making the filter part of taking means a
+    //  collector added later cannot bring this back by forgetting.
+    //
+    //  An empty list means "any", for a program with only one collector.
+    // ======================================================================
+    static Result Take(std::initializer_list<int> purposes = {});
 };
 
 } // namespace eng

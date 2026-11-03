@@ -24,6 +24,7 @@
 
 #include <doctest/doctest.h>
 
+#include <engine/project/EngineBuild.h>
 #include <engine/project/ScriptAbi.h>
 
 #include <string>
@@ -249,4 +250,134 @@ TEST_CASE("the stamp lives where both the engine and the editor look") {
     // Named by the engine and used by the editor's BuildStampFile, so that
     // the writer and the reader cannot disagree about which file this is.
     CHECK(ScriptAbi::StampVirtualPath() == ".build/buildconfig.txt");
+}
+
+// ===========================================================================
+//  Asking about an engine that is NOT this one
+//
+//  The launcher picks a project and an engine independently and then starts
+//  that engine's editor, so the one program that most needs this check is the
+//  one for which "the running engine" is the wrong engine entirely. Everything
+//  below is about that case.
+// ===========================================================================
+
+namespace {
+// An engine build as engine-version.json describes one.
+EngineBuildInfo Build(const char* id, const char* configuration, int abi) {
+    EngineBuildInfo info;
+    info.id            = id;
+    info.version       = "1.0.0";
+    info.configuration = configuration;
+    info.scriptAbi     = abi;
+    info.known         = true;
+    return info;
+}
+} // namespace
+
+TEST_CASE("a foreign build's stamp is derived from its recorded configuration") {
+    // THE SAME THREE KEYS IN THE SAME ORDER as Stamp(), because the two are
+    // compared against each other as text.
+    const std::string debug = ScriptAbi::StampFor(Build("1.0.0 Debug", "Debug", 1));
+    CHECK(debug.find("abi=1\n") != std::string::npos);
+    CHECK(debug.find("crt=/MDd\n") != std::string::npos);
+    CHECK(debug.find("engine=1.0.0 Debug\n") != std::string::npos);
+
+    const std::string release =
+        ScriptAbi::StampFor(Build("1.0.0 Release", "Release", 1));
+    CHECK(release.find("crt=/MD\n") != std::string::npos);
+    CHECK(release.find("crt=/MDd") == std::string::npos);
+}
+
+TEST_CASE("the running engine's own stamp agrees with the derived one") {
+    // The two routes to a stamp must not disagree, because Check and
+    // CheckAgainst compare their output against each other. Stamp() reads a
+    // compile-time macro; StampFor reads a configuration string.
+    const EngineBuildInfo& running = EngineBuild::Running();
+    if (!running.known) {
+        return;   // no engine-version.json beside the test binary; nothing to compare
+    }
+
+    CHECK(ScriptAbi::StampFor(running) == ScriptAbi::Stamp());
+}
+
+TEST_CASE("the Release editor is told it cannot load Debug-built scripts") {
+    // ======================================================================
+    //  THE CASE THE LAUNCHER COULD NOT SEE.
+    //
+    //  It offers a project and an engine as two independent choices and then
+    //  starts that engine's editor. Pick the Release engine for a project the
+    //  Debug one built and the ABI gate refuses every script - correctly - so
+    //  every component in every scene reads NOT FOUND, which is exactly what
+    //  a broken script looks like.
+    //
+    //  Note this is answered WITHOUT reference to the engine running the
+    //  test: both sides are given.
+    // ======================================================================
+    const std::string builtByDebug = "abi=1\ncrt=/MDd\nengine=1.0.0 Debug\n";
+
+    const ScriptAbiCheck release = ScriptAbi::CheckAgainst(
+        builtByDebug, Build("1.0.0 Release", "Release", 1));
+    CHECK(release.verdict == ScriptAbiCheck::Verdict::Mismatch);
+
+    const ScriptAbiCheck debug =
+        ScriptAbi::CheckAgainst(builtByDebug, Build("1.0.0 Debug", "Debug", 1));
+    CHECK(debug.verdict == ScriptAbiCheck::Verdict::Match);
+    CHECK(debug.explanation.empty());
+}
+
+TEST_CASE("a different ABI in the same configuration is still caught") {
+    // Two Debug builds from either side of an ABI bump look identical to a
+    // person and are not interchangeable. This is why the launcher compares
+    // the stamp rather than the version string it already had on screen.
+    const std::string old = "abi=1\ncrt=/MDd\nengine=1.0.0 Debug\n";
+
+    CHECK(ScriptAbi::CheckAgainst(old, Build("1.0.0 Debug", "Debug", 2)).verdict ==
+          ScriptAbiCheck::Verdict::Mismatch);
+    CHECK(ScriptAbi::CheckAgainst(old, Build("1.0.0 Debug", "Debug", 1)).verdict ==
+          ScriptAbiCheck::Verdict::Match);
+}
+
+TEST_CASE("an engine with no version file is unverifiable, never a mismatch") {
+    // ======================================================================
+    //  THE ONE ANSWER THAT MUST NOT BE A GUESS.
+    //
+    //  An engine folder with no engine-version.json records a zero ABI and an
+    //  empty configuration. Compared literally, that disagrees with every
+    //  project on the machine - so a launcher would warn about all of them,
+    //  every time, and the warning would be trained away within a day.
+    //
+    //  Unverifiable is the honest answer: nothing is known, so nothing is
+    //  claimed.
+    // ======================================================================
+    EngineBuildInfo unknown;   // known == false, abi 0, no configuration
+    CHECK_FALSE(unknown.known);
+
+    const ScriptAbiCheck check = ScriptAbi::CheckAgainst(
+        "abi=1\ncrt=/MDd\nengine=1.0.0 Debug\n", unknown);
+
+    CHECK(check.verdict == ScriptAbiCheck::Verdict::Unverifiable);
+    CHECK(check.explanation.find("engine-version.json") != std::string::npos);
+}
+
+TEST_CASE("a project that has never been built says nothing either way") {
+    // No .build/buildconfig.txt at all. The launcher reads an empty string,
+    // and an empty string is not a disagreement - the editor will build the
+    // scripts and already says so.
+    const ScriptAbiCheck check =
+        ScriptAbi::CheckAgainst("", Build("1.0.0 Release", "Release", 1));
+    CHECK(check.verdict == ScriptAbiCheck::Verdict::Unverifiable);
+}
+
+TEST_CASE("the recorded engine can be named without reparsing the stamp elsewhere") {
+    // For the launcher's message. Kept here so that nothing outside this file
+    // has to know the stamp's format - the same reason StampVirtualPath is here.
+    CHECK(ScriptAbi::RecordedEngine("abi=1\ncrt=/MDd\nengine=1.0.0 Debug\n") ==
+          "1.0.0 Debug");
+
+    // Windows line endings, like the rest of this file's parsing.
+    CHECK(ScriptAbi::RecordedEngine("abi=1\r\ncrt=/MDd\r\nengine=2.0.0 Release\r\n") ==
+          "2.0.0 Release");
+
+    CHECK(ScriptAbi::RecordedEngine("abi=1\ncrt=/MDd\n").empty());
+    CHECK(ScriptAbi::RecordedEngine("").empty());
 }

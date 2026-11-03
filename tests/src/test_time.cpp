@@ -38,6 +38,26 @@ struct ClockGuard {
     const float     step  = clock.FixedStepSeconds();
     const bool      paused = clock.IsPaused();
 
+    // ======================================================================
+    //  THE CLOCK IS RESET ON THE WAY IN, not just restored on the way out.
+    //
+    //  This guard wraps the ENGINE'S clock - there is one, and every test
+    //  here borrows it. Putting the scale, the step and the paused flag back
+    //  afterwards was not enough, because the thing that leaks is the
+    //  ACCUMULATOR: real time collected and not yet simulated.
+    //
+    //  So a test that owed exactly two steps a frame got three on its first
+    //  frame if whatever ran before it had left a part-step behind, and
+    //  "steps == 8" failed. It passed in file order and failed under
+    //  --order-by=rand on some seeds, which is the worst way for a test to be
+    //  wrong: it looks fine until the day it does not.
+    //
+    //  Init() zeroes the accumulator, the two clocks and the two counters, and
+    //  touches nothing else - so every test below starts from the same place.
+    //  The cases that read FrameCount and TickCount take DIFFERENCES anyway.
+    // ======================================================================
+    ClockGuard() { clock.Init(); }
+
     ~ClockGuard() {
         clock.SetTimeScale(scale);
         clock.SetFixedStepSeconds(step);
@@ -202,10 +222,30 @@ TEST_CASE("frames and simulation steps are counted separately") {
     const unsigned long long framesBefore = guard.clock.FrameCount();
     const unsigned long long ticksBefore  = guard.clock.TickCount();
 
-    // Four frames of a 30 fps machine: each owes two steps of 1/60.
+    // ======================================================================
+    //  A FRAME WORTH EXACTLY TWO STEPS, ASKED FOR RATHER THAN ASSUMED.
+    //
+    //  This used to pass 1.0 / 30.0 - "a 30 fps machine" - and expect two
+    //  steps a frame. The arithmetic does not agree: the fixed step is a
+    //  FLOAT and the frame time a DOUBLE, so two steps come to
+    //  0.03333333358 and one thirtieth of a second is 0.03333333333. The
+    //  frame is a hair SHORT of two steps, so the first one yields one step
+    //  and the run totals seven.
+    //
+    //  It read as eight only because the accumulator still held a fraction
+    //  left by whatever test ran before - which is exactly the leak
+    //  ClockGuard now closes, and why closing it turned this red.
+    //
+    //  Deriving the frame time from the clock's own step keeps the thing the
+    //  test is actually about - frames and steps are counted separately - and
+    //  spends none of it on how 1/60 happens to round.
+    // ======================================================================
+    const double twoSteps =
+        2.0 * static_cast<double>(guard.clock.FixedStepSeconds());
+
     int stepsRun = 0;
     for (int frame = 0; frame < 4; ++frame) {
-        const int steps = guard.clock.BeginFrame(1.0 / 30.0);
+        const int steps = guard.clock.BeginFrame(twoSteps);
         for (int step = 0; step < steps; ++step) {
             guard.clock.OnStepConsumed();
             ++stepsRun;

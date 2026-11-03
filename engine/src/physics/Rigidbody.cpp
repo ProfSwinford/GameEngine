@@ -282,6 +282,16 @@ Vec2 Rigidbody2DComponent::VelocityAtPoint(Vec2 worldPosition) const {
     return m_velocity + arm.Perpendicular() * m_angularVelocity;
 }
 
+void Rigidbody2DComponent::AddVelocity(Vec2 delta) {
+    // STATIC IS STILL STATIC. The solver never asks, because SolverMasses
+    // gives a static body zero - but this is the one place "immovable" is
+    // decided for velocity, and it should not depend on the caller.
+    if (m_bodyType == RigidbodyType::Static) {
+        return;
+    }
+    m_velocity += delta;
+}
+
 void Rigidbody2DComponent::ApplyImpulse(Vec2 impulse, Vec2 contactPoint) {
     if (m_bodyType != RigidbodyType::Dynamic) {
         return;
@@ -419,10 +429,23 @@ void RigidbodySystem::Update(float deltaSeconds) {
     // would be integrated against this step's gravity and the last against a
     // world where several things had already moved - and the result would
     // depend on the order components happened to be attached in.
+    // A SWITCHED-OFF BODY IS NOT INTEGRATED AND KEEPS ITS VELOCITY.
+    //
+    // Keeping it is the choice worth stating. Zeroing it would mean switching
+    // something off and on again brought it back stopped, which is not what
+    // anybody means by switching something off - and SetBodyType already
+    // destroys velocity, so there is a spelling for that when it IS wanted.
+    // See Entity::IsActiveInHierarchy.
     for (Rigidbody2DComponent* body : g_bodies) {
+        if (!body->OwnerIsActive()) {
+            continue;
+        }
         body->IntegrateForces(deltaSeconds, gravity);
     }
     for (Rigidbody2DComponent* body : g_bodies) {
+        if (!body->OwnerIsActive()) {
+            continue;
+        }
         body->IntegrateVelocity(deltaSeconds);
 
         if (body->BodyType() == RigidbodyType::Dynamic &&

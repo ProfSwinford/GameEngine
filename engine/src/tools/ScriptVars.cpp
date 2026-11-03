@@ -199,6 +199,8 @@ struct TypeSpelling {
 constexpr std::array kTypeSpellings{
     TypeSpelling{"eng::EntityRef", ScriptFieldType::Entity},
     TypeSpelling{"EntityRef", ScriptFieldType::Entity},
+    TypeSpelling{"eng::PrefabRef", ScriptFieldType::Prefab},
+    TypeSpelling{"PrefabRef", ScriptFieldType::Prefab},
     TypeSpelling{"std::string", ScriptFieldType::String},
     TypeSpelling{"eng::Vec2", ScriptFieldType::Vec2},
     TypeSpelling{"Vector2", ScriptFieldType::Vec2},
@@ -288,41 +290,25 @@ bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
     code.pop_back();
 
     // ======================================================================
-    //  AN m_ PREFIX MEANS "NOT FOR THE INSPECTOR", silently.
+    //  THE NAME IS NOT CONSULTED. PUBLIC MEANS SHOWN.
     //
-    //  This project names every internal member m_something, everywhere, and
-    //  that convention is already a statement of intent - it is this engine's
-    //  [HideInInspector] and it was here first.
+    //  An `m_` prefix used to mean "not for the Inspector", silently - this
+    //  project names its own internal members that way and the convention was
+    //  read as a statement of intent.
     //
-    //  So one of them in a public section is left out AND left unreported.
-    //  Reporting it would be noise on every single build: TilemapWalker keeps
-    //  `Ridigbody2D m_body` in its public section, which is a typedef for a
-    //  POINTER - so the parser cannot even see that it is one, and would
-    //  complain about the type instead for as long as the file existed.
+    //  IT WAS A TRAP, and it was reported as one. Half the C++ world names
+    //  ORDINARY members m_something; somebody who does writes
+    //  `m_walkSpeed` in a public section, gets no box, no skipped report and
+    //  no explanation, and has no way to find out why. A rule that hides
+    //  things by spelling is invisible precisely to the people it surprises.
     //
-    //  It is also the only way to hide a variable WITHOUT making it private,
-    //  which matters for something a sibling class or a test needs to reach.
+    //  The language already has a word for "not for the Inspector", and it is
+    //  `private:`. That is what the docs now say, it is one line to write, and
+    //  it cannot be arrived at by accident.
+    //
+    //  (The declarations that relied on this have moved into private sections,
+    //  which is where they belonged - see assets/scripts/TilemapWalker.cpp.)
     // ======================================================================
-    // The declared name is the LAST identifier before any initialiser - so
-    // the part before '=' or '{', with the trailing identifier taken off it.
-    // Looking at the end of the whole line instead would read `1.0f` out of
-    // `float m_speed = 1.0f` and never match anything.
-    {
-        const std::size_t initAt = code.find_first_of("={");
-        std::string       declPart =
-            (initAt == std::string::npos) ? code : code.substr(0, initAt);
-
-        const std::size_t end = declPart.find_last_not_of(" \t");
-        if (end != std::string::npos && IsIdentChar(declPart[end])) {
-            std::size_t start = end;
-            while (start > 0 && IsIdentChar(declPart[start - 1])) {
-                --start;
-            }
-            if (declPart.compare(start, 2, "m_") == 0) {
-                return false;
-            }
-        }
-    }
 
     // ---- the words in front -------------------------------------------
     bool        disqualified = false;
@@ -385,7 +371,8 @@ bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
         outSkipped.name   = declarator;
         outSkipped.reason = "its type '" + typeText +
                             "' is not one the Inspector can draw - it handles float, "
-                            "int, bool, std::string, Vec2, Color and EntityRef";
+                            "int, bool, std::string, Vec2, Color, EntityRef and "
+                            "PrefabRef";
         outWasSkipped = true;
         return false;
     }
@@ -414,7 +401,37 @@ bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
         return false;   // the type was the start of something else entirely
     }
     const std::string name = afterType.substr(0, nameEnd);
-    const std::string tail = TrimmedCopy(afterType.substr(nameEnd));
+    std::string       tail = TrimmedCopy(afterType.substr(nameEnd));
+
+    // ==================================================================
+    //  A FIXED-SIZE ARRAY: "std::string walkAnimations[4];"
+    //
+    //  The brackets are part of the DECLARATOR, not of the type and not of
+    //  the initialiser, so they come off here and everything below judges the
+    //  rest of the line exactly as it would for a plain member. That is the
+    //  whole of the parsing: the LENGTH IS NEVER READ, because the generated
+    //  exposer loops over std::size() and so the declaration may say [4] or
+    //  [kFacingCount] or anything else the compiler can count. Parsing it
+    //  here would be a second opinion about a number that is already known.
+    //
+    //  "a[2][2]" is left alone rather than half-understood - one group, at
+    //  the end, or it is not something this handles.
+    //
+    //  See ScriptVarDecl::isArray for why one row per element is the whole
+    //  feature and a list widget is not needed.
+    // ==================================================================
+    bool isArray = false;
+    if (tail.starts_with('[')) {
+        const std::size_t close = tail.find(']');
+        if (close == std::string::npos) {
+            return false;   // unfinished; there is nothing useful to say about it
+        }
+        if (tail.find('[', close + 1) != std::string::npos) {
+            return false;   // two dimensions
+        }
+        isArray = true;
+        tail    = TrimmedCopy(tail.substr(close + 1));
+    }
 
     // WHAT FOLLOWS THE NAME decides what this line is.
     //
@@ -467,10 +484,11 @@ bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
         return false;
     }
 
-    outVar      = ScriptVarDecl{};
-    outVar.name = name;
-    outVar.type = std::string(matched->spelling);
+    outVar           = ScriptVarDecl{};
+    outVar.name      = name;
+    outVar.type      = std::string(matched->spelling);
     outVar.fieldType = matched->type;
+    outVar.isArray   = isArray;
     ReadComment(line.comment, outVar);
 
     // A range only means something on a number, and a required type only on a
@@ -480,7 +498,20 @@ bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
         outVar.fieldType != ScriptFieldType::Int) {
         outVar.ranged = false;
     }
-    if (outVar.fieldType != ScriptFieldType::Entity) {
+    // ======================================================================
+    //  A MARKER MEANS SOMETHING ON A STRING NOW, as well as on a reference.
+    //
+    //  On an EntityRef, `[Rigidbody2DComponent]` narrows the picker. On a
+    //  std::string, `[image]` or `[animation]` says the text is an ASSET PATH
+    //  - which turns the box into the same slot a Sprite's texture gets: the
+    //  file's name, a drop target and a picker, instead of a path somebody has
+    //  to type correctly from memory.
+    //
+    //  It stays opt-in because a string is usually just a string. A label's
+    //  text is not a file, and guessing would put a file picker on it.
+    // ======================================================================
+    if (outVar.fieldType != ScriptFieldType::Entity &&
+        outVar.fieldType != ScriptFieldType::String) {
         outVar.requiredType.clear();
     }
     return true;
@@ -716,6 +747,15 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
     out += "// It INCLUDES the script rather than copying it, so every line number,\n";
     out += "// every __FILE__ and the file's own anonymous namespace stay exactly as\n";
     out += "// they were - a compiler error still points at the line you wrote.\n";
+    out += "//\n";
+    out += "// The three standard headers are for the loop an ARRAY variable expands\n";
+    out += "// to - std::size, std::to_string and std::size_t. Named rather than\n";
+    out += "// relied on through the engine's own headers, because a generated file\n";
+    out += "// that compiles only because of what something else happened to include\n";
+    out += "// is a file that breaks for a reason nobody can see.\n";
+    out += "#include <cstddef>\n";
+    out += "#include <iterator>\n";
+    out += "#include <string>\n\n";
     out += "#include \"";
     out += includePath;
     out += "\"\n\n";
@@ -751,9 +791,42 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
         //  to be inaccessible, COMPILES AWAY instead of failing. It is then
         //  absent from the Inspector and present in the skipped report.
         // ================================================================
-        const std::string call = var.ranged ? "Range" : (var.requiredType.empty() ? "Var" : "Ref");
+        // ================================================================
+        //  WHICH CALL, and the String case is the one that bites.
+        //
+        //  A marker now survives on a std::string as well as on an EntityRef,
+        //  so "has a requiredType" no longer means "is a reference". Choosing
+        //  Ref for a string compiled - the `requires` guard below swallowed it
+        //  - and the variable then silently did not appear, which is the whole
+        //  class of bug that guard exists to avoid being loud about.
+        // ================================================================
+        const std::string call =
+            var.ranged ? "Range"
+            : var.requiredType.empty()
+                ? "Var"
+                : (var.fieldType == ScriptFieldType::String ? "Asset" : "Ref");
 
-        std::string args = "\"" + Escaped(var.name) + "\", s->" + var.name;
+        // ================================================================
+        //  AN ARRAY BECOMES ONE CALL PER ELEMENT, inside a loop.
+        //
+        //  The name is built at run time - "walkAnimations[0]" - which is
+        //  safe because ScriptFields::Add COPIES the name rather than keeping
+        //  a view into it. Every other part of the system then sees four
+        //  ordinary variables with four distinct names, and needs to know
+        //  nothing about arrays: the widgets, the scene file, the prefab
+        //  overrides and the undo stack all work as they already did.
+        //
+        //  std::size() rather than a parsed length, so the declaration may
+        //  say [4] or [kFacingCount] or anything else that counts.
+        // ================================================================
+        const std::string element = var.isArray ? "s->" + var.name + "[i]"
+                                                : "s->" + var.name;
+        const std::string nameArg =
+            var.isArray ? "::std::string(\"" + Escaped(var.name) +
+                              "[\") + ::std::to_string(i) + \"]\""
+                        : "\"" + Escaped(var.name) + "\"";
+
+        std::string args = nameArg + ", " + element;
         if (var.ranged) {
             args += ", " + BoundLiteral(var.fieldType, var.min);
             args += ", " + BoundLiteral(var.fieldType, var.max);
@@ -762,6 +835,10 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
         }
 
         out += "                []<class S>(S* s, ::eng::ScriptFields& f) {\n";
+        if (var.isArray) {
+            out += "                    for (::std::size_t i = 0; i < ::std::size(s->" +
+                   var.name + "); ++i) {\n";
+        }
         out += "                    if constexpr (requires { f." + call + "(" + args +
                "); }) {\n";
         out += "                        f." + call + "(" + args;
@@ -770,6 +847,9 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
         }
         out += ");\n";
         out += "                    }\n";
+        if (var.isArray) {
+            out += "                    }\n";
+        }
         out += "                }(self, fields);\n";
     }
 

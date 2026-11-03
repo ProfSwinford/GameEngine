@@ -102,6 +102,7 @@
 #include <engine/math/Vec2.h>
 #include <engine/render/Renderer.h>
 #include <engine/scene/EntityRef.h>
+#include <engine/scene/PrefabRef.h>
 
 #include <string>
 #include <string_view>
@@ -138,6 +139,14 @@ enum class ScriptFieldType {
     // particular component or script - see ScriptFields::Ref. EntityRef.h has
     // the argument for why a name and not a pointer.
     Entity,
+
+    // A PREFAB TO SPAWN. The other one that is not a value.
+    //
+    // It is an eng::PrefabRef, which holds a virtual path. The Inspector draws
+    // it as a slot you drag a prefab onto from the Assets panel, and says so
+    // when the file it names is not there. See PrefabRef.h for why a spawner
+    // written with a plain std::string is worse in four separate ways.
+    Prefab,
 };
 
 // "float", "colour" - for error messages and the Inspector's tooltips.
@@ -204,6 +213,7 @@ struct ScriptField {
     Vec2*        AsVec2() const;
     Color*       AsColor() const;
     EntityRef*   AsEntityRef() const;
+    PrefabRef*   AsPrefabRef() const;
 };
 
 namespace fields {
@@ -244,6 +254,10 @@ template <> struct Traits<EntityRef> {
     static constexpr bool            known = true;
     static constexpr ScriptFieldType type  = ScriptFieldType::Entity;
 };
+template <> struct Traits<PrefabRef> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::Prefab;
+};
 
 // A slider needs two ends to put them at, so only the numeric types can have
 // one. Named separately from `known` so the two mistakes get two messages.
@@ -279,12 +293,14 @@ public:
         using Clean = std::remove_cv_t<T>;
         static_assert(fields::Traits<Clean>::known,
                       "a script variable must be one of: float, int, bool, "
-                      "std::string, eng::Vec2, eng::Color. Those are the ones the "
-                      "Inspector can draw and the scene file can store. For "
-                      "anything else, expose the parts of it you want to tune - a "
-                      "list of waypoints is not something a property grid can "
-                      "edit, and pretending otherwise would be worse than leaving "
-                      "it out.");
+                      "std::string, eng::Vec2, eng::Color, eng::EntityRef, "
+                      "eng::PrefabRef - or a FIXED-SIZE ARRAY of one of those, "
+                      "which the exposer turns into one row per element. Those are "
+                      "the ones the Inspector can draw and the scene file can "
+                      "store. A GROWABLE list is still out: a std::vector has no "
+                      "length until the game runs, so there is nothing to lay out "
+                      "and no key to save it under. Expose the parts of anything "
+                      "else you want to tune.");
 
         // `if constexpr` and not just the static_assert above: without it, a
         // bad type ALSO produces "Traits<X> has no member 'type'", and the
@@ -355,6 +371,33 @@ public:
         AddRef(name, &value, requiredType, tooltip);
     }
 
+    // ========================================================================
+    //  A STRING THAT HOLDS AN ASSET'S PATH, drawn as a slot rather than a box.
+    //
+    //      std::string walkAnimations[4];   // [animation] by direction
+    //
+    //  `kind` is "image" or "animation", and it comes from that marker. The
+    //  Inspector then draws the same slot a Sprite's texture gets - the file's
+    //  NAME, a drop target, and a picker - instead of a path somebody has to
+    //  type correctly from memory, which is how this was reported: the boxes
+    //  could not be filled in at all.
+    //
+    //  WHY A SEPARATE CALL AND NOT A MARKER ON Var. Var is a template over
+    //  eight types and its third argument is the tooltip; adding a fourth
+    //  meaning for one of those types would make `Var(name, value, "walk")`
+    //  mean two different things depending on the type in front of it. This is
+    //  the same split Ref already makes for the same reason.
+    //
+    //  AN UNKNOWN KIND IS A WARNING AND NOT A REFUSAL, exactly as a required
+    //  type that names nothing is: the variable is kept and drawn as an
+    //  ordinary string, so a typo in a marker costs a message rather than a
+    //  variable.
+    // ========================================================================
+    void Asset(std::string_view name, std::string& value, std::string_view kind,
+               std::string_view tooltip = "") {
+        AddAsset(name, &value, kind, tooltip);
+    }
+
     // A variable that is const cannot be edited, and a slider that cannot
     // move is a worse answer than a compile error saying why.
     //
@@ -401,6 +444,11 @@ private:
     // against what is actually registered.
     void AddRef(std::string_view name, EntityRef* value,
                 std::string_view requiredType, std::string_view tooltip);
+
+    // Asset's half, for the same reason: it carries a string rather than two
+    // floats, and it is the one that checks the kind it was given.
+    void AddAsset(std::string_view name, std::string* value, std::string_view kind,
+                  std::string_view tooltip);
 
     std::vector<ScriptField> m_fields;
 };

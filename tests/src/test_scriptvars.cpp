@@ -299,31 +299,46 @@ TEST_CASE("a pointer or a reference is skipped") {
     CHECK(Skipped(info, "bound")->reason.find("reference") != std::string::npos);
 }
 
-TEST_CASE("an m_ prefix hides a variable, silently") {
+TEST_CASE("an m_ prefix hides NOTHING - public means shown") {
     // ======================================================================
-    //  This project names every internal member m_something, so the
-    //  convention is already a statement of intent - it is this engine's
-    //  [HideInInspector].
+    //  THIS USED TO BE THE OPPOSITE, and the change is deliberate.
     //
-    //  SILENTLY is the part that matters. TilemapWalker keeps a public
-    //  `Ridigbody2D m_body`, which is a typedef for a POINTER - so the parser
-    //  cannot see that it is one and would report the type instead, on every
-    //  build, forever.
+    //  An m_ prefix was read as this engine's [HideInInspector], because the
+    //  engine's own code names every internal member that way. It was a trap:
+    //  half the C++ world names ORDINARY members m_something, and somebody who
+    //  does got no box, no entry in the skipped report, and no way at all to
+    //  find out why their variable was missing. A rule that hides things by
+    //  spelling is invisible precisely to the people it surprises.
+    //
+    //  `private:` is the language's own way to say "not part of the
+    //  interface", it cannot be arrived at by accident, and it is what the
+    //  docs point at now. See the case below.
     // ======================================================================
     const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
     float m_internal = 1.0f;
-    Ridigbody2D m_body = nullptr;
     std::string m_name;
     float shown = 2.0f;
 )CPP"));
 
-    CHECK(Var(info, "m_internal") == nullptr);
-    CHECK(Var(info, "m_body") == nullptr);
-    CHECK(Var(info, "m_name") == nullptr);
+    CHECK(Var(info, "m_internal") != nullptr);
+    CHECK(Var(info, "m_name") != nullptr);
     CHECK(Var(info, "shown") != nullptr);
 
-    // Not reported either - the name said so.
+    // Nothing is skipped: all three are variables of drawable types.
     CHECK(info.skipped.empty());
+}
+
+TEST_CASE("a public pointer is reported whatever it is called") {
+    // The consequence of the change above, and the reason the engine's own
+    // scripts moved their pointers into private sections: a PUBLIC one is now
+    // named in the skipped report rather than hidden by its prefix. That is
+    // the honest behaviour - it says why there is no box - but it is a line on
+    // every build, so a pointer belongs in `private:`.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    Ridigbody2D m_body = nullptr;"));
+
+    CHECK(Var(info, "m_body") == nullptr);
+    REQUIRE(Skipped(info, "m_body") != nullptr);
 }
 
 TEST_CASE("a name that merely contains m_ is not hidden") {
@@ -697,4 +712,260 @@ ENGINE_REGISTER_SCRIPT(Orbiter)
     CHECK(Var(info, "m_start") == nullptr);
     CHECK(Var(info, "m_angle") == nullptr);
     CHECK(Var(info, "local") == nullptr);
+}
+
+// ===========================================================================
+//  Fixed-size arrays - one row per element
+//
+//  A public array is what puts several boxes in the Inspector under one name:
+//  "walkAnimations[0]" to "walkAnimations[3]". The scan says it IS an array
+//  and never reads the length, because the generated exposer loops over
+//  std::size() - so the declaration may say [4], or [kFacingCount], or
+//  anything else the compiler can count. See ScriptVarDecl::isArray.
+// ===========================================================================
+
+TEST_CASE("an array member is exposed, and says it is one") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    std::string walkAnimations[4];"));
+
+    const ScriptVarDecl* var = Var(info, "walkAnimations");
+    REQUIRE(var != nullptr);
+    CHECK(var->isArray);
+    CHECK(var->fieldType == ScriptFieldType::String);
+
+    // THE NAME HAS NO BRACKETS ON IT. The brackets belong to the declarator,
+    // and the element names are built by the generated loop - so what the scan
+    // reports is the member, once.
+    CHECK(var->name == "walkAnimations");
+}
+
+TEST_CASE("the length is never read, so it may be a named constant") {
+    // THE POINT OF LOOPING OVER std::size(). A scanner that parsed "[4]" would
+    // have to evaluate "[kFacingCount]" as well, which means knowing what the
+    // script's constants are - a C++ compiler's job, and one it is about to do
+    // anyway.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    std::string byDirection[kFacingCount];"));
+
+    const ScriptVarDecl* var = Var(info, "byDirection");
+    REQUIRE(var != nullptr);
+    CHECK(var->isArray);
+}
+
+TEST_CASE("an array of every drawable type is exposed") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(
+        "    float    weights[3];\n"
+        "    int      counts[2];\n"
+        "    bool     flags[2];\n"
+        "    Vector2  offsets[4];\n"
+        "    Color    palette[5];\n"));
+
+    REQUIRE(info.vars.size() == 5);
+    for (const ScriptVarDecl& var : info.vars) {
+        CHECK(var.isArray);
+    }
+    CHECK(Var(info, "weights")->fieldType == ScriptFieldType::Float);
+    CHECK(Var(info, "offsets")->fieldType == ScriptFieldType::Vec2);
+    CHECK(Var(info, "palette")->fieldType == ScriptFieldType::Color);
+}
+
+TEST_CASE("an initialised array is still one variable, not two") {
+    // THE COMMA INSIDE THE BRACES IS NOT A SECOND DECLARATOR, which is the
+    // same rule a Vec2's initialiser already relies on. Without it this would
+    // be reported as "it shares its line with another variable".
+    const ScriptSourceInfo info = ScanScriptSource(
+        Wrap("    std::string names[2] = {\"left\", \"right\"};"));
+
+    REQUIRE(info.vars.size() == 1);
+    CHECK(info.vars[0].name == "names");
+    CHECK(info.vars[0].isArray);
+    CHECK(Skipped(info, "names") == nullptr);
+}
+
+TEST_CASE("a trailing comment on an array is its tooltip, as on anything else") {
+    const ScriptSourceInfo info = ScanScriptSource(
+        Wrap("    std::string walkAnimations[4];   // right, left, up, down"));
+
+    const ScriptVarDecl* var = Var(info, "walkAnimations");
+    REQUIRE(var != nullptr);
+    CHECK(var->tooltip == "right, left, up, down");
+}
+
+TEST_CASE("a two-dimensional array is left alone rather than half-understood") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    float grid[2][2];"));
+
+    CHECK(Var(info, "grid") == nullptr);
+}
+
+TEST_CASE("an ordinary member still reports itself as not an array") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    float speed = 1.0f;"));
+
+    const ScriptVarDecl* var = Var(info, "speed");
+    REQUIRE(var != nullptr);
+    CHECK_FALSE(var->isArray);
+}
+
+TEST_CASE("the generated exposer loops over an array and names each element") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    std::string walkAnimations[4];   // by direction"));
+    const std::string unit = GenerateExposerUnit(info, "scripts/Thing.cpp");
+
+    // THE LOOP, over std::size rather than a number this file had to work out.
+    CHECK(unit.find("for (::std::size_t i = 0; i < ::std::size(s->walkAnimations); "
+                    "++i)") != std::string::npos);
+
+    // ONE NAME PER ELEMENT, built at run time. ScriptFields::Add copies the
+    // name, which is what makes a temporary string safe here.
+    CHECK(unit.find("::std::string(\"walkAnimations[\") + ::std::to_string(i) + \"]\"") !=
+          std::string::npos);
+    CHECK(unit.find("s->walkAnimations[i]") != std::string::npos);
+
+    // The tooltip rides along, as it does for a plain variable.
+    CHECK(unit.find("\"by direction\"") != std::string::npos);
+
+    // And the headers the loop needs are named by the generated file rather
+    // than relied on through the engine's own.
+    CHECK(unit.find("#include <iterator>") != std::string::npos);
+    CHECK(unit.find("#include <string>") != std::string::npos);
+}
+
+TEST_CASE("a plain variable's exposer has no loop in it") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    float speed = 1.0f;"));
+    const std::string      unit = GenerateExposerUnit(info, "scripts/Thing.cpp");
+
+    CHECK(unit.find("for (::std::size_t") == std::string::npos);
+    CHECK(unit.find("f.Var(\"speed\", s->speed") != std::string::npos);
+}
+
+// ===========================================================================
+//  The NAME is not consulted
+//
+//  An `m_` prefix used to hide a public member silently. Half the C++ world
+//  names ordinary members that way, so somebody who does got no box, no
+//  skipped report and no way to find out why. `private:` is the language's own
+//  way of saying "not part of the interface" and is what the docs now point
+//  at. These cases pin that down from both ends.
+// ===========================================================================
+
+TEST_CASE("underscores anywhere in a name are ordinary") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(
+        "    float walk_speed = 1.0f;\n"
+        "    float _leading = 2.0f;\n"
+        "    float trailing_ = 3.0f;\n"
+        "    float two_words_here = 4.0f;\n"
+        "    std::string walk_animations[4];\n"));
+
+    CHECK(Var(info, "walk_speed") != nullptr);
+    CHECK(Var(info, "_leading") != nullptr);
+    CHECK(Var(info, "trailing_") != nullptr);
+    CHECK(Var(info, "two_words_here") != nullptr);
+    CHECK(Var(info, "walk_animations") != nullptr);
+}
+
+TEST_CASE("a PUBLIC m_ member is shown, because public means shown") {
+    // THE REGRESSION. This used to return nothing at all, silently.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    float m_walkSpeed = 260.0f;   // how fast"));
+
+    const ScriptVarDecl* var = Var(info, "m_walkSpeed");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::Float);
+    CHECK(var->tooltip == "how fast");
+
+    // And it is not in the skipped report either - it is simply a variable.
+    CHECK(Skipped(info, "m_walkSpeed") == nullptr);
+}
+
+TEST_CASE("private is what hides a member, whatever it is called") {
+    const ScriptSourceInfo info = ScanScriptSource(
+        "#include <engine/Engine.h>\nnamespace {\n"
+        "class Thing final : public eng::ScriptBehaviour {\npublic:\n"
+        "    float shown = 1.0f;\n"
+        "private:\n"
+        "    float hidden = 2.0f;\n"
+        "    float m_alsoHidden = 3.0f;\n"
+        "};\n}\nENGINE_REGISTER_SCRIPT(Thing)\n");
+
+    CHECK(Var(info, "shown") != nullptr);
+    CHECK(Var(info, "hidden") == nullptr);
+    CHECK(Var(info, "m_alsoHidden") == nullptr);
+
+    // Nothing private is reported as skipped: it was never a candidate.
+    CHECK(Skipped(info, "hidden") == nullptr);
+}
+
+// ===========================================================================
+//  A marker on a string says it holds an asset path
+// ===========================================================================
+
+TEST_CASE("a marker survives on a string, so the Inspector can draw a slot") {
+    const ScriptSourceInfo info = ScanScriptSource(
+        Wrap("    std::string walkAnimations[4];   // [animation] by direction"));
+
+    const ScriptVarDecl* var = Var(info, "walkAnimations");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType == "animation");
+    CHECK(var->tooltip == "by direction");
+    CHECK(var->isArray);
+}
+
+TEST_CASE("a marker on a number is still dropped, because it means nothing there") {
+    // [image] on a float is not a required type and not a range. Carrying it
+    // would leave something downstream to wonder about.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    float speed = 1.0f;   // [image] nonsense"));
+
+    const ScriptVarDecl* var = Var(info, "speed");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType.empty());
+}
+
+TEST_CASE("a range on a string is not a marker it keeps") {
+    // "[0..10]" parses as a RANGE, which a string cannot have - so neither the
+    // range nor a required type survives, and the tooltip is still right.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    std::string label = \"hi\";   // [0..10] odd"));
+
+    const ScriptVarDecl* var = Var(info, "label");
+    REQUIRE(var != nullptr);
+    CHECK_FALSE(var->ranged);
+    CHECK(var->requiredType.empty());
+    CHECK(var->tooltip == "odd");
+}
+
+TEST_CASE("a marked string generates Asset, and a marked reference generates Ref") {
+    // ======================================================================
+    //  THE BUG THIS PINS DOWN WAS SILENT, which is the worst kind here.
+    //
+    //  A marker survives on a std::string now, so "has a requiredType" no
+    //  longer means "is an entity reference". The generator went on choosing
+    //  Ref, which takes an EntityRef - and the `if constexpr (requires ...)`
+    //  guard around every generated call then SWALLOWED it. The build was
+    //  clean, the Console said the variable was exposed, and the Inspector
+    //  showed nothing at all.
+    // ======================================================================
+    const ScriptSourceInfo marked = ScanScriptSource(
+        Wrap("    std::string walkAnimations[4];   // [animation] by direction"));
+    const std::string unit = GenerateExposerUnit(marked, "scripts/Thing.cpp");
+
+    CHECK(unit.find("f.Asset(") != std::string::npos);
+    CHECK(unit.find("f.Ref(") == std::string::npos);
+    CHECK(unit.find("\"animation\"") != std::string::npos);
+
+    // An entity reference still gets Ref, which is the call that checks its
+    // constraint against what is registered.
+    const ScriptSourceInfo entity = ScanScriptSource(
+        Wrap("    eng::EntityRef target;   // [Rigidbody2DComponent] what to push"));
+    const std::string entityUnit = GenerateExposerUnit(entity, "scripts/Thing.cpp");
+
+    CHECK(entityUnit.find("f.Ref(") != std::string::npos);
+    CHECK(entityUnit.find("f.Asset(") == std::string::npos);
+
+    // And an UNMARKED string is an ordinary variable with an ordinary box.
+    const ScriptSourceInfo plain =
+        ScanScriptSource(Wrap("    std::string label = \"hi\";   // what it says"));
+    const std::string plainUnit = GenerateExposerUnit(plain, "scripts/Thing.cpp");
+
+    CHECK(plainUnit.find("f.Var(\"label\"") != std::string::npos);
+    CHECK(plainUnit.find("f.Asset(") == std::string::npos);
 }

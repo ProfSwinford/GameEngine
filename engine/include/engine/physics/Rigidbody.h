@@ -37,6 +37,27 @@
 //               a player that can be shoved by its own bullets is rarely
 //               wanted.
 //
+//               GRAVITY DOES NOT PULL IT, which follows from "moves only when
+//               told to" and is the thing people meet first: a kinematic
+//               platformer character does not fall until its script makes it.
+//
+//               BUT STATIC SCENERY STOPS IT. Against anything that cannot
+//               move at all - static bodies, a tilemap collider, a collider
+//               with no rigidbody - the kinematic body is the only thing in
+//               the contact that CAN move, so it is the thing that gives way:
+//               the velocity heading into the surface goes and the velocity
+//               along it survives, so it slides rather than sticking.
+//
+//               Box2D and Unity pass through in that case. This engine does
+//               not, because the paragraph above recommends a kinematic body
+//               for a character controller and a character controller that
+//               walks through walls is not one. See SolverMasses in
+//               physics/Collider.cpp.
+//
+//               Two KINEMATIC bodies still pass through each other: both
+//               would give way, and which one moves is a question for the
+//               scripts positioning them rather than for the solver.
+//
 //    STATIC     Never moves at all. The same as having no rigidbody, said out
 //               loud, and the right choice for scenery that wants a material
 //               (bounciness, friction) without any motion.
@@ -194,9 +215,35 @@ public:
     void IntegrateVelocity(float fixedStep);
     void ClearAccumulators();
 
-    // Applies an impulse directly, bypassing the force accumulator. The
-    // contact solver's only way of changing a body.
+    // Applies an impulse directly, bypassing the force accumulator. One of the
+    // contact solver's two ways of changing a body; it divides by THIS body's
+    // mass and does nothing to anything that is not Dynamic.
     void ApplyImpulse(Vec2 impulse, Vec2 contactPoint);
+
+    // ======================================================================
+    //  THE OTHER ONE: a velocity change the solver has already worked out.
+    //
+    //  ApplyImpulse divides by this body's inverse mass, and a KINEMATIC
+    //  body's is zero - immovable, by construction, which is what makes it
+    //  able to shove dynamic things without being shoved back.
+    //
+    //  But against something that cannot move EITHER - static scenery, a
+    //  tilemap, no rigidbody at all - "both immovable" leaves the solver with
+    //  nothing to do, and the kinematic body sailed straight through. For a
+    //  moving platform that is arguably fine. For a CHARACTER CONTROLLER,
+    //  which the note at the top of this file recommends a kinematic body
+    //  for, it means walking through walls.
+    //
+    //  So in that one case the solver decides the kinematic body is the thing
+    //  that gives way - see SolverMasses in Collider.cpp - and hands the
+    //  answer over already weighted. This is the only way in: scripts move a
+    //  kinematic body through SetVelocity and MovePosition, and AddForce still
+    //  does nothing to one, which is the promise "moves only when told to".
+    //
+    //  LINEAR ONLY. A kinematic body's rotation belongs to whatever is driving
+    //  it, and a contact has no business spinning a lift.
+    // ======================================================================
+    void AddVelocity(Vec2 delta);
 
     // Moves the body without going through velocity - how the solver corrects
     // an overlap that has already happened.

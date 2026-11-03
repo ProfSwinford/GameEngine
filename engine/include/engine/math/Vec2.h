@@ -26,6 +26,7 @@
 //  available on every platform.
 // ============================================================================
 
+#include <algorithm>   // std::clamp, used by Clamp01 and InverseLerp below
 #include <cmath>
 
 namespace eng {
@@ -95,6 +96,19 @@ struct Vec2 {
     static constexpr Vec2 One()   { return Vec2{1.0f, 1.0f}; }
     static constexpr Vec2 UnitX() { return Vec2{1.0f, 0.0f}; }
     static constexpr Vec2 UnitY() { return Vec2{0.0f, 1.0f}; }
+
+    // The four compass directions by name. UnitX and UnitY above are the
+    // mathematical spelling; these are the one game code writes, and
+    // `Vec2::Down() * fallSpeed` says what it means in a way that
+    // `-Vec2::UnitY() * fallSpeed` does not.
+    //
+    // +Y IS UP IN THIS ENGINE. Worth stating here rather than leaving to be
+    // discovered, because the renderer's own coordinates run the other way
+    // and Down() is exactly where somebody would get it wrong.
+    static constexpr Vec2 Up()    { return Vec2{0.0f, 1.0f}; }
+    static constexpr Vec2 Down()  { return Vec2{0.0f, -1.0f}; }
+    static constexpr Vec2 Right() { return Vec2{1.0f, 0.0f}; }
+    static constexpr Vec2 Left()  { return Vec2{-1.0f, 0.0f}; }
 };
 
 // ---- operators that PRODUCE a new vector -----------------------------------
@@ -163,5 +177,138 @@ inline Vec2 FromAngle(float radians, float length = 1.0f) {
 // because it takes x and y separately and therefore knows which quadrant the
 // vector is in; plain atan(y/x) cannot tell (1,1) from (-1,-1).
 inline float AngleOf(const Vec2& v) { return std::atan2(v.y, v.x); }
+
+// ---- the handful of operations game code writes constantly -----------------
+//
+// ==========================================================================
+//  WHAT IS DELIBERATELY NOT HERE, so that nobody looks for it
+//
+//  No Lerp(float, float, float) - std::lerp is in <cmath>, which this file
+//  already includes, and it handles the edge cases correctly. No Min, Max,
+//  Abs, Sqrt or Clamp for scalars: std::min, std::max, std::fabs, std::sqrt
+//  and std::clamp are correct, fast and available on every platform, and a
+//  wrapper would only be one more spelling to learn. The same rule the rest
+//  of this header follows.
+//
+//  What IS here is the set that has no standard form, or whose standard form
+//  is wrong for a game: a clamp that reads as a speed limit, a step that
+//  cannot overshoot, an angle difference that knows angles wrap.
+// ==========================================================================
+
+// Turn a vector by an angle, anticlockwise.
+//
+// The alternatives are both worse: going through Mat3 builds a whole matrix
+// for two multiplies of real work, and going through FromAngle(AngleOf(v) + a)
+// * v.Length() costs two transcendental calls and a square root to get back
+// what it started with. For the quarter turn specifically, Vec2::Perpendicular
+// is cheaper still and exact.
+inline Vec2 Rotated(const Vec2& v, float radians) {
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
+    return Vec2{v.x * c - v.y * s, v.x * s + v.y * c};
+}
+
+// Bounce a direction off a surface. `unitNormal` must be unit length, which is
+// exactly what a Collision2D hands you - see physics/Contact.h. A
+// non-unit normal silently scales the result, which is why the requirement is
+// in the parameter name.
+inline Vec2 Reflect(const Vec2& direction, const Vec2& unitNormal) {
+    return direction - unitNormal * (2.0f * Dot(direction, unitNormal));
+}
+
+// Shorten a vector to at most maxLength, leaving a shorter one ALONE.
+//
+// This is how a speed limit is spelled. The naive version - Normalized() *
+// std::min(Length(), maxLength) - also normalises a vector that was already
+// short enough, so a thing drifting at 3 units a second is snapped up to the
+// limit instead of being left drifting.
+inline Vec2 ClampMagnitude(const Vec2& v, float maxLength) {
+    if (maxLength <= 0.0f) {
+        return Vec2::Zero();
+    }
+    const float lengthSq = v.LengthSquared();
+    if (lengthSq <= maxLength * maxLength) {
+        return v;
+    }
+    return v * (maxLength / std::sqrt(lengthSq));
+}
+
+// Step from `current` towards `target` by at most maxDelta, NEVER
+// OVERSHOOTING. Both forms, because a number needs this as often as a
+// position does - a health bar catching up to a new value, a volume fading.
+//
+// WHY NOT Lerp. Lerp(current, target, 0.1f) is the usual answer and it is
+// subtly wrong twice: it never actually arrives, so the comparison `== target`
+// is never true and whatever was waiting on it never fires; and the distance
+// covered depends on the frame rate, so it moves at a different speed on a
+// different machine. This arrives, exactly, and arrives at the same moment
+// everywhere.
+inline float MoveTowards(float current, float target, float maxDelta) {
+    const float delta = target - current;
+    if (std::fabs(delta) <= maxDelta) {
+        return target;
+    }
+    return current + (delta > 0.0f ? maxDelta : -maxDelta);
+}
+
+inline Vec2 MoveTowards(const Vec2& current, const Vec2& target, float maxDelta) {
+    const Vec2  delta    = target - current;
+    const float lengthSq = delta.LengthSquared();
+    if (lengthSq <= maxDelta * maxDelta || lengthSq <= Vec2::kNormalizeEpsilon) {
+        return target;
+    }
+    return current + delta * (maxDelta / std::sqrt(lengthSq));
+}
+
+// 0 at `from`, 1 at `to`, and where a value sits between them. The inverse of
+// a lerp, which is what a progress bar and a "how far through the fade am I"
+// both need. A zero-length range answers 0 rather than dividing.
+inline float InverseLerp(float from, float to, float value) {
+    const float range = to - from;
+    if (range == 0.0f) {
+        return 0.0f;
+    }
+    return std::clamp((value - from) / range, 0.0f, 1.0f);
+}
+
+// std::clamp(v, 0, 1), which is written often enough to deserve a name.
+inline float Clamp01(float value) { return std::clamp(value, 0.0f, 1.0f); }
+
+// ---- angles, which wrap, and that is the whole point ----------------------
+
+// An angle folded into [-kPi, kPi]. Every angle comparison in a game needs
+// this somewhere, because 359 degrees and -1 degree are the same direction and
+// no amount of arithmetic on the raw numbers knows that.
+inline float WrapAngle(float radians) {
+    radians = std::fmod(radians + kPi, kTwoPi);
+    if (radians < 0.0f) {
+        radians += kTwoPi;
+    }
+    return radians - kPi;
+}
+
+// The SHORTEST way round from `from` to `to`, signed. Turning from 350 degrees
+// to 10 degrees is +20, not -340 - and a turret written with the plain
+// subtraction spins the long way round exactly once per revolution, which is
+// the kind of bug that looks like a physics problem.
+inline float DeltaAngle(float from, float to) { return WrapAngle(to - from); }
+
+// Turn from `from` towards `to` by at most maxDelta, the short way round and
+// without overshooting. MoveTowards for angles.
+inline float MoveTowardsAngle(float from, float to, float maxDelta) {
+    const float delta = DeltaAngle(from, to);
+    if (std::fabs(delta) <= maxDelta) {
+        return WrapAngle(to);
+    }
+    return WrapAngle(from + (delta > 0.0f ? maxDelta : -maxDelta));
+}
+
+// The signed angle from `from` to `to`, in [-kPi, kPi]. Positive means `to` is
+// anticlockwise of `from`. This is the "which way should I turn" question, and
+// the sign is the answer - which is why Cross is used rather than the
+// arc-cosine of Dot, whose result has no sign at all.
+inline float SignedAngle(const Vec2& from, const Vec2& to) {
+    return std::atan2(Cross(from, to), Dot(from, to));
+}
 
 } // namespace eng

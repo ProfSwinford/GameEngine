@@ -41,6 +41,7 @@
 // ============================================================================
 
 #include <engine/Engine.h>
+#include <engine/scene/Prefab.h>
 
 #include <cstddef>
 #include <memory>
@@ -50,6 +51,43 @@
 #include "panels/Panel.h"
 
 namespace editor {
+
+// ---------------------------------------------------------------------------
+//  A PREFAB OPERATION A PANEL HAS ASKED FOR, carried out after every panel
+//  has finished drawing.
+//
+//  DEFERRED, AND IT HAS TO BE. Apply and Revert work by rebuilding an
+//  instance's entities from its asset - that is how the other instances pick a
+//  change up at all - so every entity in the instance is destroyed and created
+//  again. Doing that from inside the Inspector's Draw would pull the ground
+//  out from under every panel that has already drawn this frame and is still
+//  holding the entities it was describing.
+//
+//  It is the same argument EditorState::requestedScene makes about loading a
+//  scene, and the same one EditorApp::UndoRequest makes about Ctrl+Z. All
+//  three are the editor obeying the engine's own rule about not changing the
+//  world mid-frame; see scene/DeferredOps.h.
+//
+//  THE ITEM TRAVELS BY VALUE rather than as an index into the instance's
+//  override list. Those lists are rebuilt by every diff, so an index noted
+//  while drawing could mean a different override by the time it is used.
+// ---------------------------------------------------------------------------
+enum class PrefabAction {
+    None,
+    Create,       // turn `member` and its children into a new prefab at `path`
+    ApplyAll,
+    RevertAll,
+    ApplyItem,
+    RevertItem,
+    Unpack,
+};
+
+struct PrefabRequest {
+    PrefabAction            action = PrefabAction::None;
+    eng::EntityId           member{};
+    eng::PrefabOverrideItem item;   // ApplyItem and RevertItem only
+    std::string             path;   // Create only
+};
 
 // State that more than one panel needs. Panels reach it through Get() rather
 // than having it passed to them, which is a deliberate simplification: this is
@@ -88,8 +126,13 @@ struct EditorState {
     void ClearSelection();
 
     // Drops any id whose entity no longer exists, and keeps `selected`
+    // honest - and drops `selectedAsset` when its file has gone.
+    // honest - and drops `selectedAsset` when its file has gone.
+    // honest - and drops `selectedAsset` when its file has gone.
+    // honest - and drops `selectedAsset` when its file has gone.
     // honest - if the active entity has gone, another member of the
     // selection takes over, or it becomes null when the list empties.
+    // It also drops `selectedAsset` when its file has gone.
     //
     // Called once per frame by EditorApp before the panels draw, so that no
     // panel ever sees a selection containing something that is not there.
@@ -156,6 +199,92 @@ struct EditorState {
     // the editor does not get an exemption from the engine's own rules.
     std::string requestedScene;
 
+    // What the Inspector or the Hierarchy asked to do to a prefab instance,
+    // applied by EditorApp once no panel is still describing an entity. See
+    // PrefabRequest above.
+    PrefabRequest prefabRequest;
+
+    // A file the Assets panel should navigate to and highlight, which is how
+    // "Select Prefab Asset" works. A path rather than a direct call, so
+    // neither panel needs a pointer to the other - the same arrangement
+    // focusGameView uses for the Toolbar and the Game view.
+    std::string revealAsset;
+
+
+    // ======================================================================
+    //  Something changed about an asset that the Assets panel is SHOWING.
+    //
+    //  Raised by whatever changed it, lowered by the Assets panel when it has
+    //  refreshed. Today that means a sheet being sliced, unsliced or
+    //  re-sliced, which changes whether its tile has a disclosure arrow and
+    //  what is underneath it.
+    //
+    //  A FLAG RATHER THAN A CALL, for the reason stated on focusGameView
+    //  above: no panel needs a pointer to another panel, and a panel that is
+    //  not currently being drawn cannot be told anything anyway.
+    //
+    //  NOT A GENERAL "the disk changed" SIGNAL. Creating, renaming, moving and
+    //  deleting a file all happen inside the Assets panel, which refreshes
+    //  itself at the point it does them. This is for the case the panel cannot
+    //  see: somebody else altering what an asset IS.
+    // ======================================================================
+    bool assetsNeedRefresh = false;
+
+    // ======================================================================
+    //  THE SELECTED ASSET - a file, as opposed to an entity.
+    //
+    //  A virtual path, empty when no file is selected. It lives here for
+    //  exactly the reason the entity selection does: two panels share it. The
+    //  Assets panel selects, and the Inspector shows that file's import
+    //  settings. A panel reaching into another panel is worse than both
+    //  reaching into the shell they belong to.
+    //
+    //  IT IS THE ASSETS PANEL'S HIGHLIGHT AND THE INSPECTOR'S SUBJECT AT ONCE,
+    //  deliberately. Those were two separate pieces of state for about an hour
+    //  and the hour was enough: the grid's border and the panel on the right
+    //  have to agree about which file is being talked about, and two strings
+    //  that are meant to be equal are two strings that will not be.
+    //
+    //  SELECTING AN ENTITY CLEARS IT, and selecting a file does NOT clear the
+    //  entity selection. That asymmetry is Unity's and it is the right way
+    //  round: clicking a file is a question about that file, and the scene
+    //  behind you keeping its highlight is what lets you click back. The
+    //  Inspector therefore shows a file when this is set and an entity
+    //  otherwise - one rule, and no notion of "which did I click last".
+    //
+    //  The clearing is done by SelectOnly, AddToSelection, ToggleSelection and
+    //  ClearSelection above, which is every gesture that chooses an entity.
+    //
+    //  FOUR PLACES ASSIGN `selected` DIRECTLY, AND THEY ARE NOT ALL ALIKE.
+    //  This comment claimed they were all the continuation of a gesture that
+    //  had already been through one of the four clearers, and that was WRONG
+    //  about one of them - and then it was wrong about how many there are:
+    //
+    //    * HierarchyPanel's Shift-range anchor - safe. It runs straight after
+    //      ClearSelection and a run of AddToSelection calls.
+    //    * HierarchyPanel's marquee - safe. It sets `selected` to null, and
+    //      every row the marquee then takes goes through AddToSelection.
+    //    * ScenePanel's re-aim of the gizmo onto an already-selected entity -
+    //      NOT safe, and it clears `selectedAsset` itself. It is a fresh
+    //      left-click that happens to land on something already selected, so
+    //      nothing else runs that frame to do it.
+    //    * InspectorPanel's multi-selection list, where clicking a member
+    //      makes it the active entity - safe, but for a reason unlike the
+    //      other three: it is below the Inspector's own "a FILE is selected"
+    //      early return, so it cannot run while there is an asset selection to
+    //      clear. That is a property of where it sits, not of what it does,
+    //      so moving it would break it silently.
+    //
+    //  The lesson is the one the whole file keeps repeating, twice over: a
+    //  rule that holds for "every route" has to be checked against every
+    //  route, and a COUNT in a comment is a claim like any other.
+    //
+    //  UNDO CLEARS IT TOO, as collateral: UndoStack calls ClearSelection when
+    //  it rebuilds the scene. Harmless - import settings are written to disk
+    //  the instant they change, so nothing is lost but the panel's attention.
+    // ======================================================================
+    std::string selectedAsset;
+
     static EditorState& Get();
 
 private:
@@ -202,6 +331,54 @@ std::size_t DestroySelection();
 // ===========================================================================
 void DestroyEntity(eng::EntityId id);
 
+// ---------------------------------------------------------------------------
+//  IS THIS ENTITY A PREFAB INSTANCE'S CHILD?
+//
+//  Those cannot be destroyed or reparented on their own, and the refusal is
+//  not protectiveness for its own sake - it is that the gesture would not
+//  work. The ASSET says that child exists and says where it sits, so the next
+//  time the instance is rebuilt - which is what Apply, Revert and editing the
+//  prefab all do - the child would come straight back, or jump back to where
+//  the asset puts it. A delete that silently undoes itself five minutes later
+//  is worse than one that refuses now and says why.
+//
+//  THE ROOT IS NOT A CHILD and may be freely destroyed, renamed and
+//  reparented: destroying it destroys the whole instance, which is what
+//  deleting a prefab instance means, and where it sits in the scene is the
+//  scene's business rather than the prefab's. See IsRootPlacement in
+//  scene/Prefab.h.
+//
+//  The way out is Unpack, and every refusal says so.
+// ---------------------------------------------------------------------------
+bool IsPrefabChild(eng::EntityId id);
+
+// The message to show when one of those is refused. One copy, because the
+// Hierarchy's tooltip, its menu item and the two destroy doors all say it.
+const char* PrefabChildRefusal();
+
+// ---------------------------------------------------------------------------
+//  Duplicates one entity, and knows what that means for a prefab.
+//
+//  A PREFAB INSTANCE'S ROOT DUPLICATES AS ANOTHER INSTANCE. Scene::
+//  DuplicateEntity would hand back a loose copy of the root entity with none
+//  of its children - which for a nine-entity enemy is not a copy of anything -
+//  and it would be the one enemy in the scene that had stopped following the
+//  prefab. Nothing would say so.
+//
+//  A PREFAB CHILD duplicates as an ordinary entity, deliberately: the copy is
+//  not part of the instance, so the asset does not disturb it and Apply does
+//  not push it into the prefab. Unity records that as an added object; see the
+//  note on added children in scene/Prefab.h.
+//
+//  THE THIRD DOOR, alongside DestroySelection and DestroyEntity, and here for
+//  the same reason: the Edit menu, Ctrl+D and the Hierarchy's context menu all
+//  duplicate, and the prefab rule has to be in one place or it will be in two
+//  places that disagree.
+//
+//  Returns the new entity, or a null id with the reason logged.
+// ---------------------------------------------------------------------------
+eng::EntityId DuplicateOne(eng::EntityId id);
+
 class EditorApp {
 public:
     // `projectRoot` is a real folder on this machine, or empty for "the
@@ -240,6 +417,10 @@ private:
     // The keyboard, once a frame. One call, because the table it reads is in
     // one place - see Shortcuts.h.
     void HandleShortcuts();
+
+    // Carries out whatever EditorState::prefabRequest asked for, at the one
+    // point in the frame where rebuilding an instance's entities is safe.
+    void ApplyPrefabRequest();
 
     // ---- scene changes that can lose work --------------------------------
     //
@@ -293,12 +474,41 @@ private:
     // and a background tab does not Draw.
     void RevealTilePaletteIfRequested();
 
+    // ======================================================================
+    //  And the Assets panel, for the same reason and with the same bug if it
+    //  is not done here.
+    //
+    //  "Select Asset" in the Inspector, and "Select Prefab Asset" in the
+    //  Hierarchy, exist to show somebody WHERE a file is - which is most
+    //  useful precisely when the Assets panel is not the tab in front. The
+    //  panel used to bring itself forward from inside its own Draw, and
+    //  ImGui::Begin returns false for a background tab, so Draw is not called
+    //  and the request simply sat there: nothing happened, nothing was said,
+    //  and it then fired as a surprise navigation whenever somebody next
+    //  clicked the Assets tab themselves.
+    //
+    //  So the OPEN AND THE FOCUS happen here, where the frame loop always
+    //  runs, and the panel keeps only the part it is the right owner of -
+    //  navigating to the folder and selecting the file - on its next Draw.
+    // ======================================================================
+    void RevealAssetsPanelIfRequested();
+
     // Called when the editor window regains focus - the user alt-tabbed away,
     // edited a script in their text editor, and came back. If anything in
     // any script under assets/ has changed, it is rebuilt and reloaded before
     // the next frame.
     // See ScriptBuild.h.
     void RebuildScriptsIfChanged();
+
+    // The same trigger, for prefabs: a .oprefab edited outside the editor is
+    // re-read and every instance of it in the open scene is rebuilt, keeping
+    // each one's own overrides.
+    //
+    // WITHOUT THIS THE LINK IS ONLY LIVE THROUGH THIS PROGRAM. These files are
+    // JSON and meant to be opened by hand - that is the whole argument for the
+    // format - so a prefab fixed in a text editor has to arrive the same way a
+    // script does.
+    void ReloadChangedPrefabs();
 
     std::vector<std::unique_ptr<Panel>> m_panels;
     std::vector<std::string>            m_sceneList;
@@ -318,6 +528,7 @@ private:
     bool m_ready = false;
     class GamePanel*  m_gamePanel  = nullptr;
     class TilePalettePanel* m_tilePalettePanel = nullptr;
+    class AssetBrowserPanel* m_assetBrowserPanel = nullptr;
 
     char m_saveAsPath[256] = {};
     bool m_openSaveAsPopup = false;

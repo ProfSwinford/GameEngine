@@ -102,6 +102,30 @@ struct ScriptVarDecl {
     // [Rigidbody2DComponent] on an EntityRef - the picker narrows to entities
     // carrying one. See ScriptFields::Ref.
     std::string requiredType;
+
+    // ======================================================================
+    //  A FIXED-SIZE ARRAY, exposed as one row PER ELEMENT.
+    //
+    //      std::string walkAnimations[4];
+    //
+    //  appears as walkAnimations[0] .. walkAnimations[3], four ordinary
+    //  variables of the element's type.
+    //
+    //  WHY THAT AND NOT A LIST WIDGET. Every piece of machinery behind a
+    //  script variable - the type table, the Inspector's widgets, the scene
+    //  file, prefab overrides, the undo stack - works on "a name and a value".
+    //  Give each element its own name and all of it applies unchanged, with
+    //  nothing to teach any of those five things about lists. The exposer
+    //  writes a loop over std::size(), so the LENGTH never has to be parsed
+    //  out of the declaration and may be a named constant.
+    //
+    //  WHAT IS STILL NOT SUPPORTED, and the distinction is worth keeping: a
+    //  GROWABLE list. A std::vector has no length until the game runs, so
+    //  there is nothing for the Inspector to lay out and nothing for the
+    //  scene file to have a key for. A fixed array has both. "Four
+    //  animations, one per direction" is a shape; "some waypoints" is not.
+    // ======================================================================
+    bool isArray = false;
 };
 
 // A public member that LOOKS like it was meant to be exposed and was not, with

@@ -73,8 +73,31 @@ public:
     void  SetOpen(bool on) { m_open = on; }
     bool* OpenFlag()       { return &m_open; }
 
+    // ======================================================================
+    //  OPEN IS NOT VISIBLE, and the difference costs real work.
+    //
+    //  A panel is OPEN until its X is clicked. It is VISIBLE only when it is
+    //  also uncollapsed and the front tab of its dock node - which is what
+    //  ImGui::Begin returns, and which is already used to decide between Draw
+    //  and OnHidden. This records that same answer so anything OUTSIDE the
+    //  draw loop can ask it.
+    //
+    //  WHO NEEDS IT: the Scene view and the Game view each render the whole
+    //  world into their own picture, from EditorApp::Run, outside the draw
+    //  loop. In the default layout they are two tabs of one dock node, so one
+    //  of the two is always behind the other - and was rendering the entire
+    //  world every frame into a picture nobody could see.
+    //
+    //  SET FROM Begin's RESULT AND NOTHING ELSE. A panel that submitted an
+    //  ImGui::Image in Draw must have its picture rendered, so the flag has
+    //  to mean exactly "Draw ran this frame".
+    // ======================================================================
+    bool IsVisible() const    { return m_visible; }
+    void SetVisible(bool on)  { m_visible = on; }
+
 protected:
-    bool m_open = true;
+    bool m_open    = true;
+    bool m_visible = true;
 };
 
 } // namespace editor

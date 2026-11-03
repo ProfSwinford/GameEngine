@@ -934,17 +934,93 @@ namespace {
 //  cheaper and reads more honestly: the velocity constraint is iterative, the
 //  position fix is a one-off nudge.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  HOW MOVABLE EACH SIDE OF A CONTACT IS.
+//
+//  Dynamic is 1/m. Static, or no rigidbody at all, is zero: it cannot move,
+//  and every other piece of the solver gets that for free by multiplying.
+//
+//  ==========================================================================
+//  A KINEMATIC BODY IS ZERO AGAINST ANYTHING THAT CAN MOVE, AND MOVABLE
+//  AGAINST ANYTHING THAT CANNOT - and that asymmetry is the whole fix.
+//
+//  Zero against a dynamic body is what makes a lift carry a crate and a door
+//  shove a barrel without the barrel shoving back. That is what "infinite
+//  mass, in effect" means in Rigidbody.h and it is unchanged.
+//
+//  But against STATIC scenery both sides were zero, the sum was zero, and
+//  both halves of the solver returned without doing anything - so a kinematic
+//  body went straight through a wall. Box2D and Unity behave that way too,
+//  and for a moving platform it is defensible. It is not defensible here,
+//  because Rigidbody.h recommends a kinematic body FOR A CHARACTER
+//  CONTROLLER, and a character controller that walks through walls is not one.
+//
+//  So when the other side cannot move at all, the kinematic body is the only
+//  thing in the contact that CAN, and it is the thing that gives way. The
+//  VALUE does not matter, only that it is positive: with the other side at
+//  zero it takes the whole correction either way, so 1 is written rather than
+//  an invented mass.
+//
+//  TWO KINEMATIC BODIES STILL PASS THROUGH EACH OTHER. Each would see the
+//  other as immovable and both would give way, which is a tug of war between
+//  two things a script is positioning - and scripts that disagree about where
+//  something is belong in the script, not in the solver. Box2D leaves them
+//  alone and so does this.
+// ---------------------------------------------------------------------------
+void SolverMasses(Rigidbody2DComponent* a, Rigidbody2DComponent* b, float& outA,
+                  float& outB) {
+    const auto kind = [](Rigidbody2DComponent* body) {
+        return body != nullptr ? body->BodyType() : RigidbodyType::Static;
+    };
+
+    const RigidbodyType typeA = kind(a);
+    const RigidbodyType typeB = kind(b);
+
+    outA = (a != nullptr) ? a->InverseMass() : 0.0f;
+    outB = (b != nullptr) ? b->InverseMass() : 0.0f;
+
+    const bool immovableA = (typeA == RigidbodyType::Static);
+    const bool immovableB = (typeB == RigidbodyType::Static);
+
+    if (typeA == RigidbodyType::Kinematic && immovableB) {
+        outA = 1.0f;
+    }
+    if (typeB == RigidbodyType::Kinematic && immovableA) {
+        outB = 1.0f;
+    }
+}
+
+// Applies the solver's impulse to one side, using the inverse mass the solver
+// decided on rather than the body's own - the two differ for exactly the
+// kinematic case above.
+void ApplySolved(Rigidbody2DComponent* body, float invMass, Vec2 impulse,
+                 Vec2 point) {
+    if (body == nullptr || invMass <= 0.0f) {
+        return;
+    }
+    if (body->BodyType() == RigidbodyType::Dynamic) {
+        // Its own inverse mass IS invMass here, and this also spins it.
+        body->ApplyImpulse(impulse, point);
+        return;
+    }
+    body->AddVelocity(impulse * invMass);
+}
+
 void SolveVelocity(const Collision2D& contact, ColliderComponent* a,
                    ColliderComponent* b) {
     Rigidbody2DComponent* bodyA = a->AttachedRigidbody();
     Rigidbody2DComponent* bodyB = b->AttachedRigidbody();
 
-    const float invMassA = (bodyA != nullptr) ? bodyA->InverseMass() : 0.0f;
-    const float invMassB = (bodyB != nullptr) ? bodyB->InverseMass() : 0.0f;
+    float invMassA = 0.0f;
+    float invMassB = 0.0f;
+    SolverMasses(bodyA, bodyB, invMassA, invMassB);
 
     // NOTHING TO PUSH. Two static colliders, or two kinematic ones: both have
     // infinite mass, so there is no answer to "which one moves". Unity says
     // the same thing by refusing to simulate such a pair.
+    //
+    // A kinematic body against a STATIC one is no longer in that set - see
+    // SolverMasses, which is where the asymmetry lives.
     const float invMassSum = invMassA + invMassB;
     if (invMassSum <= 0.0f) {
         return;
@@ -996,8 +1072,8 @@ void SolveVelocity(const Collision2D& contact, ColliderComponent* a,
             const float magnitude = -(1.0f + restitution) * closing / effectiveMass;
             const Vec2  impulse   = normal * magnitude;
 
-            if (bodyA != nullptr) { bodyA->ApplyImpulse(impulse, point); }
-            if (bodyB != nullptr) { bodyB->ApplyImpulse(-impulse, point); }
+            ApplySolved(bodyA, invMassA, impulse, point);
+            ApplySolved(bodyB, invMassB, -impulse, point);
 
             // ---- friction, along the surface rather than through it --------
             //
@@ -1035,8 +1111,8 @@ void SolveVelocity(const Collision2D& contact, ColliderComponent* a,
                     tangentMagnitude  = std::clamp(tangentMagnitude, -limit, limit);
 
                     const Vec2 frictionImpulse = tangent * tangentMagnitude;
-                    if (bodyA != nullptr) { bodyA->ApplyImpulse(frictionImpulse, point); }
-                    if (bodyB != nullptr) { bodyB->ApplyImpulse(-frictionImpulse, point); }
+                    ApplySolved(bodyA, invMassA, frictionImpulse, point);
+                    ApplySolved(bodyB, invMassB, -frictionImpulse, point);
                 }
             }
         }
@@ -1051,8 +1127,10 @@ void CorrectPosition(const Collision2D& contact, ColliderComponent* a,
     Rigidbody2DComponent* bodyA = a->AttachedRigidbody();
     Rigidbody2DComponent* bodyB = b->AttachedRigidbody();
 
-    const float invMassA = (bodyA != nullptr) ? bodyA->InverseMass() : 0.0f;
-    const float invMassB = (bodyB != nullptr) ? bodyB->InverseMass() : 0.0f;
+    float invMassA = 0.0f;
+    float invMassB = 0.0f;
+    SolverMasses(bodyA, bodyB, invMassA, invMassB);
+
     const float invMassSum = invMassA + invMassB;
     if (invMassSum <= 0.0f) {
         return;
@@ -1121,6 +1199,14 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
     for (const ColliderRecord& record : g_colliders) {
         ColliderComponent* collider = record.collider;
         if (collider == nullptr || !collider->Enabled()) {
+            continue;
+        }
+
+        // A switched-off entity does not collide and is invisible to every
+        // Physics2D query. The pair-set diff below turns that into proper
+        // exit events for whatever it was touching, exactly as destroying it
+        // would - see Entity::IsActiveInHierarchy.
+        if (!collider->OwnerIsActive()) {
             continue;
         }
 

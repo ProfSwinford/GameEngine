@@ -15,6 +15,20 @@
 //    * drag a texture or a script onto a row to attach it
 //    * drag one ENTITY onto another to make it a child of it, and drag it
 //      out onto the empty space below the tree to give it no parent again
+//    * drag an entity onto the ASSETS panel to make a prefab of it
+//    * right-click a prefab instance for Apply, Revert, Unpack and
+//      "Select Prefab Asset"
+//
+//  ==========================================================================
+//  PREFAB INSTANCES ARE DRAWN IN BLUE, every member of them, which is the one
+//  signal that tells you an entity is not yours alone to change - editing it
+//  is editing one copy of something, and Apply pushes it to all of them.
+//
+//  Two gestures are REFUSED on a member that is not the root: destroying it
+//  and reparenting it. Both are refused because they would not work rather
+//  than to be protective - the asset says that child exists and says where it
+//  sits, so the next rebuild puts it straight back. See IsPrefabChild in
+//  EditorApp.h, which both this panel and the destroy doors ask.
 //
 //  ==========================================================================
 //  REPARENTING IS RECORDED WHILE DRAWING AND APPLIED AFTERWARDS.
@@ -72,6 +86,12 @@ public:
 private:
     void DrawNode(eng::Entity& entity);
     void DrawContextMenu(eng::Entity& entity);
+
+    // The prefab items in that menu, when the entity is part of an instance -
+    // and "Create Prefab" when it is not. Split out because the context menu
+    // was already long enough to read badly with another branch in it.
+    void DrawPrefabMenuItems(eng::Entity& entity);
+
     void DrawRenamePopup();
 
     // Makes the row just drawn draggable, and lets an entity be dropped onto

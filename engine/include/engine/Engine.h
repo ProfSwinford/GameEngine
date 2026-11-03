@@ -33,6 +33,7 @@
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/input/InputMap.h>
+#include <engine/input/Pointer.h>
 #include <engine/math/Mat3.h>
 #include <engine/math/Overlap.h>
 #include <engine/math/Random.h>
@@ -61,6 +62,7 @@
 #include <engine/scene/ScriptFields.h>
 #include <engine/scene/ScriptLibrary.h>
 #include <engine/scene/SpinComponent.h>
+#include <engine/scene/SpriteAnimation.h>
 #include <engine/scene/SystemOrder.h>
 #include <engine/scene/UI.h>
 #include <engine/tilemap/AutoTile.h>
@@ -74,11 +76,57 @@
 #include <memory>
 #include <string>
 
+// ============================================================================
+//  UNITY NAMES FOR THINGS THAT ALREADY HAVE NAMES.
+//
+//  A small compatibility layer, so that a script written from Unity habits
+//  compiles. assets/scripts/TilemapWalker.cpp and PlayerMovement.cpp use it.
+//
+//  ==========================================================================
+//  THE COMPONENT ONES ARE POINTER ALIASES, AND THAT IS DELIBERATE
+//
+//  `Transform` is `Transform2D*`, not `Transform2D`, because a script never
+//  holds a transform by value - it asks for one and gets a pointer:
+//
+//      const ::Transform transform = Transform();      // yes, both
+//
+//  ==========================================================================
+//  WHICH CREATES THE ONE SHARP EDGE IN THIS BLOCK, so it is written down.
+//
+//  Inside a ScriptBehaviour, the unqualified name `Transform` finds the
+//  inherited member FUNCTION and hides this alias - so `Transform transform =
+//  Transform();` does not compile and the error is about a function call. The
+//  leading `::` says "the one at global scope" and is what makes it work. The
+//  same applies to anything else here that shares a name with a member.
+//
+//  ==========================================================================
+//  WHAT IS DELIBERATELY NOT HERE
+//
+//  No alias for a COMPONENT TYPE that would change which overload is chosen,
+//  and nothing that renames a function. These are spellings for types, so a
+//  Unity habit compiles; they are not a shim that makes the two engines
+//  behave alike, and docs/scripting-reference.md is the honest mapping.
+// ============================================================================
+
 typedef eng::ScriptBehaviour MyScriptBehaviour;
 typedef eng::Vec2 Vector2;
 
+// Unity's name for an entity. A pointer, like the component aliases below:
+// `GameObject self = Owner();`
+typedef eng::Entity* GameObject;
+
 //Internal Component Definitions
+typedef eng::Rigidbody2DComponent* Rigidbody2D;
+
+// MISSPELLED, AND KEPT. assets/scripts/TilemapWalker.cpp uses this spelling,
+// and a compatibility alias whose whole job is to let existing code compile is
+// the last place to break existing code. Rigidbody2D above is the one to write
+// in anything new.
 typedef eng::Rigidbody2DComponent* Ridigbody2D;
+
+typedef eng::ColliderComponent*    Collider2D;
+typedef eng::SpriteComponent*      SpriteRenderer;
+
 using Transform = eng::Transform2D*;
 
 typedef eng::InputMap Input;
@@ -341,6 +389,7 @@ private:
     std::unique_ptr<RigidbodySystem> m_rigidbodySystem;
     std::unique_ptr<SpinSystem>      m_spinSystem;
     std::unique_ptr<ScriptSystem>    m_scriptSystem;
+    std::unique_ptr<SpriteAnimationSystem> m_animationSystem;
 
     // Copies the active camera entity into m_camera once a frame. Registered
     // with the scheduler like the others, so its place in the frame is one

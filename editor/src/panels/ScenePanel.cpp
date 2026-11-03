@@ -201,13 +201,23 @@ void ScenePanel::Draw() {
     // view. Dragging a texture to a particular spot and having it appear
     // somewhere else makes a tool feel like it is not listening.
     if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadTexture)) {
+        // AN IMAGE AND A PREFAB TAKE THE SAME PATH THROUGH HERE, because from
+        // this panel's point of view they are the same gesture: something from
+        // the Assets panel becomes something in the world, where the cursor
+        // is. What each one actually creates is CreateEntityForAsset's
+        // business, which is what keeps this panel from growing a list of
+        // which kinds of file can be dropped into a world.
+        for (const char* payloadId : {kPayloadTexture, kPayloadPrefab}) {
+            const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payloadId);
+            if (payload == nullptr) {
+                continue;
+            }
             const auto*     path  = static_cast<const char*>(payload->Data);
             const ImVec2    mouse = ImGui::GetIO().MousePos;
             const eng::Vec2 world = m_camera.ScreenToWorld(
                 eng::Vec2{mouse.x - m_imageOrigin.x, mouse.y - m_imageOrigin.y});
 
-            std::string        message;
+            std::string         message;
             const eng::EntityId created = CreateEntityForAsset(path, world, message);
             if (!created.IsNull()) {
                 // Selected straight away, so the move handles are already on
@@ -787,7 +797,6 @@ void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting) {
         // because "everything between" has no meaning in a 2D view - Shift
         // adds, which is the next most useful thing.
         EditorState&   state = EditorState::Get();
-        const ImGuiIO& io    = ImGui::GetIO();
 
         if (hit.IsNull()) {
             // Clicking empty space clears the selection, which is what every
@@ -806,6 +815,15 @@ void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting) {
         } else {
             // Already selected, so this is somebody aiming the gizmo at a
             // different member of the set rather than starting again.
+            //
+            // IT IS STILL A FRESH CLICK, so the selected FILE goes. This is
+            // the one of the three direct assignments to `selected` that is
+            // NOT the continuation of a gesture which already went through
+            // SelectOnly or AddToSelection - so unlike the other two it has to
+            // clear this itself, or clicking an image and then clicking an
+            // already-selected entity leaves the Inspector stuck on the file.
+            // See EditorState::selectedAsset.
+            state.selectedAsset.clear();
             state.selected = hit;
         }
     }

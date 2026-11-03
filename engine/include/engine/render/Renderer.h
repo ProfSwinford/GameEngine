@@ -168,6 +168,31 @@ public:
                                               int height, bool smooth,
                                               std::string& outError);
 
+    // ======================================================================
+    //  Changes how an ALREADY-LOADED texture is scaled, without reloading it.
+    //
+    //  This is what makes picking a scaling mode in the Inspector show up
+    //  immediately on every sprite using that image. The filter is a property
+    //  of the graphics object rather than of the pixels, so there is nothing
+    //  to decode again - which is the whole reason the setting can be offered
+    //  as something you change while looking at the result.
+    //
+    //  IT REFUSES THE MISSING-TEXTURE PLACEHOLDER. There is exactly one of
+    //  those and every image that failed to load is handed the same one, so
+    //  obliging a request to re-filter "it" would change the magenta square
+    //  for the whole project. See ResourceManager::MissingTexture.
+    //
+    //  A null or empty reference is ignored rather than refused: the callers
+    //  are editor panels describing whatever is selected, and "nothing is
+    //  loaded" is an ordinary state for them rather than a mistake.
+    // ======================================================================
+    static void SetTextureFilter(const TextureRef& texture, bool smooth);
+
+    // What SDL currently has for it, rather than what a settings file asks
+    // for. Those should agree; this is how the Inspector can SHOW that they
+    // do instead of assuming it.
+    static bool TextureIsSmooth(const TextureRef& texture);
+
     // ---- sprites ----------------------------------------------------------
     // Draws a texture centred on `centre`, `size` pixels across, turned by
     // `rotationDegrees` clockwise (which is the direction SDL rotates).

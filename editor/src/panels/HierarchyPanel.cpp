@@ -52,7 +52,68 @@ void HierarchyPanel::DrawNode(eng::Entity& entity) {
     std::snprintf(label, sizeof(label), "%s##%d_%d", entity.Name().c_str(),
                   entity.Id().index, entity.Id().generation);
 
+    // ======================================================================
+    //  EVERY MEMBER OF A PREFAB INSTANCE IS BLUE.
+    //
+    //  The same blue the Inspector uses for "8 entities selected", because it
+    //  means the same kind of thing: this row is not quite what it appears to
+    //  be on its own. Without it there is nothing on screen to tell a prefab
+    //  instance from twenty hand-built copies, and the difference decides
+    //  whether fixing one fixes all of them.
+    // ======================================================================
+    const eng::PrefabInstance* prefab = scene.PrefabInstanceOf(entity.Id());
+
+    // ======================================================================
+    //  A SWITCHED-OFF ENTITY IS DIMMED, and so is everything under it.
+    //
+    //  It has to be visible here. An entity that is off keeps its components
+    //  and its values and looks completely ordinary in the Inspector, so
+    //  without a signal in the Hierarchy the only evidence that it is off is
+    //  that the game does not do what the scene says it should - which is the
+    //  hardest kind of thing to find.
+    //
+    //  IsActiveInHierarchy, not IsActiveSelf, so switching off a parent dims
+    //  the whole subtree. That is what is actually true of them.
+    //
+    //  Checked BEFORE the prefab blue and skipped when it applies, because
+    //  two PushStyleColor calls for one widget means the second wins and only
+    //  one is popped. Off beats blue: a member of a prefab that is switched
+    //  off is not doing anything, and that is the more urgent fact.
+    // ======================================================================
+    const bool dimmed = !entity.IsActiveInHierarchy();
+    if (dimmed) {
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    } else if (prefab != nullptr) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.78f, 0.95f, 1.0f));
+    }
+
     const bool open = ImGui::TreeNodeEx(label, flags);
+
+    if (dimmed) {
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered() && ImGui::GetDragDropPayload() == nullptr) {
+            ImGui::SetTooltip(entity.IsActiveSelf()
+                                  ? "switched off, because a parent is switched off"
+                                  : "switched off - nothing acts on it");
+        }
+    }
+
+    if (prefab != nullptr && !dimmed) {
+        ImGui::PopStyleColor();
+
+        // WHICH prefab, on hover. The colour says "this is an instance"; only
+        // this says of what, and a scene with three similar enemies in it is
+        // exactly where that question comes up.
+        //
+        // Suppressed while something is being dragged, because a tooltip
+        // following the cursor over every row it passes is noise.
+        if (ImGui::IsItemHovered() && ImGui::GetDragDropPayload() == nullptr) {
+            ImGui::SetTooltip("%s of %s",
+                              scene.IsPrefabRoot(entity.Id()) ? "instance" : "part of an instance",
+                              prefab->prefabPath.c_str());
+        }
+    }
 
     // WHERE THIS ROW IS, recorded in the order rows are drawn. A Shift-range
     // and the marquee both need to know what is above what, and this is the
@@ -298,6 +359,22 @@ bool HierarchyPanel::ReparentIsLegal(eng::EntityId child, eng::EntityId parent) 
         return false;
     }
 
+    // ======================================================================
+    //  A PREFAB'S CHILD CANNOT BE MOVED, not even out to the scene root.
+    //
+    //  The asset says where that child sits, so the next rebuild of the
+    //  instance - Apply, Revert, or anybody editing the prefab - would put it
+    //  straight back. A drag that works and then silently undoes itself later
+    //  is worse than one that refuses now, so the target never lights up and
+    //  the context menu's Unparent is greyed out with the reason.
+    //
+    //  THE ROOT IS FREE TO MOVE anywhere, and the record follows it; see
+    //  RefreshPrefabPlacement.
+    // ======================================================================
+    if (IsPrefabChild(child)) {
+        return false;
+    }
+
     // The scene root. Always allowed - anything can stop having a parent.
     if (parent.IsNull()) {
         return true;
@@ -523,7 +600,6 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
     if (!ImGui::BeginPopupContextItem()) {
         return;
     }
-    eng::Scene& scene = eng::Engine::Get().GetScene();
 
     // The same items as the menu bar's Objects menu, from the one list. See
     // ObjectMenu.h.
@@ -552,24 +628,27 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
     // Greyed out rather than hidden when there is no parent to remove: an
     // item that vanishes teaches nothing, one that is visibly unavailable
     // says what it would do and why it cannot right now.
-    const bool hasParent = entity.Transform().Parent() != nullptr;
+    const bool locked    = IsPrefabChild(entity.Id());
+    const bool hasParent = entity.Transform().Parent() != nullptr && !locked;
     if (ImGui::MenuItem("Unparent", nullptr, false, hasParent)) {
         // Acts on the selection, like the drag does - RequestReparent is
         // given the clicked row and ApplyPendingReparent widens it.
         RequestReparent(entity.Id(), eng::EntityId{});
     }
     if (!hasParent && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("This entity is already at the top level of the scene.");
+        ImGui::SetTooltip("%s", locked ? PrefabChildRefusal()
+                                       : "This entity is already at the top level of "
+                                         "the scene.");
     }
 
     ImGui::Separator();
 
     if (ImGui::MenuItem("Duplicate")) {
-        std::string        error;
-        const eng::EntityId copy = scene.DuplicateEntity(entity.Id(), error);
-        if (copy.IsNull()) {
-            ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not duplicate: {}", error);
-        } else {
+        // Through the shared door, so duplicating a prefab instance here does
+        // the same thing Ctrl+D does - gives another instance. See
+        // DuplicateOne in EditorApp.h.
+        const eng::EntityId copy = DuplicateOne(entity.Id());
+        if (!copy.IsNull()) {
             // Select the copy, because the next thing anybody does after
             // duplicating something is move it.
             EditorState::Get().SelectOnly(copy);
@@ -577,6 +656,8 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
         }
     }
 
+    ImGui::Separator();
+    DrawPrefabMenuItems(entity);
     ImGui::Separator();
 
     // Says how many, so a right-click on one row of eight cannot destroy the
@@ -587,6 +668,20 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
     std::snprintf(destroyLabel, sizeof(destroyLabel), bulk ? "Destroy %zu entities"
                                                            : "Destroy",
                   state.selection.size());
+
+    if (locked) {
+        // Greyed out rather than hidden, for the reason Unparent is: an item
+        // that vanishes teaches nothing, one that is visibly unavailable says
+        // what it would do and why it cannot.
+        ImGui::BeginDisabled();
+        ImGui::MenuItem("Destroy");
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("%s", PrefabChildRefusal());
+        }
+        ImGui::EndPopup();
+        return;
+    }
 
     if (ImGui::MenuItem(destroyLabel)) {
         // Through the DEFERRED QUEUE, not straight away. Deleting an entity
@@ -602,6 +697,71 @@ void HierarchyPanel::DrawContextMenu(eng::Entity& entity) {
         }
     }
     ImGui::EndPopup();
+}
+
+void HierarchyPanel::DrawPrefabMenuItems(eng::Entity& entity) {
+    eng::Scene&                scene    = eng::Engine::Get().GetScene();
+    const eng::PrefabInstance* instance = scene.PrefabInstanceOf(entity.Id());
+
+    // ---- not a prefab yet: offer to make one ------------------------------
+    if (instance == nullptr) {
+        if (ImGui::MenuItem("Create Prefab")) {
+            PrefabRequest& request = EditorState::Get().prefabRequest;
+            request.action         = PrefabAction::Create;
+            request.member         = entity.Id();
+
+            // A DECIDED FOLDER rather than a dialog. "Where shall I put this?"
+            // is a question nobody has an answer to the first time, and the
+            // Assets panel is shown the result afterwards so it is not a
+            // mystery. Dragging the entity into the Assets panel is the way to
+            // choose the folder yourself.
+            request.path = PrefabPathFor(entity, "prefabs");
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Saves this entity and its children as a reusable prefab "
+                              "in assets/prefabs/, and turns this one into an instance "
+                              "of it.\n\nDrag it onto the Assets panel instead to "
+                              "choose the folder.");
+        }
+        return;
+    }
+
+    // ---- it is a prefab: the four things you can do to one ----------------
+    ImGui::TextDisabled("%s", instance->prefabPath.c_str());
+
+    if (ImGui::MenuItem("Select Prefab Asset")) {
+        EditorState::Get().revealAsset = instance->prefabPath;
+    }
+
+    PrefabRequest& request = EditorState::Get().prefabRequest;
+
+    if (ImGui::MenuItem("Apply All")) {
+        request.action = PrefabAction::ApplyAll;
+        request.member = entity.Id();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Writes this instance's changes into the prefab, so every "
+                          "other instance of it gets them.\n\nThis edits a FILE and "
+                          "cannot be undone with Ctrl+Z.");
+    }
+
+    if (ImGui::MenuItem("Revert All")) {
+        request.action = PrefabAction::RevertAll;
+        request.member = entity.Id();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Throws this instance's changes away so it matches the prefab "
+                          "again. Where it stands in the scene is kept.");
+    }
+
+    if (ImGui::MenuItem("Unpack Prefab")) {
+        request.action = PrefabAction::Unpack;
+        request.member = entity.Id();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Breaks the link. The entities stay exactly as they are and "
+                          "become ordinary ones, so the prefab no longer reaches them.");
+    }
 }
 
 void HierarchyPanel::DrawRenamePopup() {

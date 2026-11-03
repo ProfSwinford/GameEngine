@@ -9,7 +9,7 @@
 
   "logging": {
     "_note": "threshold hides anything less important than the level you name. Info, Warning or Error.",
-    "threshold": "Error",
+    "threshold": "Info",
     "file": "logs/engine.log"
   },
 
@@ -40,6 +40,7 @@
         "MoveUp":    ["Key.W", "Key.Up"],
         "MoveDown":  ["Key.S", "Key.Down"],
         "Jump":      ["Key.Space"],
+        "Fire":      ["Mouse.Left", "Key.Return"],
         "Interact":  ["Key.E", "Mouse.Left"],
         "Pause":     ["Key.Escape"],
         "Quit":      ["Key.Q"]

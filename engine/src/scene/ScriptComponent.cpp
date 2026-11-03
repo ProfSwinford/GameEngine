@@ -90,6 +90,155 @@ Transform2D* ScriptBehaviour::Transform() const {
 }
 
 // ---------------------------------------------------------------------------
+//  The verbs. See the long block at the declaration in ScriptComponent.h for
+//  what each one replaces; every one of them is written so that a script whose
+//  entity has already been destroyed gets a harmless answer rather than a
+//  crash, which is what makes the null checks they remove unnecessary rather
+//  than merely hidden.
+// ---------------------------------------------------------------------------
+
+const std::string& ScriptBehaviour::Name() const {
+    // A function-local static rather than a member, so that the reference
+    // handed back for a dead entity is valid for the life of the program and
+    // every caller gets the same one. Returning a reference to a temporary
+    // here would compile and then read freed memory on the next line.
+    static const std::string kNone;
+    Entity*                  self = Owner();
+    return self != nullptr ? self->Name() : kNone;
+}
+
+bool ScriptBehaviour::HasTag(std::string_view tag) const {
+    Entity* self = Owner();
+    return self != nullptr && self->HasTag(tag);
+}
+
+bool ScriptBehaviour::IsActive() const {
+    Entity* self = Owner();
+    return self != nullptr && self->IsActiveInHierarchy();
+}
+
+void ScriptBehaviour::SetActive(bool active) const {
+    if (Entity* self = Owner(); self != nullptr) {
+        self->SetActive(active);
+    }
+}
+
+Entity* ScriptBehaviour::FindEntity(EntityId id) const {
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->Get(id) : nullptr;
+}
+
+Entity* ScriptBehaviour::FindEntity(std::string_view name) const {
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->FindEntity(name) : nullptr;
+}
+
+Entity* ScriptBehaviour::FindEntityWithTag(std::string_view tag) const {
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->FindByTag(tag) : nullptr;
+}
+
+EntityId ScriptBehaviour::Instantiate(std::string_view prefabPath) const {
+    return Instantiate(prefabPath, SpawnOptions{});
+}
+
+EntityId ScriptBehaviour::Instantiate(std::string_view     prefabPath,
+                                      const SpawnOptions& placement) const {
+    Scene* scene = GetScene();
+    if (scene == nullptr) {
+        return EntityId{};
+    }
+
+    // ======================================================================
+    //  THE ERROR IS REPORTED HERE, not handed back.
+    //
+    //  Scene::InstantiatePrefab takes an outError because the editor needs the
+    //  text to put in a dialog. A script has nowhere to put it: the honest
+    //  options are to log it or to drop it, and a spawn that silently does
+    //  nothing is the single most confusing failure a script can have - the
+    //  gun fires, nothing appears, and there is no message anywhere.
+    //
+    //  The script's NAME is in the message because "could not load
+    //  prefabs/bullet.oprefab" does not say which of forty scripts asked.
+    // ======================================================================
+    std::string    error;
+    const EntityId spawned = scene->InstantiatePrefab(prefabPath, placement, error);
+    if (spawned.IsNull()) {
+        const std::string& who =
+            m_component != nullptr ? m_component->ScriptName() : std::string();
+        ENGINE_LOG_ERROR(Channels::kGame,
+                         "the script '{}' on '{}' could not spawn '{}': {}", who,
+                         Name().empty() ? "<a destroyed entity>" : Name().c_str(),
+                         prefabPath, error);
+    }
+    return spawned;
+}
+
+EntityId ScriptBehaviour::Instantiate(const PrefabRef& prefab) const {
+    return Instantiate(prefab, SpawnOptions{});
+}
+
+EntityId ScriptBehaviour::Instantiate(const PrefabRef&    prefab,
+                                      const SpawnOptions& placement) const {
+    if (!prefab.IsSet()) {
+        // ==================================================================
+        //  ONCE PER COMPONENT, NOT ONCE PER CALL.
+        //
+        //  A spawner that asks every step would otherwise write this line
+        //  sixty times a second for as long as the reference is unset, and a
+        //  Console with four thousand copies of one message in it is a Console
+        //  nobody reads. The flag lives on the ScriptComponent rather than on
+        //  the behaviour, so it survives neither a reload nor a reattach -
+        //  which is right: after a rebuild the message is worth saying again.
+        // ==================================================================
+        if (m_component != nullptr && !m_component->m_warnedAboutUnsetPrefab) {
+            m_component->m_warnedAboutUnsetPrefab = true;
+            ENGINE_LOG_ERROR(Channels::kGame,
+                             "the script '{}' on '{}' was asked to spawn a prefab, but "
+                             "its prefab variable has not been set - drag a prefab onto "
+                             "it in the Inspector. Nothing has been spawned, and this "
+                             "is reported once rather than on every attempt",
+                             m_component->ScriptName(),
+                             Name().empty() ? "<a destroyed entity>" : Name());
+        }
+        return EntityId{};
+    }
+    return Instantiate(prefab.Path(), placement);
+}
+
+EntityId ScriptBehaviour::CreateEntity(std::string_view baseName) const {
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->CreateEntityUniquelyNamed(baseName) : EntityId{};
+}
+
+EntityId ScriptBehaviour::CreateEntity(std::string_view     baseName,
+                                       const SpawnOptions& placement) const {
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->CreateEntityUniquelyNamed(baseName, placement)
+                            : EntityId{};
+}
+
+void ScriptBehaviour::DestroySelf() const {
+    DeferredOps::QueueDestroy(OwnerId());
+}
+
+void ScriptBehaviour::Destroy(EntityId id) const {
+    DeferredOps::QueueDestroy(id);
+}
+
+void ScriptBehaviour::Destroy(Entity& entity) const {
+    DeferredOps::QueueDestroy(entity.Id());
+}
+
+void ScriptBehaviour::DestroySelfAfter(float delaySeconds) const {
+    DeferredOps::QueueDestroyAfter(OwnerId(), delaySeconds);
+}
+
+void ScriptBehaviour::DestroyAfter(EntityId id, float delaySeconds) const {
+    DeferredOps::QueueDestroyAfter(id, delaySeconds);
+}
+
+// ---------------------------------------------------------------------------
 //  Hooks
 // ---------------------------------------------------------------------------
 
@@ -597,6 +746,22 @@ void ScriptComponent::FixedTick() {
     if (m_behaviour == nullptr) {
         return;   // the script is not compiled into this build
     }
+
+    // ======================================================================
+    //  A SWITCHED-OFF ENTITY'S SCRIPTS DO NOT RUN - AND DO NOT START.
+    //
+    //  The order matters: this is checked BEFORE EnsureStarted, so a script
+    //  attached to something that is switched off gets its OnStart when it is
+    //  switched on, not when it was built. A script whose OnStart ran while
+    //  its entity was off would have looked around a world it is not part of.
+    //
+    //  It stays in the ticking list rather than being removed, so switching
+    //  the entity back on needs nothing more than the flag. See
+    //  Entity::IsActiveInHierarchy.
+    // ======================================================================
+    if (!OwnerIsActive()) {
+        return;
+    }
     EnsureStarted();
 
     if (m_hooks.fixedUpdate != nullptr) {
@@ -607,6 +772,9 @@ void ScriptComponent::FixedTick() {
 void ScriptComponent::FrameTick() {
     if (m_behaviour == nullptr) {
         return;
+    }
+    if (!OwnerIsActive()) {
+        return;   // see FixedTick above
     }
     EnsureStarted();
 
@@ -622,6 +790,15 @@ void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId
     // is dropped instead; a Stay will arrive next step anyway, because "stay"
     // repeats for as long as the two things overlap.
     if (m_behaviour == nullptr || !m_started || !m_hooks.AnyContact()) {
+        return;
+    }
+
+    // A switched-off script receives no contact events either. It cannot
+    // normally be sent one - a switched-off entity's collider does not
+    // collide - but a message is queued at stage 400 and delivered at 500, so
+    // something switched off in between would otherwise be told about a
+    // contact it was no longer part of.
+    if (!OwnerIsActive()) {
         return;
     }
 
@@ -801,6 +978,29 @@ ScriptComponent* FindScriptNamedOn(Entity& entity, std::string_view scriptName) 
         }
     }
     return nullptr;
+}
+
+ScriptComponent* FindScriptNamedIn(Scene& scene, std::string_view scriptName) {
+    if (scriptName.empty()) {
+        return nullptr;
+    }
+
+    ScriptComponent* found = nullptr;
+    // ForEachUntil rather than ForEach: the one game-rules object in a scene is
+    // usually near the front, and this is a call a script makes in OnStart -
+    // walking the remaining four hundred entities after finding it is waste.
+    scene.ForEachUntil([&](Entity& entity) {
+        if (DeferredOps::IsPendingDestroy(entity.Id())) {
+            return true;
+        }
+        if (ScriptComponent* script = FindScriptNamedOn(entity, scriptName);
+            script != nullptr) {
+            found = script;
+            return false;
+        }
+        return true;
+    });
+    return found;
 }
 
 // ---------------------------------------------------------------------------

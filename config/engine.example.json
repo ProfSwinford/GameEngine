@@ -28,6 +28,14 @@
     "gizmoCircleSegments": 24
   },
 
+  "physics": {
+    "_gravity": "GRAVITY IS IN YOUR GAME'S UNITS, and this engine works in PIXELS. Unity's -9.81 is metres per second squared; at roughly 100 pixels to the metre, -981 is the same real-world gravity. The engine's built-in default is -9.81 so that the number means what a physics textbook says, which makes it a barely visible drift in pixels - about 30 pixels in two and a half seconds - so every project that wants gravity has to say so here. Use [0, 0] for a top-down game.",
+    "gravity": [0.0, -981.0],
+
+    "_solverIterations": "How many passes the contact solver makes over the collisions it found. Raise it if stacked objects sink into each other.",
+    "solverIterations": 4
+  },
+
   "startup": {
     "_note": "The scene opened when the game starts. Even the first level is data - there is no scene name written into the engine anywhere.",
     "scene": "scenes/orbit_test.oscene"

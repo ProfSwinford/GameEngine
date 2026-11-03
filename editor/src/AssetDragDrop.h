@@ -20,10 +20,21 @@
 //    script -> Hierarchy row   attach a ScriptComponent bound to that script
 //    script -> Inspector       the same, for whatever is selected
 //    scene  -> Scene view      load it
+//    prefab -> Scene view      place an instance of it there
+//    prefab -> Hierarchy row   place an instance as a child of THAT entity
 //
 //  The two "apply it to this entity" cases are identical in effect and would
 //  be very easy to write twice with a subtle difference between them, so
 //  ApplyAssetToEntity is one implementation both use.
+//
+//  ==========================================================================
+//  AND ONE DRAG THAT GOES THE OTHER WAY: an ENTITY dragged out of the
+//  Hierarchy and dropped on the Assets panel, which makes a prefab of it.
+//
+//  That payload is kPayloadEntity and it belongs to the Hierarchy - see
+//  panels/HierarchyPanel.h - so the receiving code lives in the Assets panel
+//  rather than here. Noted here because this is where somebody looks for "what
+//  can be dropped where".
 // ============================================================================
 
 #include <engine/Engine.h>
@@ -38,6 +49,7 @@ inline constexpr const char* kPayloadScene   = "ASSET_SCENE";
 inline constexpr const char* kPayloadScript  = "ASSET_SCRIPT";
 inline constexpr const char* kPayloadFont    = "ASSET_FONT";
 inline constexpr const char* kPayloadTile    = "ASSET_TILE";
+inline constexpr const char* kPayloadPrefab  = "ASSET_PREFAB";
 
 // Everything else the Assets panel can pick up: a FOLDER, and any file whose
 // kind nothing here recognises. Neither of those means anything to an entity,
@@ -56,7 +68,7 @@ inline constexpr const char* kPayloadAssetItem = "ASSET_ITEM";
 // place is what stops the two ends drifting apart as kinds are added.
 inline constexpr const char* kAllAssetPayloads[] = {
     kPayloadTexture, kPayloadScene, kPayloadScript, kPayloadFont, kPayloadTile,
-    kPayloadAssetItem,
+    kPayloadPrefab,  kPayloadAssetItem,
 };
 
 enum class AssetKind {
@@ -69,6 +81,10 @@ enum class AssetKind {
     // A .otile: one tile material, naming the five-band sheet it draws from.
     // See engine/include/engine/tilemap/TileAsset.h.
     Tile,
+
+    // A .oprefab: an entity and its children, saved, with every instance of
+    // it still linked back. See engine/include/engine/scene/Prefab.h.
+    Prefab,
 };
 
 // Works out what kind of file this is, from its EXTENSION and its folder -
@@ -113,10 +129,23 @@ std::string ScriptPathFromName(std::string_view scriptName);
 bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
                         std::string& outMessage);
 
-// Creates a NEW entity for a dropped image at a position in the world. Used by
+// Creates a NEW entity for a dropped file at a position in the world. Used by
 // the Scene view. Returns an empty id and a reason if it could not.
+//
+// An IMAGE becomes a new entity with that sprite. A PREFAB becomes an instance
+// of itself - which is a different act with the same gesture, and the reason
+// this is one function rather than two is that the Scene view should not have
+// to know which kinds of file can be dropped into a world.
 eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 worldPosition,
                                    std::string& outMessage);
+
+// Where a new prefab made out of `entity` should be written, given the folder
+// the Assets panel is showing: "enemies/Turret.oprefab".
+//
+// Here rather than in the Assets panel because the Scene view's own "save this
+// as a prefab" will want the same answer, and two pieces of code deciding
+// where prefabs go is how you get half of them in the wrong folder.
+std::string PrefabPathFor(const eng::Entity& entity, std::string_view virtualDirectory);
 
 // The whole receiving side, for the item that was drawn most recently: opens
 // the drop target, accepts an image or a script, applies it, writes the result

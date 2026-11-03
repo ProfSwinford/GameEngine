@@ -308,7 +308,11 @@ void ProjectMenu::UpdateWindowTitle() {
 }
 
 void ProjectMenu::CollectPickerResult() {
-    const eng::FolderDialog::Result picked = eng::FolderDialog::Take();
+    // ITS OWN TWO QUESTIONS AND NOBODY ELSE'S. Taking unfiltered here was
+    // what broke Build Game: this runs first, so it took the exporter's
+    // answer, matched neither purpose below, and fell off the end with it.
+    const eng::FolderDialog::Result picked =
+        eng::FolderDialog::Take({kPurposeOpen, kPurposeNew});
 
     switch (picked.choice) {
         case eng::FolderDialog::Choice::None:

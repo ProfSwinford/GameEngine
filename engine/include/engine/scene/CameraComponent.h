@@ -54,6 +54,14 @@
 //  says which camera is actually live so there is never any doubt.
 // ============================================================================
 
+// Overlap.h is here for AABB, which WorldBounds returns.
+//
+// IT WAS MISSING, and this header only ever compiled because every file that
+// included it happened to have pulled Overlap.h in first - through Engine.h or
+// through the physics headers. The first translation unit to include this one
+// on its own failed, naming a line 80 lines below the actual problem. A header
+// that compiles only in the company of others is a trap with a delay on it.
+#include <engine/math/Overlap.h>
 #include <engine/scene/Component.h>
 #include <engine/scene/SystemOrder.h>
 

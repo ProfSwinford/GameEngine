@@ -66,6 +66,18 @@ Transform2D* Component::OwnerTransform() const {
     return (m_owner != nullptr) ? &m_owner->Transform() : nullptr;
 }
 
+bool Component::OwnerIsActive() const {
+    // A COMPONENT WITH NO OWNER COUNTS AS ACTIVE, and the decision lives here
+    // so that all nine systems get the same answer.
+    //
+    // It is the state a component is in between being constructed and being
+    // attached - ComponentFactory::Create then Deserialize then AddComponent,
+    // which is the order loading uses. Nothing walks it during that window,
+    // but answering "inactive" would mean that any system which ever did
+    // would skip it for a reason that is not about the entity at all.
+    return m_owner == nullptr || m_owner->IsActiveInHierarchy();
+}
+
 // ---------------------------------------------------------------------------
 //  ComponentFactory
 // ---------------------------------------------------------------------------
@@ -123,6 +135,18 @@ bool TransformComponent::Serialize(Json& out) const {
     out["rotation"] = m_transform.LocalRotation();
     WriteVec2(out, "scale", m_transform.LocalScale());
     return true;
+}
+
+void TransformComponent::OnAttach() {
+    if (Scene* scene = GetScene(); scene != nullptr) {
+        scene->RegisterTransform(m_transform, OwnerId());
+    }
+}
+
+void TransformComponent::OnDetach() {
+    if (Scene* scene = GetScene(); scene != nullptr) {
+        scene->ForgetTransform(m_transform);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,8 +249,18 @@ void SpriteComponent::SetTint(Color tint) { m_tint = tint; }
 void SpriteComponent::SetLayer(int layer) { m_layer = layer; }
 
 void SpriteComponent::SetTexture(std::string_view virtualPath) {
-    m_texture = ResourceManager::LoadTexture(virtualPath);
+    // AN EMPTY PATH IS "NO PICTURE", NOT A FAILED LOAD. Clearing the slot in
+    // the Inspector is a legitimate thing to do - a sprite with no texture is
+    // skipped by the render loop below, which is already the state a freshly
+    // added SpriteComponent is in - and asking ResourceManager for "" would
+    // report a missing file that nobody named.
+    m_texture =
+        virtualPath.empty() ? TextureRef{} : ResourceManager::LoadTexture(virtualPath);
     m_texturePath.assign(virtualPath);
+}
+
+void SpriteComponent::ShowTexture(const TextureRef& texture) {
+    m_texture = texture;   // and NOT m_texturePath - see Component.h
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +313,11 @@ void SpriteRenderSystem::RenderRange(Camera& camera, int minLayer, int maxLayer)
         Transform2D* transform = sprite->OwnerTransform();
         if (transform == nullptr || !sprite->GetTexture()) {
             continue;   // no position, or no picture assigned yet
+        }
+
+        // A switched-off entity is not drawn. See Entity::IsActiveInHierarchy.
+        if (!sprite->OwnerIsActive()) {
+            continue;
         }
 
         // The transform's own world matrix is used here - the same one

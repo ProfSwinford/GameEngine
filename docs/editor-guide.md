@@ -25,6 +25,12 @@ game. `editor --project <folder>` skips the launcher entirely.
 `.build/` for compiled scripts and `.editor/` for your place in the work. Only
 the first two are worth committing; a new project's `.gitignore` says so.
 
+**The settings file is not optional furniture.** Every setting has a default,
+so a project without one starts — but two of those defaults are wrong for any
+real game, and the symptoms look like bugs somewhere else entirely. See [If a
+project runs in slow motion, or ignores the
+keyboard](#if-a-project-runs-in-slow-motion-or-ignores-the-keyboard).
+
 **It can live anywhere.** The editor does not have to be installed beside it:
 
 ```bash
@@ -54,6 +60,48 @@ starts one, then add an object and **Save Scene As...**. That is deliberate:
 shipping a starter scene would mean the project creator knowing the scene
 format, which is a second place to update whenever the format changes and the
 first place to forget.
+
+Its `config/engine.json` arrives with a `physics` section (gravity in **pixels**
+— see below) and an `input` section binding WASD, the arrow keys, Space and the
+mouse, so the project is playable from the first scene you draw. Both are
+ordinary settings: rename the actions, change the gravity, delete what you do
+not want.
+
+### If a project runs in slow motion, or ignores the keyboard
+
+Both symptoms are the same missing thing, and a project created before this
+engine version has it: **`config/engine.json` with no `physics` or `input`
+section**. Open the Console at start-up and it says so, once, for each.
+
+**Gravity is in your game's units, and this engine works in pixels.** The
+built-in default is Unity's `-9.81`, which is *metres* per second squared — and
+at roughly a hundred pixels to the metre that is a barely visible drift rather
+than gravity. A project that does not override it accelerates everything at a
+**hundredth** of the intended rate. Fall time goes as 1/√g, so things fall,
+jump and arc about **ten times too slowly**: the game looks like it is running
+in slow motion, while in fact the simulation is running at full speed on numbers
+that are wrong by two orders of magnitude. Add:
+
+```json
+  "physics": {
+    "gravity": [0.0, -981.0],
+    "solverIterations": 4
+  }
+```
+
+**With no `input` section nothing is bound**, so every `IsPressed` and
+`GetAxis2D` answers no, for ever. The scripts compile, load and run — the
+Console says so, and the Inspector shows them attached — and the game does not
+respond to the keyboard, which is indistinguishable from scripts that are
+broken. The Game view says so across the bottom while you are playing. Copy the
+`input` block from `config/engine.example.json`, or from any project created by
+a current editor.
+
+Neither of these is a frame-rate problem, and the Toolbar is where to check
+that: it prints game time against real time, and the number of simulation steps
+in the last frame. If game time is keeping up with real time, nothing is
+dropping frames — and if the **Speed** slider beside it is not at `1x`, the
+Game view now says that too.
 
 **File → Open Project...** picks a folder. Picking one *inside* a project opens
 the project, so you can point it at `assets/scenes/` and it will do the obvious
@@ -90,6 +138,26 @@ An "engine" here is just a folder containing an editor and an
 already qualify and the one the launcher ships beside is always available. It
 does **not** download or install engine versions; that needs a release server
 and an install layout this project does not have yet.
+
+**It says when a project's scripts were built by a different engine.** Because
+project and engine are two independent choices here, it is easy to pick the
+Release engine for a project the Debug one compiled — and the two are not
+interchangeable: the C runtime differs, so loading those scripts would corrupt
+memory rather than fail. The engine refuses them, which means every script in
+every scene reads **NOT FOUND**, which looks exactly like scripts that are
+broken.
+
+So the row says so *before* you click, in amber: *"scripts were built by 1.0.0
+Debug — the editor will rebuild them for 1.0.0 Release on opening"*. It is a
+wait, not an error — the editor fixes it by recompiling, which takes a few
+seconds — and it is deliberately **not** phrased as a problem, because this is
+the ordinary state the first time a project moves between engines and a warning
+that cried wolf would be ignored within a day.
+
+It compares `.build/buildconfig.txt`, which is the record the engine's own ABI
+check reads — not the engine version in `project.oproj`, which says which engine
+*created* the project and is a different fact entirely. An engine folder with no
+`engine-version.json` says nothing rather than guessing.
 
 The launcher closes when it starts an editor. **File → Close Project** opens it
 again, so closing a project lands you somewhere you can open another one.
@@ -239,6 +307,16 @@ record a new one.
   asset in the **Assets** panel is gone, which is why that is the one dialog
   in the editor that always asks. Editing a `.otile` is the same - a tile asset
   is its own file.
+- **Applying to a prefab.** *Apply* writes the `.oprefab` file, and a file is
+  not in the scene. `Ctrl+Z` afterwards takes back the scene-side part and
+  leaves the prefab changed, which is the same deal as saving. *Revert* is
+  entirely inside the scene, so that one undoes normally. See
+  [Prefabs](#prefabs).
+- **A prefab edited outside the editor.** When you alt-tab back, every instance
+  of it rebuilds - and the undo history is cleared, for the same reason a scene
+  change clears it. A step back into a scene holding the prefab's old contents
+  would read as a pile of deliberate overrides and quietly detach the instance
+  from it.
 - **The scene view camera.** Undo deliberately does not move your viewport,
   because you are looking at the thing you are undoing.
 - **Align game camera**, when the scene has no camera entity. With no camera
@@ -328,6 +406,19 @@ Every entity in the scene, as a tree. Parenting shows as nesting.
 | Find something              | the filter box                           |
 | Give it a picture           | drag an image from **Assets** onto it    |
 | Give it behaviour           | drag a `.cpp` from **Assets** onto it    |
+| Place a prefab under it     | drag a `.oprefab` from **Assets** onto it |
+| Save it as a prefab         | drag it onto **Assets**, or right-click → **Create Prefab** |
+
+Rows drawn in **blue** belong to a prefab instance; right-clicking one offers
+**Apply**, **Revert**, **Unpack** and **Select Prefab Asset**. See
+[Prefabs](#prefabs).
+
+Rows drawn **greyed out** are switched off, and so is everything under them.
+Hover one to be told whether it is off itself or because a parent is - the
+Inspector's checkbox is where you change it, and
+[the Inspector](#the-checkbox-and-the-tag-box-under-the-name) says what being
+off actually means. Greyed beats blue: a prefab member that is switched off is
+not doing anything, and that is the more urgent fact about it.
 
 ---
 
@@ -339,6 +430,80 @@ script's binding.
 
 Use the **+ ComponentName** buttons at the bottom to add a component.
 
+### Pointing a component at an image
+
+A component that uses a picture — **Sprite**, **Sprite Animation**, **UI
+Image** — shows it as a **slot**: a button carrying the image's *name*, not its
+path. `textures/Sprites/Blue/hero.png` reads as **hero.png**, and one frame of
+a sliced sheet reads as **hero.png#walk** — the sheet's name stays, because a
+project with four sheets has four animations called `walk`.
+
+Three ways to fill one:
+
+- **Drag an image onto the slot** from the Assets panel. That *replaces* what
+  the slot holds. Dropping anywhere else on the Inspector still means "give
+  this entity the asset", which may add a component instead — the slot under
+  your cursor wins, which is ImGui's own rule rather than luck.
+- **Click it** for a list of every image in the project, with a filter box.
+  Sliced sheets contribute their frames; a Sprite Animation slot lists the
+  animations instead, because an animation is a thing stored *inside* a sheet.
+- **(none)** at the top of that list clears it.
+
+The full path is in the tooltip, for the one moment you want it. A slot whose
+image is set and **not loading** is red, which is the one thing a name alone
+cannot tell you.
+
+Dropping a whole image on a **Sprite Animation** slot is accepted and then
+explained — *"that is a whole image, not a part of one"* — rather than refused,
+because a refused drop leaves you holding the thing you meant with no idea why
+nothing happened.
+
+The **Tile Palette**'s art field is deliberately *not* one of these slots: it
+is a field of a `.otile` file rather than a reference, and the panel's whole
+design is that a wrong path turns red as you type it. It takes a drop too, and
+keeps the text box.
+
+### The checkbox and the Tag box, under the name
+
+Two things that belong to the ENTITY rather than to any of its components, so
+they sit above all of them.
+
+**The checkbox switches the entity off.** It keeps everything it has - its
+components, its values, its place in the hierarchy - and it still saves and
+loads. But nothing acts on it: it is not drawn, it does not collide, it is
+invisible to every physics query, its scripts do not run, its interface is
+neither drawn nor clickable, and a camera on it cannot be the active camera.
+
+Switching off a parent switches off everything under it, **without touching
+their own checkboxes** - so switching the parent back on restores exactly what
+was there. A row that is off for that reason is greyed in the Hierarchy and the
+Inspector says "off: a parent is off" beside its ticked box, because an entity
+that looks on and behaves off is otherwise a long afternoon.
+
+A script reads it as `IsActive()` and writes it as `SetActive(bool)`. There are
+no OnEnable / OnDisable hooks yet; writing one is a compile error that says so.
+
+**The Tag box says what KIND of thing this is** - "Player", "Enemy",
+"Pickup". It is not unique, so every bullet can carry the same one, and unlike
+a collision layer it changes nothing about what the thing collides with and
+works on things that have no collider at all.
+
+A script asks `entity->HasTag("Enemy")`, or `FindEntityWithTag("Player")`, or
+`scene->CountWithTag("Enemy")`. Empty means untagged, and `HasTag("")` is
+false rather than true-for-everything.
+
+### A prefab slot on a script
+
+A script variable declared `eng::PrefabRef` appears as a slot you **drag a
+prefab onto** from the Assets panel, rather than as a text box you type a path
+into. It shows the file's own name, says so in red when the file is not there,
+and clicking it clears the slot. That is how a spawner chooses what it spawns -
+`assets/scripts/Gun.cpp` is the worked example.
+
+**A prefab instance gets a Prefab block at the top**, listing everything about
+this copy that differs from the prefab, with *Apply* and *Revert* for each one.
+A changed component's header is blue. See [Prefabs](#prefabs).
+
 **Some fields are read-only while the game is running.** That is deliberate:
 while a system owns a value, anything you type into it is overwritten on the
 very next step. Press Pause first.
@@ -347,9 +512,12 @@ very next step. Press Pause first.
 
 ## Assets
 
-The files on disk, under one root: `assets/`. Images, scenes and your scripts
-all live here, in **whatever folder structure suits the game** - `enemies/`,
-`player/`, `ui/`. Nothing is enforced.
+The files on disk, under one root: `assets/`. Images, scenes, prefabs and your
+scripts all live here, in **whatever folder structure suits the game** -
+`enemies/`, `player/`, `ui/`. Nothing is enforced.
+
+**Drag an entity in from the Hierarchy to make a prefab of it**, in whichever
+folder it lands on. See [Prefabs](#prefabs).
 
 That works because the editor compiles every `.cpp` and `.h` it finds anywhere
 under `assets/`, at any depth. A script runs wherever you decide to put it, so
@@ -363,6 +531,218 @@ though that also happens on its own whenever the editor regains focus.
 
 The compiled result is written to `.build/` beside `assets/`, not into it, so
 this panel only ever shows files you wrote.
+
+### Import settings: how an image is scaled
+
+**Click an image here and the Inspector shows how it is imported.** The one
+setting that matters for a 2D game is the scaling mode, and it has two answers:
+
+| Button          | What it does                                        | Use it for |
+| --------------- | --------------------------------------------------- | ---------- |
+| **Pixel Art**   | Enlarging doubles pixels up - crisp, square pixels  | sprites drawn pixel by pixel |
+| **Smooth / UI** | Enlarging blends them - soft edges                  | interface art, photographs, gradients |
+
+A 16x16 character blown up to 64x64 can come out crisp and blocky or soft and
+blurred, and **both are right, for different pictures**. Nothing in a `.png`
+says which, because it is not a property of the pixels - so it is recorded
+beside the file instead.
+
+The change takes effect **before you let go of the mouse**: every sprite in the
+open scene changes at once, and so does the preview in the Inspector. There is
+no Apply button and nothing to reimport. The preview is deliberately drawn
+larger than the image, because at its real size the setting makes no visible
+difference at all.
+
+**The settings live in a file of their own, next to the asset:**
+
+```
+assets/textures/player.png            the picture
+assets/textures/player.png.oimport    how to import it
+```
+
+```json
+{
+  "filter": "Linear"
+}
+```
+
+It is JSON, so you can open it and fix it by hand like every other asset in the
+tree; the editor re-reads it when its window regains focus, the same way it
+picks up a script you edited elsewhere. The Assets panel **does not show these
+files** - one per image would double the length of a sprite folder - and
+renaming, moving or deleting an image takes its settings with it.
+
+**An asset with no such file uses the defaults, and the defaults are what the
+engine always did**: `Nearest` for an image, `Linear` for a font. So a project
+that has never touched any of this looks exactly as it did. Saving the defaults
+*deletes* the file rather than writing one that says nothing, which is why
+"Revert to defaults" and choosing `Pixel Art` on an untouched image come to the
+same thing.
+
+Fonts have the same setting and the opposite default, for a reason worth
+knowing: a letter is a curve approximated into coverage values, and drawing
+those unfiltered throws away the very thing that makes it look curved. A font
+drawn *as* pixel art is the exception, and says so in its own `.oimport`.
+
+**An exported game gets these files too.** Nothing in a scene names one - the
+path is worked out from the asset's - so the exporter ships them as a step of
+its own, and the Build log says how many went.
+
+Only images and fonts have import settings. Select anything else and the
+Inspector says so, and says where that kind of file *is* edited.
+
+### Spritesheets: slicing one image into many
+
+**Tick "This image is a spritesheet" and the Inspector grows a slicer.** A
+spritesheet is one file holding many pictures, and slicing it gives each one a
+name - after which it behaves exactly like a separate image file that happens
+not to exist:
+
+```
+textures/hero.png          the sheet
+textures/hero.png#f0       the first frame, usable anywhere an image is
+textures/hero.png#walk     an animation, stored in the same place
+```
+
+Drop one on a sprite, name one in a tile, type one into the Texture box. There
+is **no extraction step and no new files** - the frames are rectangles recorded
+in the same `.oimport`, and the engine cuts one out when something asks for it.
+
+**Setting the grid.** Give it a cell size, or say how many cells there are
+across and down and let it work the size out. `Margin` is the border skipped on
+all four sides; `Spacing` is the gap between neighbouring cells. The preview
+draws the grid over the image as you drag, and underneath it says what the grid
+comes to:
+
+```
+3 across, 4 down - 12 frame(s) of 16 x 20
+```
+
+If the grid does not divide the image exactly, it says how much is left over.
+Blank space at the edge of a sheet is perfectly normal, so this is a warning
+rather than a refusal - but far more often it means one of the four numbers is
+not quite right.
+
+**"Guess from the image size" works from the width and height only.** It
+answers the largest square cell that divides the image exactly both ways. That
+is right for the grid sheets every exporter produces and wrong for a sheet with
+uneven padding, and it is worth knowing why it cannot do better: the editor has
+no decoder of its own and no copy of the pixels - they went to the graphics card
+and cannot be read back - so the dimensions are genuinely all there is to go
+on. Always check the preview.
+
+**Then press Slice.** The frames appear in a list underneath, each with its
+name and rectangle; open one to rename it or to type its rectangle in by hand.
+Clicking a frame in the preview shows that frame on its own.
+
+Slicing again **replaces every frame**, so a name you changed by hand will not
+survive it. Animations are kept, because they refer to frames by name.
+
+**Animations are stored in the sheet too**, with a frame rate and whether they
+repeat. "One animation per row" makes `row0`, `row1`, ... in one press, which
+is the layout most sheets use. An animation's own path - `hero.png#walk` - loads
+as a still of its first frame, because a path names a picture.
+
+**Drag that animation onto an entity and it plays.** The drop does both halves:
+the sprite gets the still, and a **Sprite Animation** component appears beside
+it to flip through the frames. Press Play and it runs.
+
+**And a single frame can become a tile.** Right-click one → **Make a Tile from
+this frame**, and you get a `.otile` that draws exactly that frame. The frame
+stays part of its sheet; nothing is copied out. See [Two kinds of
+tile](#two-kinds-of-tile).
+
+That component holds one thing - the animation's path - and reads everything
+else from the sheet, so changing the frame rate or re-slicing is an edit to one
+file and every entity playing it follows. Its two settings are the entity's own:
+
+| Setting | What it does |
+| ------- | ------------ |
+| **Speed** | A multiplier on the sheet's rate, so `2` is twice as fast. One fast enemy, same animation. |
+| **Play when the scene starts** | Untick it for something a script starts - a chest that opens when the player reaches it. |
+
+The frame rate, whether it repeats, and whether replaying it carries on are
+**not** here. They belong to the animation, in the sheet, which is where the
+Animations list above edits them - so forty enemies sharing one walk cycle
+cannot disagree about how fast it is.
+
+**Carry on where it left off** is the third of those, and it is per *animation*
+rather than per entity on purpose: one entity plays a walk and a swing from the
+same sheet through one component, so a setting on the component could not tell
+them apart.
+
+| | |
+| --- | --- |
+| **on** | playing this animation while it is already the one loaded picks up from the frame it stopped on. A walk cycle wants this: stopping and setting off again should not visibly hitch. |
+| **off** | it starts over, which is what every animation did before the tick box existed. A swing or a jump wants this, or the second one begins half way through the first. |
+
+Two things it does not change. Switching to a **different** animation always
+begins at that one's first frame — there is one playback position and it
+belonged to the clip being left. And a non-looping clip that ran to its **end**
+always starts again, because there is nothing to carry on with.
+
+**It does not play while you are editing.** Animations run on the simulation
+clock, and that clock is stopped outside Play mode. Press Play and both views
+animate; **Pause** and then **Step** advances one frame at a time, which is the
+frame-by-frame animation viewer.
+
+A non-looping animation **holds its last frame** when it finishes. Nothing is
+destroyed and nothing is reported - that is what "played once" means - and a
+script can ask `IsFinished()` to act on it.
+
+Every copy of an entity starts its animation together, so forty enemies loaded
+from one scene file animate in lockstep. There is no per-entity start offset
+yet.
+
+A few rules the editor enforces rather than explains twice:
+
+- A frame and an animation **cannot share a name**, because `#walk` has to mean
+  one thing.
+- An animation **cannot be empty**. Delete the animation instead of its last
+  frame.
+- A frame's name cannot contain `/`, `\`, `#`, `:` or `.` - these are names like
+  `walk_1`, not filenames.
+
+Everything about a frame other than its rectangle belongs to the sheet. Select
+one and the Inspector shows what it is and offers the way back to the sheet;
+there is nothing to set on it, because scaling is the sheet's and a frame has no
+file of its own.
+
+**One real limit, said in the panel too:** re-slicing cannot reach a frame
+something is already drawing. Sprites in the open scene keep the picture they
+have until the scene is reloaded.
+
+### A sliced sheet opens like a folder
+
+Once an image has frames, its tile in the Assets panel grows a **disclosure
+arrow** beside its name. Click it and the frames appear indented underneath, as
+tiles of their own - and from that point they behave like any other image:
+
+- drag one onto an entity to give it that sprite
+- drag one into the Scene view to place it
+- drag one onto a UI Image's Texture field
+- click one and the Inspector shows which rectangle of which sheet it is
+
+The animations are in the same run, after the frames, each showing its first
+frame as its picture. There is nothing to extract and no files appear: a frame
+tile is drawn straight out of the sheet's own thumbnail, so **opening a sheet of
+ninety-six frames loads nothing at all**.
+
+The arrow appears the moment you press Slice - you do not have to press Refresh
+- and a sheet you have opened stays open while you work, including across
+navigating away and back.
+
+**A frame is not a file, and the panel is honest about that.** Rename and Delete
+are not offered on one, by key or by menu, because there is nothing on disk to
+rename: a frame's name and rectangle are edited in the Inspector's Frames list,
+which is where the right-click menu points you. Nor can a frame be dragged into
+another folder, and the drag preview does not offer it.
+
+A frame whose rectangle reaches outside its image shows a plain `FRM` chip
+rather than a picture, with the reason in its tooltip. So does an animation
+whose frames have all been renamed away. That matters more than it sounds: the
+alternative is a tile that looks like a real frame while the same frame refuses
+to load the moment it is dropped on something.
 
 ---
 
@@ -405,6 +785,14 @@ When you press Play, the Game view takes the keyboard and shows a green border
 to say so. Clicking any other panel gives it back, so you can keep using the
 editor while the game runs.
 
+**Play is greyed out while the scripts are compiling**, and hovering it says
+so. A build unloads the script libraries for as long as it runs, so a game
+started during one would have none of its behaviour attached - it would open,
+draw the scene, and sit there. That is most likely on the first few seconds of
+opening a project the editor has not built before, which takes eight to fifteen
+seconds; after that a rebuild is usually under a second and you will never see
+this. Nothing needs doing: the button comes back by itself.
+
 ---
 
 ## Editing a scene
@@ -438,6 +826,138 @@ Two things worth knowing:
 Things the editor deliberately does not do: no rotate or scale handles (move
 only), no dragging to reparent in the Hierarchy, and the Assets panel creates
 files but does not rename, move or delete them.
+
+---
+
+## Prefabs
+
+**A prefab is an entity you saved, and every copy of it stays linked to what it
+was saved from.** Twenty copies of an enemy are not twenty enemies: they are
+twenty instances of one enemy. Fix the enemy and all twenty change. Change one
+instance and only that one changes, and the editor remembers exactly *which
+parts* of it you changed, so everything else still follows.
+
+That last sentence is the whole feature. Without it a prefab is a copy-paste
+button, and copy-paste is exactly what stops working at the point a game is big
+enough to need it - the moment you have to fix a mistake in all twenty.
+
+### Making one
+
+Three ways, and all three turn the entity you started from into an instance of
+the new prefab. What you were working on is now linked, so the next change you
+make to it can be pushed to every copy:
+
+| How | Where the file goes |
+| --- | --- |
+| Drag an entity from **Hierarchy** onto the **Assets** panel | the folder being shown |
+| Drag it onto a folder tile in **Assets** | that folder |
+| Right-click it in **Hierarchy** → **Create Prefab** | `assets/prefabs/` |
+
+The file is named after the entity, with the extension `.oprefab`. **It refuses
+to overwrite an existing prefab**, because writing over one reaches every
+instance of it in every scene in the project - that is what *Apply* is for, and
+it should be something you asked for by name.
+
+### Placing one
+
+| How | Where it lands |
+| --- | --- |
+| Drag the `.oprefab` into the **Scene view** | where you dropped it |
+| Drag it onto an entity in **Hierarchy** | as a child of that entity |
+| Double-click it in **Assets**, or right-click → **Place in Scene** | where the Scene view is looking |
+| Select an instance and press **`Ctrl+D`** | on top of the original, as another instance |
+
+**Every member of an instance is drawn in blue** in the Hierarchy and the
+Inspector. That is the one signal that says editing this is editing one copy of
+something; hovering a row says which prefab.
+
+### Changing one copy
+
+Just edit it. Move it, change its colour, add a component. The Inspector's
+**Prefab** block at the top lists everything about this instance that differs
+from the prefab, with two buttons beside each entry:
+
+- **Revert** puts that one thing back to what the prefab says.
+- **Apply** writes that one thing *into the prefab*, so every other instance
+  gets it too.
+- **Apply All** / **Revert All** do the lot.
+- **Unpack** breaks the link. Nothing moves and nothing is destroyed - the
+  entities just become ordinary ones, and the prefab no longer reaches them.
+
+A component you have changed has its header in blue, with the changed fields
+listed underneath by the name they are saved under.
+
+**Where an instance stands is not a change to the prefab.** Its position and
+rotation are deliberately left out of the list, left alone by *Apply All* and
+kept by *Revert All* - otherwise applying one enemy would move every other
+enemy in the project to the same spot, and reverting would teleport the one you
+were working on back to the prefab's origin. Scale is *not* excluded: how big
+something is reads as a decision about the object rather than about where it
+stands.
+
+### Changing the prefab itself
+
+There is no separate prefab-editing mode. Edit any instance and press
+**Apply** - which is how Unity worked before it grew one.
+
+You can also edit the `.oprefab` by hand, since it is JSON like everything else
+here. When you alt-tab back to the editor, every instance in the open scene
+rebuilds and keeps its own overrides. That is the same trigger that rebuilds
+your scripts.
+
+### Two things it refuses
+
+**A prefab's child cannot be deleted or reparented.** The root is fine -
+deleting it deletes the whole instance, and it can be parented anywhere you
+like. The refusal on a child is not protectiveness: the prefab says that child
+exists and says where it sits, so the next rebuild would put it straight back.
+A delete that silently undoes itself ten minutes later is worse than one that
+refuses now. **Unpack** is the way out, and every refusal says so.
+
+**Making a prefab out of something that is already an instance** is refused
+too, because it would flatten it - the new file would hold plain copies with no
+link back to the first prefab. Unpack it first, or use *Apply* to change the
+prefab it came from.
+
+### What it does not do yet
+
+- **Nested prefabs.** A prefab containing an instance of another prefab.
+- **Prefab variants.** A prefab that inherits from another prefab.
+- **Prefab mode.** Unity opens a prefab in its own isolated scene view.
+- **Added children are ordinary entities.** Parent something new under an
+  instance and it saves and loads correctly, and the prefab leaves it alone -
+  but *Apply* will not push it into the prefab. Unity tracks that as an "added
+  object".
+- **Overriding a value to the same value the prefab has.** Unity can pin a
+  property that way, so a later change to the prefab does not arrive. Here a
+  value equal to the prefab's is indistinguishable from one nobody touched, so
+  it follows the prefab.
+
+### What it looks like in the file
+
+The scene does **not** store an instance's entities. It stores a short record,
+and the entities are built from the prefab when the scene loads - which is
+exactly why editing the prefab reaches every instance:
+
+```json
+"prefabInstances": [
+  {
+    "prefab": "prefabs/enemy.oprefab",
+    "name": "Enemy_3",
+    "parent": "Spawners",
+    "overrides": [
+      { "entity": 2, "component": "SpriteComponent", "field": "tint",
+        "value": [255, 0, 0, 255] }
+    ]
+  }
+]
+```
+
+`"entity": 2` is a number inside the prefab rather than a name. Names cannot do
+that job: three instances of a prefab with a child called `Muzzle` cannot all
+have a child called `Muzzle`, and renaming one in the prefab would silently
+detach every override anybody had made to it. The full argument, and the format,
+are in `engine/include/engine/scene/Prefab.h`.
 
 ---
 
@@ -532,30 +1052,95 @@ around them: paint a line of stone and the ends round themselves off, paint a
 block and the middle fills in. The reasoning is in
 [the README](../README.md#tilemaps); this is how to use it.
 
+### Two kinds of tile
+
+There are two, and the one you want depends on whether the art should **join up
+with itself**:
+
+| Kind      | What it is                                      | When |
+| --------- | ----------------------------------------------- | ---- |
+| **Sheet** | Five bands, assembled from four quarters chosen by the neighbours | ground, water, walls — anything that forms a *surface* |
+| **Image** | One picture, drawn whole. Every cell identical.  | a crate, a bush, a sign, a single frame of a spritesheet |
+
+A sheet is the clever one: paint a line of it and the ends round themselves off.
+An image is the plain one, and plain is right far more often than it sounds —
+and it is a quarter of the drawing work, because there are no quarters to
+assemble.
+
+**An image tile may be one frame of a sliced spritesheet.** Its `"image"` is a
+path like `textures/atlas.png#rock`, so the frame stays part of its sheet and
+nothing is copied out to a file of its own. That is the quickest way to get a
+pile of scenery tiles out of one atlas.
+
+The `.otile` says which kind it is **by which key it uses** — `"sheet"` or
+`"image"`. There is no separate setting to contradict it, naming both is
+refused, and naming neither tells you what the difference is.
+
 ### Making a tile
 
 A tile is a `.otile` file, and **+ Tile** in the Assets panel writes one.
 
-1. Select the sheet in the Assets panel, then press **+ Tile** — its path is
-   filled in for you. (You can also type the path, or pick from a dropdown of
-   the images in the folder you are browsing.)
-2. The dialog reports what the engine makes of the sheet — *"32px tiles, 4
-   frame(s)"* — and shows the five bands down the side with their names, so a
-   sheet whose bands are in the wrong order is visible before you commit to it.
-3. If the sheet is the wrong shape it says so, in the loader's own words, and
+1. Select the art in the Assets panel, then press **+ Tile** — its path is
+   filled in for you, and so is the kind: the editor tries it as a five-band
+   sheet and falls back to **Image** when it is not the right shape. A selected
+   *frame* is always an image, because a frame is one picture.
+2. Choose the kind yourself at the top if the guess was wrong.
+3. The dialog reports what the engine makes of the art — *"32px tiles, 4
+   frame(s)"*. For a sheet it shows the five bands down the side with their
+   names, so a sheet whose bands are in the wrong order is visible before you
+   commit to it; for an image it shows the picture.
+4. If the art is the wrong shape it says so, in the loader's own words, and
    **Create** stays greyed out.
+
+Or skip the dialog's first two steps: **right-click an image or a frame → Make
+a Tile from this**. It opens the same dialog with the kind and the path already
+set, and a name suggested from the art (`atlas_rock` for a frame of
+`atlas.png`).
 
 The check in the dialog *is* the loader's check: it builds the `.otile` it is
 about to write and hands it to the same code that reads one at runtime. There
 is no second opinion to disagree with it.
 
-The file it writes states only the sheet and the collision setting. **Tile size
+The file it writes states only the art and the collision setting. **Tile size
 and frame count are deliberately left out** — they are measured from the image,
 so writing them down would be a second description of something the file
 already carries.
 
+**Frames go sideways, for both kinds.** Extra columns are extra frames: a strip
+of squares for an image, a strip of five-band sheets for a sheet. What they are
+*for* is the **Frames** setting — one picture, an animation, or one picked per
+cell and kept.
+
 A sheet must be `tileSize` wide (times the number of frames) and `tileSize × 5`
-tall, with an even `tileSize`. Nothing else is required.
+tall, with an **even** `tileSize` — it is drawn as four half-size quarters, and
+an odd size cannot be halved. An image must be one square picture or a sideways
+strip of them, and **may be any size**, odd included, because it is drawn whole.
+
+#### If your tiles come out scrambled
+
+You have pointed `"sheet"` at an ordinary picture. It wants `"image"`.
+
+This used to be easy to do and hard to diagnose, because a `"sheet"` was all
+there was and the shape check could not catch it: the tile size is worked out as
+the image's height ÷ 5, so asking "is this five tiles tall?" is asking whether
+the height is five times a fifth of itself — true of **every image whose height
+is a multiple of ten**. A 48×80 character spritesheet was accepted as a 16px
+tile with three frames and then drawn as four quarters cut from the wrong
+places.
+
+Two things now stand in the way. The dialog **guesses by trying it as a sheet
+first**, so anything that cannot be one arrives as an **Image** — and a
+`"sheet"` pointing at an image the slicer has cut into frames is refused
+outright, naming the frame it would have used instead. Slicing a picture is a
+statement that it is a spritesheet, and no measurement can supply that.
+
+What is left is narrow but real, and worth knowing about: **an unsliced image
+whose height happens to be a multiple of ten still passes as a sheet**, so the
+dialog will still offer Sheet for one. Nothing can tell it apart — a tile sheet
+and a spritesheet of those dimensions are the same image. The five labelled
+bands beside the preview are what that mistake looks like *before* you write the
+file: if "outer corner" and "fill" are pointing at bits of a character, choose
+**Image**.
 
 ### Editing a tile
 
@@ -574,11 +1159,20 @@ alphabetical order, the same as a saved scene.
 every frame, so a wrong sheet path turns red as you type it rather than after
 you save.
 
+**Art** at the top switches between the two kinds. The path moves across with
+it, and any `tileSize` or `frames` already in the file are dropped — a size
+worked out for one kind is wrong by a factor of five for the other, so it is
+re-measured rather than converted.
+
 **Show all 47 shapes** draws every arrangement of neighbours the sheet can
 produce, assembled from its quarters exactly as the renderer assembles them.
 This is the quickest way to find a sheet that is subtly wrong: hover any of
 them to see which band each quarter came from. For an animated sheet, the
 **Preview frame** slider picks the column.
+
+An image tile has neither of those: one picture has no bands to be in the wrong
+order and no shapes to vary, so the panel shows the picture and says so rather
+than greying out a row of controls that could never mean anything.
 
 Saving re-reads the tile in place, so every map already using it updates — and
 their colliders rebuild, because changing `collision` changes which cells are
@@ -737,6 +1331,13 @@ and says so plainly if it found none.
 The connection between an entity and its script is **by name**, so a script
 that has not compiled yet still attaches to an entity, still saves into the
 scene, and shows as **NOT FOUND** in red in the Inspector until it builds.
+
+**On the first open of a project, expect to see that for a few seconds.** The
+editor starts, finds nothing compiled, and begins a build - and a build unloads
+the libraries while it runs, so every script in the scene reads NOT FOUND until
+it finishes. The Inspector says which of the two it is: a compile in progress,
+or a script that genuinely is not in this build. Play is unavailable until the
+build is done, for the same reason, and neither state needs anything from you.
 
 If you want to know exactly what the compiler was told, open
 `.build/build.bat` - the editor writes it out, and you can run it yourself in a
@@ -1037,3 +1638,38 @@ Nothing is written to disk, so an unwanted move is undone by not saving. When
 the change is less clear-cut - a class removed with no obvious replacement -
 it is reported with the number of entities affected and left alone, because
 guessing would be worse.
+
+---
+
+## Exporting a standalone game
+
+**File → Build Game...** asks for a folder and puts a game in it that runs on
+its own: `<FolderName>.exe`, `engine.dll`, `SDL3.dll`, and an `assets/` folder
+holding one `.bin` archive per top-level asset folder plus the compiled
+scripts. Double-click the exe and it plays. The Console lists every file as it
+goes and finishes with a count.
+
+**Only the assets your scenes actually refer to are shipped.** The exporter
+reads the scenes in the build list, follows what they name - textures, tiles,
+prefabs, and the import settings beside them - and packs that. It says how many
+it left behind, which is the number worth looking at: an asset a script loads
+by a name it builds while running cannot be found this way, so list those in
+`assets/export.json`.
+
+**It is all or nothing.** If any part fails - a file it cannot write, a locked
+`engine.dll` in the destination, scripts that will not compile - the export
+stops, says why as an error, and **removes the files it had already written**.
+A folder holding a game executable and no engine.dll looks finished and is not;
+it fails when somebody runs it, which may be somebody you handed it to. Files
+that were already in that folder are never touched.
+
+**It refuses to export into your own project**, because the copy would find its
+own output and copy that too, and the first sign of trouble would be the disk
+filling up. Pick a folder somewhere else.
+
+**A Debug build makes a game you cannot hand out.** It needs the debug C++
+runtime, which Microsoft does not allow to be redistributed, so it runs only on
+a machine with Visual Studio installed. The Console says so after every Debug
+export. Build the Release preset and export again for a game you intend to
+give to somebody; that one needs only the Visual C++ Redistributable, which
+most machines already have.

@@ -10,6 +10,7 @@
 #include <engine/math/Transform2D.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace eng {
 
@@ -159,6 +160,103 @@ void Transform2D::SetWorldPosition(Vec2 world) {
     // With a parent, undo the parent's transform to find the local position
     // that lands on the requested world position.
     m_position = m_parent->WorldMatrix().Inverse().TransformPoint(world);
+}
+
+void Transform2D::SetWorldRotation(float radians) {
+    if (m_parent == nullptr) {
+        m_rotation = radians;
+        return;
+    }
+    // Rotations add up the chain - see WorldRotation above - so undoing the
+    // parents is a subtraction rather than a matrix inverse.
+    m_rotation = radians - m_parent->WorldRotation();
+}
+
+void Transform2D::SetWorldScale(Vec2 world) {
+    if (m_parent == nullptr) {
+        m_scale = world;
+        return;
+    }
+
+    const Vec2 parentScale = m_parent->WorldScale();
+
+    // ======================================================================
+    //  A PARENT SCALED TO ZERO ON AN AXIS HAS NO ANSWER, so that axis is left
+    //  alone rather than divided.
+    //
+    //  The division would produce an infinity, which then multiplies into
+    //  every matrix below this node and turns every world position in the
+    //  subtree into a NaN. Nothing reports that: the objects simply stop
+    //  being drawn, and they stop being drawn for as long as the parent is
+    //  flat, which is usually one frame of an animation. Keeping the old
+    //  local scale means the subtree stays flat while the parent is flat and
+    //  comes back correctly when it does - which is what somebody squashing a
+    //  sprite actually wants.
+    // ======================================================================
+    if (parentScale.x != 0.0f) {
+        m_scale.x = world.x / parentScale.x;
+    }
+    if (parentScale.y != 0.0f) {
+        m_scale.y = world.y / parentScale.y;
+    }
+}
+
+Vec2 Transform2D::Right() const {
+    const float angle = WorldRotation();
+    return Vec2{std::cos(angle), std::sin(angle)};
+}
+
+Vec2 Transform2D::Up() const {
+    // The perpendicular of Right, anticlockwise - which is what Perpendicular
+    // does, and spelling it that way means the handedness is stated in exactly
+    // one place in the engine. See Vec2::Perpendicular.
+    return Right().Perpendicular();
+}
+
+void Transform2D::LookAt(Vec2 worldTarget) {
+    const Vec2 toTarget = worldTarget - WorldPosition();
+
+    // NOTHING TO FACE IS NOT AN ERROR AND NOT A SNAP. atan2(0, 0) is 0, so the
+    // unguarded version turns to face right the instant the target lands on
+    // top of this object - which is exactly when two things touch, so it reads
+    // as a glitch at the worst moment. Keeping the current rotation is both
+    // the stable answer and the one nobody notices.
+    if (toTarget.LengthSquared() <= Vec2::kNormalizeEpsilon) {
+        return;
+    }
+    SetWorldRotation(std::atan2(toTarget.y, toTarget.x));
+}
+
+void Transform2D::RotateAround(Vec2 worldPivot, float radians) {
+    const Vec2  offset = WorldPosition() - worldPivot;
+    const float c      = std::cos(radians);
+    const float s      = std::sin(radians);
+
+    // The position first, then the facing. Either order gives the same answer
+    // here because the two are independent, but doing the position first means
+    // the SetWorldPosition below is not reading a rotation this function has
+    // already half-changed - which it would be if this node were its own
+    // parent's child, and it is the kind of thing that only breaks once
+    // somebody nests two of these.
+    SetWorldPosition(worldPivot + Vec2{offset.x * c - offset.y * s,
+                                      offset.x * s + offset.y * c});
+    Rotate(radians);
+}
+
+Transform2D* Transform2D::Root() {
+    Transform2D* node = this;
+    while (node->m_parent != nullptr) {
+        node = node->m_parent;
+    }
+    return node;
+}
+
+const Transform2D* Transform2D::Root() const {
+    const Transform2D* node = this;
+    while (node->m_parent != nullptr) {
+        node = node->m_parent;
+    }
+    return node;
 }
 
 Vec2 Transform2D::LocalToWorldPoint(Vec2 local) const {

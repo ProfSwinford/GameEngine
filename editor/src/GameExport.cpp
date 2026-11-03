@@ -13,12 +13,16 @@
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/platform/Window.h>
+#include <engine/resource/ImportSettings.h>
+#include <engine/scene/Prefab.h>
 #include <engine/scene/Scene.h>
 #include <engine/scene/ScriptLibrary.h>
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cwctype>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -52,6 +56,30 @@ fs::path EditorDirectory() {
 // exporting into assets/ would copy assets/ into a folder inside assets/,
 // which the copy would then find and copy again - and the first sign of
 // trouble would be the disk filling up.
+// One path element, compared the way the FILE SYSTEM would compare it.
+//
+// Windows does not care about case, so c:/dev/gameengine and C:/dev/GameEngine
+// are one folder. The caller below is a REFUSAL, which makes "different" the
+// dangerous way to be wrong: a folder picked with different capitalisation -
+// which is all it takes to type a path by hand, or to reach one through a
+// shortcut - would have been allowed to export the project into itself, and
+// the first sign of that is the disk filling up.
+//
+// weakly_canonical does not fix this. It cannot: it has to work on paths that
+// do not exist yet, so it has nothing to ask about their real spelling.
+bool SameElement(const fs::path& a, const fs::path& b) {
+#if defined(_WIN32)
+    const std::wstring x = a.wstring();
+    const std::wstring y = b.wstring();
+    return x.size() == y.size() &&
+           std::equal(x.begin(), x.end(), y.begin(), [](wchar_t l, wchar_t r) {
+               return std::towlower(l) == std::towlower(r);
+           });
+#else
+    return a == b;   // and on Linux they really are different folders
+#endif
+}
+
 bool IsSameOrInside(const fs::path& candidate, const fs::path& other) {
     std::error_code ec;
     const fs::path  a = fs::weakly_canonical(candidate, ec);
@@ -62,7 +90,7 @@ bool IsSameOrInside(const fs::path& candidate, const fs::path& other) {
     auto ia = a.begin();
     auto ib = b.begin();
     for (; ib != b.end(); ++ia, ++ib) {
-        if (ia == a.end() || *ia != *ib) {
+        if (ia == a.end() || !SameElement(*ia, *ib)) {
             return false;
         }
     }
@@ -173,6 +201,31 @@ void ForEachString(const eng::Json& node, const std::function<void(const std::st
 // further afield would otherwise be resolved and packed - so a hand-edited
 // scene could pull a file from anywhere on the machine into the exported
 // folder. The exporter decides what leaves this computer, so it checks.
+// ---------------------------------------------------------------------------
+//  THE FILE A PATH ACTUALLY NEEDS, which for a sliced frame is its sheet.
+//
+//  A scene that uses "textures/hero.png#walk_1" contains that string and
+//  nothing else. No such file exists, so IsAssetUnderAssets below rejects it
+//  and the SHEET is never shipped - every sliced sprite in the exported game
+//  comes out as the magenta placeholder, and nothing in the editor hints at it.
+//  Same class of silent, editor-invisible failure as a missing sidecar.
+//
+//  ==========================================================================
+//  `needed` HOLDS ONLY REAL FILES, and that is an invariant the archive writer
+//  depends on: AssetArchive::Write measures every file it is handed up front
+//  and fails the WHOLE export on the first one it cannot. So the mapping
+//  happens HERE, before anything is inserted - not by teaching
+//  IsAssetUnderAssets to ignore a '#' and leaving the sub-asset path in the
+//  set, which is the shorter-looking change and would abort every export of
+//  every project that slices anything.
+//
+//  An ordinary path comes back unchanged, so every caller can map
+//  unconditionally.
+// ---------------------------------------------------------------------------
+std::string AssetFileFor(const std::string& virtualPath) {
+    return eng::SheetPathOf(virtualPath);
+}
+
 bool IsAssetUnderAssets(const std::string& virtualPath, const fs::path& assetsDir) {
     if (virtualPath.empty()) {
         return false;
@@ -345,8 +398,10 @@ std::set<std::string> CollectReferencedAssets(const fs::path& assetsDir, int& ou
         }
 
         ForEachString(document, [&](const std::string& value) {
-            if (IsAssetUnderAssets(value, assetsDir)) {
-                needed.insert(value);
+            // A sliced frame needs its sheet shipped. See AssetFileFor.
+            const std::string file = AssetFileFor(value);
+            if (IsAssetUnderAssets(file, assetsDir)) {
+                needed.insert(file);
             }
         });
     }
@@ -364,16 +419,25 @@ std::set<std::string> CollectReferencedAssets(const fs::path& assetsDir, int& ou
     // new entries are queued, so two tiles that name each other terminate by
     // themselves.
     //
-    // Only .otile is followed, deliberately. The scene walk above is a dumb
-    // "does this string name a real file" test precisely so it needs no list
-    // of which fields hold paths; this is the narrow exception for an asset
-    // that is itself a document, and it should stay narrow.
+    // Only .otile and .oprefab are followed, deliberately. The scene walk
+    // above is a dumb "does this string name a real file" test precisely so it
+    // needs no list of which fields hold paths; this is the narrow exception
+    // for assets that are themselves DOCUMENTS, and it should stay narrow.
+    //
+    // A PREFAB HAS TO BE IN IT. A scene that uses prefabs barely mentions
+    // anything else - it names "prefabs/enemy.oprefab" and nothing about the
+    // textures, tiles or fonts inside it - so without this the exported game
+    // would ship the prefabs and none of their pictures, and every enemy would
+    // come out as a magenta placeholder. The worklist already handles a prefab
+    // that names a tile that names a sheet, because following one can reveal
+    // another.
     std::vector<std::string> toFollow(needed.begin(), needed.end());
     while (!toFollow.empty()) {
         const std::string path = std::move(toFollow.back());
         toFollow.pop_back();
 
-        if (!eng::FileSystem::HasExtension(path, ".otile")) {
+        if (!eng::FileSystem::HasExtension(path, ".otile") &&
+            !eng::FileSystem::HasExtension(path, eng::kPrefabExtension)) {
             continue;
         }
 
@@ -387,21 +451,72 @@ std::set<std::string> CollectReferencedAssets(const fs::path& assetsDir, int& ou
         const eng::Json document = eng::ParseJson(text, error);
         if (!error.empty()) {
             ENGINE_LOG_WARN(eng::Channels::kEditor,
-                            "'{}' is not valid JSON ({}), so its tile sheet could not "
-                            "be found and the exported game would draw it as the "
-                            "magenta placeholder",
+                            "'{}' is not valid JSON ({}), so the assets it refers to "
+                            "could not be found - the exported game would draw them as "
+                            "magenta placeholders",
                             path, error);
             continue;
         }
 
         ForEachString(document, [&](const std::string& value) {
-            if (IsAssetUnderAssets(value, assetsDir) && needed.insert(value).second) {
-                toFollow.push_back(value);
+            // AND HERE TOO, which is not optional: a .otile naming a sliced
+            // frame as its sheet is the headline use for sub-asset paths, and
+            // missing it here ships the tile definitions without the picture -
+            // a level of magenta squares, invisible in the editor.
+            const std::string file = AssetFileFor(value);
+            if (IsAssetUnderAssets(file, assetsDir) && needed.insert(file).second) {
+                toFollow.push_back(file);
             }
         });
     }
 
     AddManifestIncludes(assetsDir, needed, outFromManifest);
+
+    // ---- and the import settings beside everything that ships -------------
+    //
+    // A SIDECAR IS NEVER NAMED BY ANYTHING. Its path is derived from its
+    // asset's, so the string scan above cannot find one however deep it looks,
+    // and neither can the .otile/.oprefab worklist. Without this step an
+    // exported game quietly falls back to default filtering - pixel art comes
+    // out blurred - and nothing anywhere says so. It is the one failure in
+    // this feature with no symptom whatsoever in the editor.
+    //
+    // LAST, AFTER AddManifestIncludes, so that a folder shipped wholesale by
+    // the manifest gets its sidecars considered too.
+    //
+    // COLLECTED INTO A VECTOR AND MERGED AFTERWARDS, because `needed` is a
+    // std::set and "a.png.oimport" sorts immediately after "a.png" - inserting
+    // while ranging over it would visit what was just inserted and go looking
+    // for a sidecar's sidecar.
+    //
+    // GATED ON Exists, and that is a correctness requirement rather than a
+    // saving: AssetArchive::Write measures every file it is given up front and
+    // fails the WHOLE export on the first one it cannot, so a speculative path
+    // here would turn a missing sidecar into a failed build.
+    std::vector<std::string> sidecars;
+    for (const std::string& assetPath : needed) {
+        const std::string sidecar = eng::ImportLibrary::SidecarPath(assetPath);
+
+        // THE DISK, NOT FileSystem::Exists, and the difference is the whole
+        // reason this is spelled out. Exists answers from a mounted ARCHIVE
+        // first, and the packer below reads from the disk - so in a project
+        // that has an archive mounted (a developer re-exporting in place) a
+        // sidecar that exists only inside the archive would pass this gate,
+        // fail to be measured, and abort the entire export. Every other
+        // discovery step in this function tests the disk for the same reason.
+        std::error_code ec;
+        if (fs::is_regular_file(fs::path(eng::FileSystem::Resolve(sidecar)), ec)) {
+            sidecars.push_back(sidecar);
+        }
+    }
+    needed.insert(sidecars.begin(), sidecars.end());
+
+    if (!sidecars.empty()) {
+        ENGINE_LOG_INFO(eng::Channels::kEditor,
+                        "  {} import-settings file(s) are shipping too",
+                        sidecars.size());
+    }
+
     return needed;
 }
 
@@ -441,10 +556,16 @@ void GameExport::AskForDestination() {
 }
 
 GameExport::Pending GameExport::TakePending() {
-    // Only answers questions THIS asked. There is one dialog and one
-    // pending answer, so without the purpose check, picking a folder for
-    // Open Project would be collected here and exported into.
-    const eng::FolderDialog::Result picked = eng::FolderDialog::Take();
+    // Only answers questions THIS asked. There is one dialog and one pending
+    // answer, so without the purpose check, picking a folder for Open Project
+    // would be collected here and exported into.
+    //
+    // THE FILTER IS PART OF TAKING now, rather than a test afterwards. The
+    // test afterwards was the bug: it had already cleared the answer by the
+    // time it discovered the answer was not for it. The check below cannot
+    // fire any more. It is kept because it costs nothing and states what this
+    // function will accept.
+    const eng::FolderDialog::Result picked = eng::FolderDialog::Take({kPurposeExport});
     if (picked.purpose != kPurposeExport) {
         return Pending{};
     }
@@ -492,6 +613,46 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
         return result;
     }
 
+    // ======================================================================
+    //  EVERY FILE THIS WRITES IS REMEMBERED, so a failure half way through
+    //  can take them back out again.
+    //
+    //  A folder holding a launchable MyGame.exe and no engine.dll is worse
+    //  than a refusal. It looks finished; double-clicking it produces an
+    //  operating-system error box about a missing DLL, which says nothing
+    //  about exporting; and the person who sees that may be whoever the game
+    //  was handed to rather than whoever built it. Reproduced from a
+    //  destination containing a read-only engine.dll: the copy of player.exe
+    //  stayed behind on its own, 86 kB of game with nothing to run it.
+    //
+    //  ONLY PATHS WRITTEN BY THIS CALL ARE REMOVED. The user picked this
+    //  folder and it may hold their own files - very often a previous export
+    //  of the same game, which is the normal way to use this. Directories are
+    //  left alone for the same reason: an empty assets/ harms nothing, and
+    //  removing folders risks removing one that was already there.
+    // ======================================================================
+    std::vector<fs::path> written;
+
+    const auto abandon = [&written, &dest]() {
+        if (written.empty()) {
+            return;   // nothing reached the disk, so there is nothing to undo
+        }
+
+        std::error_code rm;
+        int             removed = 0;
+        for (const fs::path& path : written) {
+            if (fs::remove(LongPathSafe(path), rm)) {
+                ++removed;
+            }
+        }
+
+        ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                         "the export failed, so the {} file(s) it had already written "
+                         "were removed from '{}' - there is no half-built game left "
+                         "behind to mistake for a finished one",
+                         removed, dest.string());
+    };
+
     // ---- 1. the scripts ---------------------------------------------------
     //
     // Built FIRST, and the export stops if they do not compile. Shipping a
@@ -529,6 +690,7 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
                 eng::Channels::kEditor,
                 "export stopped: {}. The compiler's output is in the Console.",
                 scripts.summary);
+            abandon();   // nothing is written yet, and this keeps that true as it grows
             return result;
         }
     }
@@ -563,6 +725,7 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
                                  "cannot export: '{}' is not beside the editor. Build "
                                  "the 'player' target and try again.",
                                  binary.from.string());
+                abandon();
                 return result;
             }
             continue;
@@ -570,10 +733,12 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
         std::string error;
         if (CopyOneFile(binary.from, dest / binary.to, error)) {
             ++filesCopied;
+            written.push_back(dest / binary.to);
         } else {
             result.summary = "could not copy " + binary.to;
             ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not copy '{}': {}",
                              binary.to, error);
+            abandon();
             return result;
         }
     }
@@ -595,9 +760,22 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
         std::string error;
         if (CopyOneFile(libraryFrom, dest / "assets" / libraryVirtual, error)) {
             ++filesCopied;
+            written.push_back(dest / "assets" / libraryVirtual);
         } else {
-            ENGINE_LOG_WARN(eng::Channels::kEditor,
-                            "could not copy the script library: {}", error);
+            // FATAL, where it used to be a warning nobody would see.
+            //
+            // Step 1 has just proved the bundle built, so this project HAS
+            // scripts and they compiled. Carrying on ships a game that opens
+            // a window and does nothing - and reports success while doing it,
+            // which is the exact failure the rest of this function takes such
+            // care to avoid. Worse, a Warning is dropped entirely when the
+            // log threshold is Error, as it is in this project, so the only
+            // trace was a file count one lower than expected.
+            result.summary = "could not copy the script library";
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "could not copy the script library: {}", error);
+            abandon();
+            return result;
         }
     } else {
         // Not fatal: a project with no scripts at all is a legitimate thing to
@@ -709,11 +887,13 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
             result.summary = "could not write " + folder + eng::AssetArchive::kExtension;
             ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not write '{}': {}",
                              archivePath.string(), error);
+            abandon();
             return result;
         }
 
         assetsCopied += static_cast<int>(contents.size());
         ++filesCopied;   // the archive itself is one file in the shipped folder
+        written.push_back(archivePath);
 
         ENGINE_LOG_INFO(eng::Channels::kEditor, "  -> {}{} ({} file(s))", folder,
                         eng::AssetArchive::kExtension, contents.size());
@@ -725,12 +905,23 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
         if (CopyOneFile(from, dest / "assets" / virtualPath, error)) {
             ++assetsCopied;
             ++filesCopied;
+            written.push_back(dest / "assets" / virtualPath);
             ENGINE_LOG_INFO(eng::Channels::kEditor,
                             "  packed {} (loose - it is not inside a folder)",
                             virtualPath);
         } else {
-            ENGINE_LOG_WARN(eng::Channels::kEditor, "could not copy '{}': {}",
-                            virtualPath, error);
+            // AS FATAL AS AN ARCHIVE THAT WOULD NOT WRITE, and for the same
+            // reason: whether an asset is "loose" is an accident of where it
+            // sits - top level rather than in a folder - not a statement that
+            // the game needs it any less. Everything in this list was found
+            // by following references out of the scenes. A warning here
+            // shipped a game missing an asset it asks for by name, and called
+            // it a success.
+            result.summary = "could not copy " + virtualPath;
+            ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not copy '{}': {}",
+                             virtualPath, error);
+            abandon();
+            return result;
         }
     }
 

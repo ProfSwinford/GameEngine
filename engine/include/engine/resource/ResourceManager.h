@@ -84,6 +84,85 @@ public:
     // The font used by anything that does not name one.
     static FontRef DefaultFont(float pixelHeight);
 
+    // ======================================================================
+    //  Re-reads an asset's .oimport and applies it to what is already loaded.
+    //
+    //  For the EDITOR. Changing the scaling mode of an image has to show up on
+    //  the sprites already drawing it, or the setting appears to do nothing
+    //  until the next run - which is indistinguishable from broken.
+    //
+    //  IT TAKES A PATH, NOT A TextureRef, AND THAT IS THE SAFE CHOICE. The
+    //  cache only ever holds textures that loaded successfully, so a path
+    //  cannot reach the shared magenta placeholder; a TextureRef obtained from
+    //  LoadTexture very much can, because that is what a failed load returns.
+    //
+    //  A FONT IS ONE ASSET AND SEVERAL TEXTURES. The font cache is keyed on
+    //  path AND size, so one .ttf may have been baked into atlases at four
+    //  sizes, and all four have to be re-filtered. They are found by comparing
+    //  each loaded font's own `path` rather than by taking the cache key
+    //  apart, because a key is "<path>@<size>" and a path may contain an '@'.
+    //
+    //  Nothing loaded under that path is not a failure - the settings are
+    //  saved either way and the next load will read them.
+    // ======================================================================
+    static void RefreshImportSettings(std::string_view virtualPath);
+
+    // ======================================================================
+    //  Forgets every frame cut out of this sheet, so the next load re-cuts it.
+    //
+    //  FOR THE SLICER. Re-slicing changes what a frame IS - its rectangle
+    //  moves, or the name stops existing - and a frame texture sitting in the
+    //  cache would go on being handed out for a name whose pixels have moved.
+    //
+    //  IT CANNOT REACH WHAT SOMETHING ALREADY OWNS. The texture cache holds
+    //  WEAK references, so a SpriteComponent already holding the old frame
+    //  keeps drawing it until it asks for it again. That is a real limit and
+    //  the Inspector says so rather than pretending otherwise.
+    // ======================================================================
+    static void InvalidateSubAssets(std::string_view sheetPath);
+
+    // ======================================================================
+    //  Reads any loaded image whose FILE has changed since it was loaded.
+    //
+    //  THE CACHE HAS NO IDEA WHAT TIME IT IS. It is keyed on the path and
+    //  holds a weak reference, so while anything is still holding an image,
+    //  asking for it again hands back exactly what was loaded the first time -
+    //  however many times the file has been saved since. That is right for a
+    //  shipped game, where nothing changes under it, and wrong for an editor
+    //  somebody is using beside a paint program.
+    //
+    //  THE PIXELS OF THE EXISTING Texture ARE REPLACED, rather than a new
+    //  Texture being handed out. That is the whole point: the object is what
+    //  everything holds. A sprite in the open scene, the Assets panel's
+    //  thumbnail and the Inspector's preview share one shared_ptr, so refilling
+    //  it is what makes one edit appear in all three at once. Handing back a
+    //  new object would update whoever asked next and nobody else.
+    //
+    //  A sheet that changed also has its cut frames dropped, so the next one
+    //  asked for is cut from the new pixels. A frame something is ALREADY
+    //  holding keeps its own pixels until it is asked for again - the same
+    //  limit, for the same reason, as re-slicing. See InvalidateSubAssets.
+    //
+    //  ONLY SAFE WHERE NOTHING HAS BEEN DRAWN YET. It destroys graphics-card
+    //  objects, so a handle already submitted to a frame's draw list would be
+    //  freed under the renderer. The editor calls it from the frame loop
+    //  before the interface is built; see EditorApp's focus-regain.
+    //
+    //  Returns how many images were read again, for the log.
+    // ======================================================================
+    static std::size_t ReloadChangedTextures();
+
+    // Drops every cached .oimport and re-applies them to everything loaded.
+    //
+    // For the editor's "the window has just regained focus" check, beside the
+    // same check for scripts and prefabs. These files are JSON and meant to be
+    // opened by hand - that is the whole argument for the format - so one
+    // fixed in a text editor has to arrive the same way an edited script does.
+    //
+    // Re-applying a filter is idempotent and costs one SDL call, so unlike the
+    // prefab check this needs no "first sight is not a change" rule.
+    static void ReloadImportSettings();
+
     // How many different images are loaded right now. Shown in the editor.
     static std::size_t LoadedCount();
 

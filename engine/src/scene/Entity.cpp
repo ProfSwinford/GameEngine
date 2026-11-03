@@ -171,6 +171,115 @@ Transform2D& Entity::Transform() {
     return component->Transform();
 }
 
+// ---------------------------------------------------------------------------
+//  The hierarchy, by entity.
+//
+//  Every one of these goes through Scene::EntityOf, which is the table
+//  TransformComponent fills in - see the note at its declaration in Scene.h
+//  for why the math layer is not the place for it. An entity with no scene
+//  answers 0 and null, which is an Entity built on the stack in a test.
+// ---------------------------------------------------------------------------
+
+std::size_t Entity::ChildCount() const {
+    return Transform().Children().size();
+}
+
+Entity* Entity::ChildAt(std::size_t index) const {
+    const std::vector<Transform2D*>& children = Transform().Children();
+    if (index >= children.size() || children[index] == nullptr) {
+        return nullptr;
+    }
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->EntityOf(*children[index]) : nullptr;
+}
+
+Entity* Entity::ParentEntity() const {
+    const Transform2D* parent = Transform().Parent();
+    if (parent == nullptr) {
+        return nullptr;
+    }
+    Scene* scene = GetScene();
+    return scene != nullptr ? scene->EntityOf(*parent) : nullptr;
+}
+
+Entity* Entity::RootEntity() const {
+    Scene* scene = GetScene();
+    if (scene == nullptr) {
+        return nullptr;
+    }
+
+    const Transform2D* node = &Transform();
+    while (node->Parent() != nullptr) {
+        node = node->Parent();
+    }
+    // Walked by TRANSFORM rather than by repeated ParentEntity(), so a gap in
+    // the table - a transform whose entity has gone - cannot stop the walk
+    // halfway and return the wrong answer as if it were the root.
+    return scene->EntityOf(*node);
+}
+
+Entity* Entity::FindChild(std::string_view name) const {
+    if (name.empty()) {
+        return nullptr;
+    }
+    Scene* scene = GetScene();
+    if (scene == nullptr) {
+        return nullptr;
+    }
+    for (Transform2D* child : Transform().Children()) {
+        if (child == nullptr) {
+            continue;
+        }
+        if (Entity* owner = scene->EntityOf(*child);
+            owner != nullptr && owner->Name() == name) {
+            return owner;
+        }
+    }
+    return nullptr;
+}
+
+bool Entity::IsActiveInHierarchy() const {
+    if (!m_active) {
+        return false;
+    }
+
+    // No parents means nothing above to switch it off, and that is the common
+    // case - it answers here without touching the scene at all.
+    const Transform2D* parent = Transform().Parent();
+    if (parent == nullptr) {
+        return true;
+    }
+
+    Scene* scene = GetScene();
+    if (scene == nullptr) {
+        // An entity with a parent but no scene cannot have its ancestors
+        // resolved, and guessing "inactive" would make such an entity
+        // invisible to everything for no reason anybody could find. Active is
+        // the answer that matches what IsActiveSelf already said.
+        return true;
+    }
+
+    for (const Transform2D* node = parent; node != nullptr; node = node->Parent()) {
+        const Entity* owner = scene->EntityOf(*node);
+        // A transform with no entity is skipped rather than treated as
+        // inactive. It means the chain passes through something that is not an
+        // entity in this scene, which nothing in the engine currently builds -
+        // and "an unrelated transform switched my sprite off" would be an
+        // extremely confusing bug to be handed.
+        if (owner != nullptr && !owner->m_active) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Entity::IsDescendantOf(const Entity& candidate) const {
+    // Answered entirely in the transform tree, which already knows how to do
+    // this and already refuses to build a loop - so there is no walk here
+    // that could run forever.
+    return Transform().IsDescendantOf(&candidate.Transform());
+}
+
 const Transform2D& Entity::Transform() const {
     // This one genuinely needs the cast, and it is the only place in the engine
     // that does. The version above CREATES the transform if it is missing, and

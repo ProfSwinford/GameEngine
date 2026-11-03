@@ -12,7 +12,14 @@
 #include "AssetDragDrop.h"
 #include "EditorApp.h"
 #include "panels/HierarchyPanel.h"   // kPayloadEntity, for dropping an entity on a reference
+#include "ScriptBuild.h"              // IsBuilding, for the NOT FOUND explanation
 #include "ShellOpen.h"
+
+#include <engine/render/Renderer.h>
+#include <engine/fs/FileSystem.h>   // ListDirectory, for the asset pickers
+#include <engine/resource/ImportSettings.h>
+#include <engine/resource/ResourceManager.h>
+#include <engine/scene/Prefab.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>   // GetCurrentWindow, for a whole-window drop target
@@ -21,12 +28,250 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace editor {
 namespace {
+
+// ===========================================================================
+//  A SLOT HOLDING A REFERENCE TO AN ASSET FILE
+//
+//  Three components point at a picture - Sprite, Sprite Animation and UI Image
+//  - and each of them used to show a full virtual path in a text box. That was
+//  one mistake made twice.
+//
+//  THE PATH DOES NOT FIT. "textures/Sprites/Blue/srw_arpg_spear01_1.png#f0" in
+//  a box the width of the Inspector shows you the middle of a path with both
+//  ends cut off, and the end is the part that identifies it. The NAME is what
+//  anybody recognises; the folders above it are something you already know,
+//  because you put it there.
+//
+//  AND A TEXT BOX IS NOT A DROP TARGET YOU CAN SEE. The whole Inspector does
+//  accept an image - see the window-wide target at the bottom of this file -
+//  but "drop it anywhere on the panel" is not what anybody tries, and what it
+//  does is give the ENTITY an asset, which may mean adding a component rather
+//  than replacing what the field under the cursor is holding.
+//
+//  So a slot is a BUTTON, exactly as the entity and prefab references already
+//  are: the current value's name, a rectangle big enough to drop onto, and a
+//  picker behind the click. The full path lives in the tooltip, because the
+//  one moment somebody wants it is the moment something is wrong.
+// ===========================================================================
+enum class AssetSlotKind {
+    Image,       // any picture, including one frame cut out of a sliced sheet
+    Animation,   // a named animation stored in a sheet, and nothing else
+};
+
+// What to put on the button: the asset's display name, or the word for having
+// nothing. eng::AssetDisplayName does the naming and is tested; the "(none)"
+// is a thing about widgets and stays here.
+std::string AssetSlotName(std::string_view virtualPath) {
+    if (virtualPath.empty()) {
+        return "(none)";
+    }
+    return eng::AssetDisplayName(virtualPath);
+}
+
+// The folder a reference lives in, for the picker's second column. Empty at
+// the top of assets/.
+std::string AssetSlotFolder(std::string_view virtualPath) {
+    const std::string file  = eng::SheetPathOf(virtualPath);
+    const std::size_t slash = file.find_last_of('/');
+    return (slash == std::string::npos) ? std::string{} : file.substr(0, slash);
+}
+
+bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
+    if (needle.empty()) {
+        return true;
+    }
+    const auto at = std::search(
+        haystack.begin(), haystack.end(), needle.begin(), needle.end(),
+        [](unsigned char a, unsigned char b) {
+            return std::tolower(a) == std::tolower(b);
+        });
+    return at != haystack.end();
+}
+
+// Everything that could go in a slot of this kind. The same recursive shape
+// CollectTiles uses in the Tile Palette, and walked only while a picker is
+// open - never per frame.
+void CollectSlotCandidates(const std::string& directory, AssetSlotKind kind,
+                           std::vector<std::string>& out) {
+    std::vector<eng::FileSystem::DirEntry> entries;
+    if (!eng::FileSystem::ListDirectory(directory, entries)) {
+        return;
+    }
+
+    for (const eng::FileSystem::DirEntry& entry : entries) {
+        if (entry.isDirectory) {
+            CollectSlotCandidates(entry.virtualPath, kind, out);
+            continue;
+        }
+        if (ClassifyAsset(entry.virtualPath) != AssetKind::Texture) {
+            continue;
+        }
+
+        // THE WHOLE IMAGE COUNTS FOR A SPRITE AND NOT FOR AN ANIMATION,
+        // because an animation is a thing stored INSIDE a sheet - a path names
+        // a picture, and an animation is not one. See SpriteAnimation.h.
+        if (kind == AssetSlotKind::Image) {
+            out.push_back(entry.virtualPath);
+        }
+
+        const eng::TextureImport imported =
+            eng::ImportLibrary::ForTexture(entry.virtualPath);
+
+        if (kind == AssetSlotKind::Image) {
+            for (const eng::SheetFrame& frame : imported.sheet.frames) {
+                out.push_back(eng::MakeSubAssetPath(entry.virtualPath, frame.name));
+            }
+        } else {
+            for (const eng::SheetAnimation& animation : imported.sheet.animations) {
+                out.push_back(eng::MakeSubAssetPath(entry.virtualPath, animation.name));
+            }
+        }
+    }
+}
+
+// Draws the slot. True on a frame something new was chosen, and `outPath` is
+// then what it should become - empty meaning cleared.
+//
+// `broken` paints the name red: the reference is set and does not resolve,
+// which is the one state a name alone could not tell you about.
+bool DrawAssetSlot(const char* label, AssetSlotKind kind, const std::string& current,
+                   bool broken, const char* emptyHint, std::string& outPath) {
+    bool changed = false;
+    ImGui::PushID(label);
+
+    const std::string shown = AssetSlotName(current);
+
+    if (broken) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    } else if (current.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    }
+
+    // Sized like the drag boxes above it, so the column of fields lines up -
+    // and so there is a rectangle to drop onto rather than a word.
+    const bool pick =
+        ImGui::Button(shown.c_str(), ImVec2(ImGui::CalcItemWidth(), 0.0f));
+
+    if (broken || current.empty()) {
+        ImGui::PopStyleColor();
+    }
+
+    // AGAINST THE BUTTON, while the button is still the last item drawn.
+    if (ImGui::IsItemHovered()) {
+        if (current.empty()) {
+            ImGui::SetTooltip("%s", emptyHint);
+        } else {
+            ImGui::SetTooltip("%s\n\nDrop an image here to replace it, or click to "
+                              "choose one.",
+                              current.c_str());
+        }
+    }
+
+    // ---- the drop, which is the gesture this exists for -------------------
+    //
+    // A FIELD TARGET BEATS THE WINDOW-WIDE ONE, and that is ImGui's own rule
+    // rather than luck: the smallest accepting rectangle under the cursor gets
+    // the payload. So dropping on the slot replaces what the slot holds, and
+    // dropping anywhere else on the panel still means "give this entity the
+    // asset" - which may add a component. Two gestures, two meanings, and the
+    // one under your cursor is the one you get.
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload =
+                ImGui::AcceptDragDropPayload(kPayloadTexture)) {
+            // Every asset payload in this editor is the virtual path as text
+            // with its terminator - see AssetDragDrop.h.
+            outPath.assign(static_cast<const char*>(payload->Data));
+            changed = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+
+    // ---- the picker, for when both ends are not on screen at once ---------
+    //
+    // The same reason the entity reference has one: dragging across a docked
+    // layout you cannot see both ends of is worse than a list. It also stands
+    // in for the text box this slot replaced - there is no path to type any
+    // more, so there has to be a way to choose one without the Assets panel
+    // in view.
+    static char filter[64] = {};
+    if (pick) {
+        filter[0] = '\0';
+        ImGui::OpenPopup("pick-asset");
+    }
+    if (ImGui::BeginPopup("pick-asset")) {
+        ImGui::TextDisabled(kind == AssetSlotKind::Animation
+                                ? "animations stored in this project's sheets"
+                                : "images, and the frames of any sliced sheet");
+
+        ImGui::SetNextItemWidth(300.0f);
+        ImGui::InputTextWithHint("##filter", "type to narrow this down", filter,
+                                 sizeof(filter));
+        ImGui::Separator();
+
+        if (ImGui::Selectable("(none)", current.empty())) {
+            outPath.clear();
+            changed = true;
+        }
+
+        // WALKED HERE, inside the popup, so a project with two thousand images
+        // costs nothing on the frames when nobody is choosing one.
+        std::vector<std::string> candidates;
+        CollectSlotCandidates("", kind, candidates);
+
+        ImGui::BeginChild("list", ImVec2(360.0f, 320.0f));
+        int offered = 0;
+        for (const std::string& candidate : candidates) {
+            const std::string name = AssetSlotName(candidate);
+            if (!ContainsNoCase(candidate, filter)) {
+                continue;
+            }
+            ++offered;
+
+            if (ImGui::Selectable(name.c_str(), candidate == current)) {
+                outPath = candidate;
+                changed = true;
+            }
+
+            // THE FOLDER BESIDE THE NAME, because two files can share a name
+            // and the whole point of this slot is that the name is all you
+            // normally need. When it is not enough, it is right here.
+            if (const std::string folder = AssetSlotFolder(candidate);
+                !folder.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", folder.c_str());
+            }
+        }
+        if (offered == 0) {
+            if (filter[0] != '\0') {
+                ImGui::TextDisabled("nothing matches '%s'", filter);
+            } else if (kind == AssetSlotKind::Animation) {
+                // NAMING WHAT IS MISSING, because an empty list reads as a
+                // broken picker rather than as an answer.
+                ImGui::TextDisabled("no sheet in this project has an animation in");
+                ImGui::TextDisabled("it yet - slice one in the Inspector with the");
+                ImGui::TextDisabled("image selected, then add animations to it");
+            } else {
+                ImGui::TextDisabled("no images under assets/ yet");
+            }
+        }
+        ImGui::EndChild();
+        ImGui::EndPopup();
+    }
+
+    ImGui::PopID();
+    return changed;
+}
 
 // ---------------------------------------------------------------------------
 //  TransformComponent
@@ -82,14 +327,24 @@ void DrawTransform(eng::TransformComponent& component, bool running) {
 //  SpriteComponent
 // ---------------------------------------------------------------------------
 void DrawSprite(eng::SpriteComponent& sprite) {
-    char path[192];
-    std::snprintf(path, sizeof(path), "%s", sprite.TexturePath().c_str());
-    if (ImGui::InputText("Texture", path, sizeof(path),
-                         ImGuiInputTextFlags_EnterReturnsTrue)) {
-        sprite.SetTexture(path);
+    // SET AND NOT RESOLVING is the one thing a name cannot show you, so it is
+    // what paints the slot red. A missing image comes back as the magenta
+    // placeholder rather than as nothing, which is why this asks the texture
+    // and not just the path.
+    const eng::TextureRef& loaded = sprite.GetTexture();
+    const bool             broken = !sprite.TexturePath().empty() &&
+                        (!loaded || loaded->isPlaceholder);
+
+    std::string chosen;
+    if (DrawAssetSlot("Texture", AssetSlotKind::Image, sprite.TexturePath(), broken,
+                      "drag an image here from Assets, or click to choose one",
+                      chosen)) {
+        sprite.SetTexture(chosen);
         EditorState::Get().MarkDirty();
     }
-    ImGui::TextDisabled("press Enter to load, or drag an image from the Assets panel");
+    if (sprite.TexturePath().empty()) {
+        ImGui::TextDisabled("drag an image here from Assets, or click to choose one");
+    }
 
     // ImGui's colour picker works in 0-1 floats; the engine stores 0-255
     // bytes, because that is what an image editor shows you. Converted here.
@@ -128,6 +383,150 @@ void DrawSprite(eng::SpriteComponent& sprite) {
         }
         ImGui::EndGroup();
     }
+}
+
+// ---------------------------------------------------------------------------
+//  SpriteAnimationComponent
+//
+//  THE SECTION IS LIVE AGAINST THE SLICER even though nothing is playing.
+//  Everything below reads ResolvedFrames(), which is the same function the
+//  system calls - so the frame count, the rate and the diagnosis are whatever
+//  is true of the sheet right now, and editing the animation in the slicer
+//  above is reflected here on the next frame rather than on the next Play.
+//
+//  IT SAYS "PRESS PLAY" RATHER THAN SHOWING A FRAME NUMBER. An animation does
+//  not run in the editor - a paused clock asks for no simulation steps - and a
+//  panel that showed "frame 0 of 12" while nothing moved would read as a
+//  broken animation rather than as a stopped one.
+// ---------------------------------------------------------------------------
+void DrawSpriteAnimation(eng::SpriteAnimationComponent& animation) {
+    // ---- which animation --------------------------------------------------
+    //
+    // THE SAME SLOT AS THE SPRITE'S, deliberately: these two rows sit on the
+    // same entity, one above the other, and two different ways of naming a
+    // picture would be two things to learn for no reason.
+    //
+    // A WHOLE IMAGE DROPPED HERE IS ACCEPTED AND THEN EXPLAINED, rather than
+    // refused. SetAnimationPath says "that is a whole image, not a part of
+    // one" and Problem() puts it on screen below - which is the same
+    // information as a refusal, without leaving somebody holding the thing
+    // they meant and no idea why nothing happened.
+    {
+        std::string chosen;
+        if (DrawAssetSlot("Animation", AssetSlotKind::Animation,
+                          animation.AnimationPath(),
+                          !animation.Problem().empty(),
+                          "drag an animation here from Assets - expand a sheet's "
+                          "row to find them",
+                          chosen)) {
+            if (animation.SetAnimationPath(chosen)) {
+                EditorState::Get().MarkDirty();
+            }
+        }
+    }
+
+    // ---- what that path actually comes to ---------------------------------
+    //
+    // ASKED FIRST, because everything read below it is a plain read of
+    // whatever this last found. See the note on ResolvedFrames.
+    const std::size_t resolved = animation.ResolvedFrames().size();
+    const std::size_t listed   = animation.FramesListed();
+
+    if (!animation.Problem().empty()) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s",
+                           animation.Problem().c_str());
+    } else if (animation.AnimationPath().empty()) {
+        ImGui::TextDisabled("choose an animation stored in a spritesheet - slice one");
+        ImGui::TextDisabled("in the Inspector with the image selected");
+    } else {
+        ImGui::Text("%zu frame(s) at %.1f fps, %s", resolved,
+                    static_cast<double>(animation.SheetFps()),
+                    animation.Loops() ? "repeating" : "played once");
+        ImGui::TextDisabled("from %s", animation.SheetPath().c_str());
+
+        // ONE NAME RENAMED AWAY IN THE SLICER LEAVES ITS OLD NAME HERE, and a
+        // resolved animation is then quietly SHORTER than it reads. This is
+        // the only place that holds both numbers, so it is the only place that
+        // can say so.
+        if (listed > resolved) {
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                               "%zu of the %zu frames it lists are no longer in the",
+                               listed - resolved, listed);
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                               "sheet, so they are skipped");
+        }
+    }
+
+    ImGui::Separator();
+
+    // ---- the two things that ARE this entity's own ------------------------
+    float speed = animation.Speed();
+    if (ImGui::DragFloat("Speed", &speed, 0.01f, 0.05f, 20.0f, "%.2fx")) {
+        animation.SetSpeed(speed);
+        EditorState::Get().MarkDirty();
+    }
+    ImGui::TextDisabled("a multiplier on the sheet's rate, so 2 is twice as fast");
+
+    bool playOnStart = animation.PlayOnStart();
+    if (ImGui::Checkbox("Play when the scene starts", &playOnStart)) {
+        animation.SetPlayOnStart(playOnStart);
+        EditorState::Get().MarkDirty();
+    }
+
+    // ======================================================================
+    //  THE FRAME RATE AND THE REPEAT FLAG ARE NOT HERE, and saying where they
+    //  are is the point. They belong to the ANIMATION, in the sheet, so every
+    //  entity playing it follows one edit - and the boxes for them are a few
+    //  inches up this same panel when the sheet is selected.
+    // ======================================================================
+    ImGui::TextDisabled("the rate and whether it repeats belong to the sheet:");
+    ImGui::TextDisabled("select the image and edit the animation there");
+
+    ImGui::Separator();
+
+    // ---- what it is doing right now ---------------------------------------
+    if (!eng::Engine::Get().IsInPlayMode()) {
+        // ANSWER 2 FROM InspectorPanel.h, in this component's own terms: an
+        // animation is a system-owned value while the game runs, and in edit
+        // mode there is no value to show because nothing has run.
+        ImGui::TextDisabled("not playing - animations run in Play mode.");
+        ImGui::TextDisabled("Pause and Step there to advance one frame at a time.");
+        return;
+    }
+
+    if (animation.CurrentFrame() == eng::SpriteAnimationComponent::kAuthoredFrame) {
+        ImGui::TextDisabled("stopped - the sprite is showing its own image");
+    } else {
+        ImGui::Text("frame %zu of %zu: '%.*s'", animation.CurrentFrame() + 1, resolved,
+                    static_cast<int>(animation.CurrentFrameName().size()),
+                    animation.CurrentFrameName().data());
+    }
+
+    if (animation.IsFinished()) {
+        ImGui::TextDisabled("finished, holding its last frame");
+    }
+
+    if (ImGui::Button(animation.IsPlaying() ? "Pause" : "Play")) {
+        if (animation.IsPlaying()) {
+            animation.Pause();
+        } else {
+            animation.Play();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Restart")) {
+        animation.Restart();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop")) {
+        animation.Stop();
+    }
+
+    // NOTHING HERE CALLS MarkDirty, and that is deliberate: these four buttons
+    // change what is happening in a running game, not what the scene file
+    // says. Stop puts the sprite's authored picture back, which is the state
+    // the file already describes.
+    ImGui::TextDisabled("these act on the running game and are not saved");
 }
 
 // ---------------------------------------------------------------------------
@@ -941,19 +1340,23 @@ void DrawUIText(eng::UITextComponent& label) {
 void DrawUIImage(eng::UIImageComponent& image) {
     bool changed = false;
 
-    char buffer[256];
-    std::snprintf(buffer, sizeof(buffer), "%s", image.texturePath.c_str());
-    if (ImGui::InputTextWithHint("Texture", "blank = a plain rectangle", buffer,
-                                 sizeof(buffer))) {
-        image.texturePath = buffer;
-        changed           = true;
-    }
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadTexture)) {
-            image.texturePath = static_cast<const char*>(payload->Data);
+    // The same slot as a Sprite's, for the same reason - and "(none)" in the
+    // picker is a real choice here rather than an empty one: a UI image with
+    // no texture is a plain coloured rectangle, which is most of what a
+    // layout is made of.
+    {
+        std::string chosen;
+        if (DrawAssetSlot("Texture", AssetSlotKind::Image, image.texturePath,
+                          /*broken=*/false,
+                          "drag an image here from Assets, or leave it empty for a "
+                          "plain rectangle",
+                          chosen)) {
+            image.texturePath = chosen;
             changed           = true;
         }
-        ImGui::EndDragDropTarget();
+        if (image.texturePath.empty()) {
+            ImGui::TextDisabled("empty = a plain rectangle in the tint colour");
+        }
     }
 
     changed |= DrawColorField("Tint", image.tint);
@@ -1139,9 +1542,41 @@ float DragStepFor(float value) {
 
 // Text is the one type that cannot be handed to ImGui as a pointer, because
 // ImGui edits a char buffer and the variable is a std::string.
+// Which asset slot a string variable's marker asks for, if any.
+//
+// `// [image]` or `// [animation]` on a std::string turns its text box into
+// the slot a Sprite's texture gets. Anything else in the marker is a required
+// TYPE for an entity reference and means nothing here, so the box stays a box.
+bool AssetSlotKindForMarker(const std::string& marker, AssetSlotKind& outKind) {
+    if (marker == "image" || marker == "texture" || marker == "sprite") {
+        outKind = AssetSlotKind::Image;
+        return true;
+    }
+    if (marker == "animation") {
+        outKind = AssetSlotKind::Animation;
+        return true;
+    }
+    return false;
+}
+
 bool DrawStringField(const eng::ScriptField& field) {
     std::string* text = field.AsString();
     if (text == nullptr) {
+        return false;
+    }
+
+    // ---- an asset path, when the variable says it is one ------------------
+    if (AssetSlotKind kind{}; AssetSlotKindForMarker(field.requiredType, kind)) {
+        std::string chosen;
+        if (DrawAssetSlot(field.name.c_str(), kind, *text, /*broken=*/false,
+                          kind == AssetSlotKind::Animation
+                              ? "drag an animation here from Assets - expand a "
+                                "sheet's row to find them - or click to choose"
+                              : "drag an image here from Assets, or click to choose",
+                          chosen)) {
+            *text = chosen;
+            return true;
+        }
         return false;
     }
 
@@ -1167,7 +1602,34 @@ bool DrawStringField(const eng::ScriptField& field) {
 
     char buffer[kScriptStringMax];
     std::snprintf(buffer, sizeof(buffer), "%s", text->c_str());
-    if (ImGui::InputText(field.name.c_str(), buffer, sizeof(buffer))) {
+    const bool typed = ImGui::InputText(field.name.c_str(), buffer, sizeof(buffer));
+
+    // ======================================================================
+    //  AND IT TAKES A DROP, whatever kind of asset it is.
+    //
+    //  A plain string variable is very often a path - a scene to load, a
+    //  prefab to spawn by name, a sound - and before this the only way to fill
+    //  one in was to read the path off the Assets panel and type it back.
+    //  Every kind is accepted because the variable is a string: nothing here
+    //  knows which kind it wanted, and refusing the drop would leave somebody
+    //  holding exactly the thing they meant.
+    //
+    //  A variable that says what it holds - `// [image]` - gets the proper
+    //  slot above instead, with a name and a picker.
+    // ======================================================================
+    if (ImGui::BeginDragDropTarget()) {
+        for (const char* payloadId : kAllAssetPayloads) {
+            if (const ImGuiPayload* payload =
+                    ImGui::AcceptDragDropPayload(payloadId)) {
+                *text = static_cast<const char*>(payload->Data);
+                ImGui::EndDragDropTarget();
+                return true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (typed) {
         *text = buffer;
         return true;
     }
@@ -1204,8 +1666,8 @@ bool DrawStringField(const eng::ScriptField& field) {
 // button, a label, and sometimes a line of red - so the caller's "attach a
 // tooltip to whatever was just drawn" would land on the wrong one. It calls
 // this itself, against the button, and DrawScriptFields knows to skip it.
-void DrawFieldTooltip(const eng::ScriptComponent& script, const eng::ScriptField& field,
-                      bool overridden);
+void DrawFieldTooltip(const eng::ScriptComponent& script,
+                      const eng::ScriptField& field);
 
 // Every entity that would satisfy this reference, newest-looking first is not
 // worth arranging - the Hierarchy's order is what somebody expects.
@@ -1287,7 +1749,7 @@ bool DrawEntityRefField(const eng::ScriptComponent& script,
     }
 
     // AGAINST THE BUTTON, while the button is still the last item drawn.
-    DrawFieldTooltip(script, field, script.IsFieldOverridden(field.name));
+    DrawFieldTooltip(script, field);
 
     // ---- dropping an entity on it ----------------------------------------
     //
@@ -1369,6 +1831,93 @@ bool DrawEntityRefField(const eng::ScriptComponent& script,
     return changed;
 }
 
+// ---------------------------------------------------------------------------
+//  A prefab variable: the slot you drag a prefab onto.
+//
+//  Deliberately NOT a picker as well. An entity reference has one because the
+//  candidates are in the scene and the Hierarchy may be scrolled somewhere
+//  else; a prefab is a FILE, the Assets panel is always showing files, and
+//  dragging it is both shorter and the thing everybody tries first. A list
+//  that duplicated the Assets panel badly would be worse than no list.
+//
+//  IT REPORTS A MISSING FILE, which is the whole reason this is not a text
+//  box. A path that no longer names anything is the normal way a spawner
+//  breaks - somebody renames the prefab - and the point of giving this its
+//  own type is that the breakage is visible while you are building the level
+//  rather than the first time the gun fires.
+// ---------------------------------------------------------------------------
+bool DrawPrefabRefField(const eng::ScriptComponent& script,
+                        const eng::ScriptField&     field) {
+    eng::PrefabRef* ref = field.AsPrefabRef();
+    if (ref == nullptr) {
+        return false;
+    }
+
+    const bool missing = ref->IsSet() && !eng::FileSystem::Exists(ref->Path());
+
+    bool changed = false;
+
+    // Just the file's own name on the button; the whole path is in the
+    // tooltip. "bullet.oprefab" is what somebody is looking for, and
+    // "prefabs/enemies/ranged/bullet.oprefab" does not fit in the column.
+    std::string shown = "(none)";
+    if (ref->IsSet()) {
+        const std::string& path = ref->Path();
+        const std::size_t  slash = path.find_last_of('/');
+        shown = slash == std::string::npos ? path : path.substr(slash + 1);
+    }
+
+    if (missing) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    } else if (!ref->IsSet()) {
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    }
+
+    // A BUTTON RATHER THAN A LABEL, even with no picker behind it, because a
+    // button is a big obvious rectangle and this is a drop target. Dropping
+    // onto a word is fiddly in a way nobody blames on the widget.
+    const bool clear = ImGui::Button(shown.c_str(), ImVec2(ImGui::CalcItemWidth(), 0.0f));
+
+    if (missing || !ref->IsSet()) {
+        ImGui::PopStyleColor();
+    }
+
+    DrawFieldTooltip(script, field);
+
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadPrefab)) {
+            // The payload is the virtual path as text, which is what every
+            // asset payload in this editor carries - see AssetDragDrop.h.
+            const std::string dropped(static_cast<const char*>(payload->Data),
+                                      static_cast<std::size_t>(payload->DataSize));
+            // Trimmed at the first NUL: the payload is sized to include the
+            // terminator, and a std::string built from the raw bytes would
+            // otherwise carry it and then fail to match any real path.
+            ref->Set(dropped.c_str());
+            changed = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    ImGui::SameLine();
+    ImGui::TextUnformatted(field.name.c_str());
+
+    if (clear && ref->IsSet()) {
+        ref->Clear();
+        changed = true;
+    }
+
+    if (missing) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "'%s' is not there",
+                           ref->Path().c_str());
+    } else if (!ref->IsSet()) {
+        ImGui::TextDisabled("drag a prefab here from Assets");
+    }
+
+    return changed;
+}
+
 // One variable, drawn with whichever widget suits its type. True on a frame
 // the value was actually changed.
 //
@@ -1419,6 +1968,9 @@ bool DrawFieldWidget(const eng::ScriptComponent& script,
         case eng::ScriptFieldType::Entity:
             return DrawEntityRefField(script, field);
 
+        case eng::ScriptFieldType::Prefab:
+            return DrawPrefabRefField(script, field);
+
         case eng::ScriptFieldType::Vec2: {
             eng::Vec2* value = field.AsVec2();
             if (value == nullptr) {
@@ -1466,8 +2018,16 @@ bool DrawFieldWidget(const eng::ScriptComponent& script,
 
 // What hovering a variable explains: the script's own note, the type, and
 // whether this entity has its own value or is using the code's.
+// ---------------------------------------------------------------------------
+//  WHETHER IT IS OVERRIDDEN IS NOT A PARAMETER, and it used to be.
+//
+//  Three callers each worked the answer out and passed it in, which meant
+//  three chances to pass a STALE one - and the field loop did exactly that,
+//  handing over a flag from before a button that had since erased the value.
+//  Asking the component costs a hash lookup and cannot be got wrong.
+// ---------------------------------------------------------------------------
 void DrawFieldTooltip(const eng::ScriptComponent& script,
-                      const eng::ScriptField& field, bool overridden) {
+                      const eng::ScriptField& field) {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         return;
     }
@@ -1480,13 +2040,33 @@ void DrawFieldTooltip(const eng::ScriptComponent& script,
     }
     if (field.requiredType.empty()) {
         ImGui::TextDisabled("%s", eng::ScriptFieldTypeName(field.type));
+    } else if (field.type == eng::ScriptFieldType::String) {
+        // A MARKER ON A STRING NAMES A KIND OF ASSET, not a component type -
+        // see ScriptFields::Asset. Without this the tooltip on an [animation]
+        // variable read "an entity with a animation on it", which is nonsense
+        // twice over.
+        ImGui::TextDisabled("an asset path (%s)", field.requiredType.c_str());
     } else {
         // The constraint is part of what the field IS, so it belongs where the
         // type would otherwise be rather than as an extra line.
         ImGui::TextDisabled("an entity with a %s on it", field.requiredType.c_str());
     }
 
-    if (overridden) {
+    // ======================================================================
+    //  THE COMPONENT IS ASKED, not the flag that was passed in.
+    //
+    //  `overridden` is worked out once at the top of a field's row and this
+    //  tooltip is drawn further down it, so it is a snapshot - and a button in
+    //  between can erase the very value read here. That is not hypothetical:
+    //  the revert button a few lines below did exactly that, and the at() in a
+    //  sibling block THREW, which killed the editor outright.
+    //
+    //  This one happens to be safe today, because it runs before that button.
+    //  Asking the authoritative question costs a hash lookup and does not
+    //  depend on staying that way.
+    // ======================================================================
+    if (script.SavedValues().is_object() &&
+        script.SavedValues().contains(field.name)) {
         ImGui::TextDisabled("saved on this entity as %s",
                             script.SavedValues().at(field.name).dump().c_str());
     } else {
@@ -1535,7 +2115,7 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
         // Skipped for a reference, which drew its own against the button -
         // see the note on the forward declaration above.
         if (field.type != eng::ScriptFieldType::Entity) {
-            DrawFieldTooltip(script, field, overridden);
+            DrawFieldTooltip(script, field);
         }
 
         // DIRECTLY AFTER THE WIDGET, so it reads as belonging to it. Anything
@@ -1551,17 +2131,39 @@ bool DrawScriptFields(eng::ScriptComponent& script) {
                                   "written in the script");
             }
 
-            // A SAVED VALUE THAT WILL NOT LOAD. The engine reports this to
-            // the Console when the scene opens, and then it is over - so it
-            // is also shown here, next to the variable it is about, for as
-            // long as it is true.
-            if (!eng::JsonFitsFieldType(field.type,
-                                        script.SavedValues().at(field.name))) {
-                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
-                                   "the scene file has %s here, which is not a %s - "
-                                   "the script's own value is being used",
-                                   script.SavedValues().at(field.name).dump().c_str(),
-                                   eng::ScriptFieldTypeName(field.type));
+            // ==============================================================
+            //  ASKED AGAIN, AND THAT IS THE WHOLE FIX.
+            //
+            //  `overridden` was answered at the top of this iteration, BEFORE
+            //  the revert button above - and pressing that button erases the
+            //  very key the line below reads. So on the one frame a revert
+            //  happened, this block was still entered and at() was called for
+            //  a key that had just gone.
+            //
+            //  nlohmann's at() THROWS for a missing key, nothing here catches
+            //  it, and an uncaught exception out of a draw call is not a
+            //  message in the Console - it is the process dying with a crash
+            //  dialogue. Reported as exactly that.
+            //
+            //  Nothing about this was particular to one kind of variable: any
+            //  overridden field's revert button did it.
+            // ==============================================================
+            if (script.IsFieldOverridden(field.name)) {
+                // ONE LOOKUP, held. Two calls to at() for the same key was
+                // also how the first one came to be read without a guard.
+                const eng::Json& saved = script.SavedValues().at(field.name);
+
+                // A SAVED VALUE THAT WILL NOT LOAD. The engine reports this to
+                // the Console when the scene opens, and then it is over - so
+                // it is also shown here, next to the variable it is about, for
+                // as long as it is true.
+                if (!eng::JsonFitsFieldType(field.type, saved)) {
+                    ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                                       "the scene file has %s here, which is not a "
+                                       "%s - the script's own value is being used",
+                                       saved.dump().c_str(),
+                                       eng::ScriptFieldTypeName(field.type));
+                }
             }
         }
 
@@ -1664,10 +2266,22 @@ void DrawScript(eng::ScriptComponent& script) {
         DrawScriptNameLink(script, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), " -  NOT FOUND");
-        ImGui::TextWrapped("No script with that name is compiled into this build, so it "
-                           "is attached and will be saved, but it does not run. Rebuild "
-                           "the project and start the editor again - the connection is "
-                           "by name, so nothing needs reattaching.");
+        // AND WHICH OF THE TWO REASONS IT IS. "Rebuild and restart the
+        // editor" is actively wrong advice while a build is running, which
+        // is precisely when every script in the scene reads as NOT FOUND -
+        // the build unloads them for its duration. Telling somebody to
+        // restart the editor to fix something that is fixing itself is how
+        // this gets misdiagnosed as broken scripting.
+        if (ScriptBuild::IsBuilding()) {
+            ImGui::TextWrapped("The scripts are being compiled right now, which "
+                               "unloads them while it runs. This will attach itself "
+                               "when the build finishes - nothing needs doing.");
+        } else {
+            ImGui::TextWrapped("No script with that name is compiled into this "
+                               "build, so it is attached and will be saved, but it "
+                               "does not run. Rebuild the project - the connection "
+                               "is by name, so nothing needs reattaching.");
+        }
     }
 
     // THE VARIABLES, above the attach controls below. Tuning a script is what
@@ -1692,6 +2306,236 @@ void DrawScript(eng::ScriptComponent& script) {
     }
 
     ImGui::TextDisabled("or drag a .cpp from the Assets panel onto this window");
+}
+
+// ---------------------------------------------------------------------------
+//  PREFABS
+//
+//  Two things live here: the BLOCK at the top of an instance - which prefab it
+//  is, what has been changed about it, and the four things you can do - and the
+//  per-component MARKS that say which parts of this entity you changed.
+//
+//  ==========================================================================
+//  WHY THE MARKS ARE NAMED FIELDS AND NOT A BLUE BAR DOWN THE LEFT EDGE,
+//  which is what Unity draws.
+//
+//  Every field in this panel is drawn by hand, by a function per component
+//  type - see the top of this file. A bar beside exactly the right row would
+//  mean all eighty-odd of those widgets knowing the JSON key they are saved
+//  under, which is eighty chances to write the wrong one and a new one to get
+//  wrong every time somebody adds a field.
+//
+//  The field NAMES come out of the diff for nothing. And they are the names in
+//  the file, which this project already relies on elsewhere: a script's
+//  variables are shown under their code names precisely so that what is on
+//  screen and what is in the scene file are the same word. See the note above
+//  DrawScriptFields.
+//
+//  ==========================================================================
+//  ADDED AND REMOVED COMPONENTS ARE HANDLED IN THE BLOCK AT THE TOP, not
+//  beside the component. Matching a live component to an "added" record means
+//  deciding which of two same-type components is which, and the honest answer
+//  is a positional one that would be wrong in exactly the confusing cases. The
+//  Overrides list names them and offers Apply and Revert for each, which is
+//  the whole capability; only the placement of the button differs.
+// ---------------------------------------------------------------------------
+
+// The same blue the Hierarchy colours an instance's rows with. It means the
+// same thing in both places: this is one copy of something.
+const ImVec4 kPrefabBlue{0.55f, 0.78f, 0.95f, 1.0f};
+
+// Records what the panel wants done. NOT DONE HERE - applying or reverting
+// rebuilds every entity in the instance, and this panel is in the middle of
+// describing one of them. See PrefabRequest in EditorApp.h.
+void RequestPrefab(PrefabAction action, eng::EntityId member,
+                   const eng::PrefabOverrideItem& item = {}) {
+    PrefabRequest& request = EditorState::Get().prefabRequest;
+    request.action         = action;
+    request.member         = member;
+    request.item           = item;
+}
+
+// One row of the override list: what it is, and the two ways out of it.
+void DrawOverrideRow(const eng::PrefabOverrideItem& item, eng::EntityId member,
+                     const char* label) {
+    ImGui::PushID(item.description.c_str());
+
+    ImGui::TextColored(kPrefabBlue, "%s", label);
+    ImGui::SameLine();
+
+    if (ImGui::SmallButton("Revert")) {
+        RequestPrefab(PrefabAction::RevertItem, member, item);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Put this back to what the prefab says.");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Apply")) {
+        RequestPrefab(PrefabAction::ApplyItem, member, item);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Write this one change into the prefab, so every other "
+                          "instance gets it too.\n\nThis edits a FILE and cannot be "
+                          "undone with Ctrl+Z.");
+    }
+
+    ImGui::PopID();
+}
+
+// The block at the top. Returns the override list so the component loop below
+// can mark itself up without running the diff a second time - it walks every
+// component of every member of the instance, which is not free.
+std::vector<eng::PrefabOverrideItem> DrawPrefabBlock(eng::Entity& entity) {
+    eng::Scene&          scene    = eng::Engine::Get().GetScene();
+    eng::PrefabInstance* instance = scene.PrefabInstanceOf(entity.Id());
+    if (instance == nullptr) {
+        return {};
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kPrefabBlue);
+    ImGui::SeparatorText("Prefab");
+    ImGui::PopStyleColor();
+
+    std::string             assetError;
+    const eng::PrefabAsset* asset =
+        eng::PrefabLibrary::Load(instance->prefabPath, assetError);
+
+    // ---- the prefab cannot be read ---------------------------------------
+    //
+    // SAID IN FULL, because the two ways out are to put the file back or to
+    // unpack, and neither is guessable from "something went wrong".
+    if (asset == nullptr) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           "this prefab cannot be read");
+        ImGui::TextWrapped("%s", assetError.c_str());
+        ImGui::TextDisabled("The changes made to this instance are kept and still "
+                            "saved, so putting the file back restores the link.");
+        if (ImGui::Button("Unpack Prefab")) {
+            RequestPrefab(PrefabAction::Unpack, entity.Id());
+        }
+        ImGui::Separator();
+        return {};
+    }
+
+    ImGui::TextColored(kPrefabBlue, "%s", instance->prefabPath.c_str());
+    if (!scene.IsPrefabRoot(entity.Id())) {
+        ImGui::TextDisabled("part of an instance - the buttons below act on all of it");
+    }
+
+    // THE DIFF, once per frame while an instance is selected. It serialises
+    // every component of every member, so it is not free - which is why the
+    // result is handed back rather than asked for again per component.
+    std::vector<eng::PrefabOverrideItem> overrides =
+        eng::ListPrefabOverrides(scene, *asset, *instance);
+
+    if (ImGui::SmallButton("Select Asset")) {
+        EditorState::Get().revealAsset = instance->prefabPath;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Show the prefab file in the Assets panel.");
+    }
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(overrides.empty());
+    if (ImGui::SmallButton("Apply All")) {
+        RequestPrefab(PrefabAction::ApplyAll, entity.Id());
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Write every change below into the prefab, so every other "
+                          "instance of it gets them.\n\nThis edits a FILE and cannot "
+                          "be undone with Ctrl+Z.");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Revert All")) {
+        RequestPrefab(PrefabAction::RevertAll, entity.Id());
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Throw every change below away, so this instance matches the "
+                          "prefab again.\n\nWhere it stands in the scene is kept.");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Unpack")) {
+        RequestPrefab(PrefabAction::Unpack, entity.Id());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Break the link. The entities stay exactly as they are and "
+                          "become ordinary ones.");
+    }
+
+    // ---- what has been changed about this instance ------------------------
+    if (overrides.empty()) {
+        ImGui::TextDisabled("nothing changed - this matches the prefab");
+    } else {
+        char label[64];
+        std::snprintf(label, sizeof(label), "Changed here (%zu)###prefab_overrides",
+                      overrides.size());
+        if (ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen)) {
+            // THE WHOLE INSTANCE, not just the selected entity, which is what
+            // Unity's Overrides dropdown shows and the only useful answer:
+            // "what have I changed about this enemy" is a question about the
+            // enemy rather than about whichever part of it is selected.
+            for (const eng::PrefabOverrideItem& item : overrides) {
+                DrawOverrideRow(item, entity.Id(), item.description.c_str());
+            }
+            ImGui::TreePop();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Everything about this instance that differs from the "
+                              "prefab.\n\nWhere it stands in the scene is not listed: "
+                              "every instance is somewhere different, so its position "
+                              "and rotation are not changes to the prefab.");
+        }
+    }
+
+    ImGui::Separator();
+    return overrides;
+}
+
+// Does this exact component carry any overridden field?
+bool ComponentIsOverridden(const std::vector<eng::PrefabOverrideItem>& overrides,
+                           int localId, std::string_view type, int slot) {
+    if (localId == 0) {
+        return false;
+    }
+    for (const eng::PrefabOverrideItem& item : overrides) {
+        if (item.kind != eng::PrefabOverrideKind::Property) {
+            continue;
+        }
+        if (item.property.localId == localId && item.property.component == type &&
+            item.property.slot == slot) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The fields of this component that differ from the prefab, each with its own
+// way out. Drawn inside the component, under its own heading.
+void DrawComponentOverrides(const std::vector<eng::PrefabOverrideItem>& overrides,
+                            eng::EntityId member, int localId, std::string_view type,
+                            int slot) {
+    if (localId == 0) {
+        return;
+    }
+    bool any = false;
+    for (const eng::PrefabOverrideItem& item : overrides) {
+        if (item.kind != eng::PrefabOverrideKind::Property) {
+            continue;
+        }
+        if (item.property.localId != localId || item.property.component != type ||
+            item.property.slot != slot) {
+            continue;
+        }
+        if (!any) {
+            ImGui::Separator();
+            ImGui::TextColored(kPrefabBlue, "changed from the prefab:");
+            any = true;
+        }
+        DrawOverrideRow(item, member, item.property.field.c_str());
+    }
 }
 
 } // namespace
@@ -1734,6 +2578,1569 @@ void InspectorPanel::ApplyPendingRemoval() {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  THE SELECTED ASSET, rather than the selected entity.
+//
+//  Click an image in the Assets panel and this is what the Inspector shows:
+//  how that file is imported. Same panel, same gesture Unity uses, and
+//  deliberately NOT a second window - "the thing I just clicked, described" is
+//  one idea, and an entity and a file are both things you click.
+//
+//  ==========================================================================
+//  WHY THESE SETTINGS BELONG TO THE FILE AND NOT TO THE SPRITE
+//
+//  Because "is this pixel art?" has one answer per picture, and the
+//  alternative is answering it again on every entity that uses the picture. A
+//  character used by forty entities would be forty copies of one fact,
+//  thirty-nine of which are waiting to disagree with the fortieth.
+//
+//  The sprite's own settings - its tint, its draw order, its size - are
+//  per-entity and stay on the component, where the same argument puts them.
+//
+//  ==========================================================================
+//  A CHANGE TAKES EFFECT BEFORE YOU LET GO OF THE MOUSE.
+//
+//  Choosing a scaling mode writes the .oimport AND re-applies it to the
+//  already-loaded texture, so every sprite in the open scene changes at once
+//  and the preview here changes with them. No Apply button and no reimport
+//  step, because there is nothing to recompute: the filter is a property of
+//  the graphics object rather than of the pixels.
+//
+//  That matters more than it sounds. "Is this the right scaling for this
+//  sprite?" is a question about how it LOOKS, and the only useful way to
+//  answer it is to look at it while changing it.
+//
+//  ==========================================================================
+//  NOTHING HERE CALLS MarkDirty, AND THAT IS NOT AN OVERSIGHT.
+//
+//  These settings are not part of the scene. They are a file on disk, written
+//  the moment they change. Marking the scene would put an asterisk in the
+//  title bar for an edit that saving the scene does not store, and push an
+//  undo snapshot that Ctrl+Z cannot undo - see the note on MarkDirty in
+//  EditorApp.h for why undo listens to that flag.
+// ---------------------------------------------------------------------------
+namespace {
+
+// The preview is drawn this many pixels on its longest side.
+//
+// DELIBERATELY NOT 1:1. At its native size a texture is sampled exactly and
+// the scaling mode makes no visible difference at all - which would leave this
+// panel's one setting apparently doing nothing on the very screen that offers
+// it. Most sprites in a 2D game are small, so a fixed box is an ENLARGEMENT
+// for them, and an enlargement is where Nearest and Linear differ most.
+constexpr float kPreviewPixels = 128.0f;
+
+void DrawTexturePreview(const eng::TextureRef& texture) {
+    // ======================================================================
+    //  IT ALWAYS OCCUPIES THE SLOT, even when there is nothing to show.
+    //
+    //  Both callers follow it with SameLine, which attaches to the LAST item
+    //  submitted - so returning without submitting anything put the details
+    //  column beside whatever happened to be above the preview instead,
+    //  which for the frame Inspector is the separator. A Dummy of the same
+    //  size keeps the layout honest for an image that failed to load.
+    // ======================================================================
+    const float wide = texture ? static_cast<float>(texture->width) : 0.0f;
+    const float high = texture ? static_cast<float>(texture->height) : 0.0f;
+    if (!texture || texture->native == nullptr || wide <= 0.0f ||
+        high <= 0.0f) {
+        ImGui::Dummy(ImVec2(kPreviewPixels, kPreviewPixels));
+        return;
+    }
+
+    const float scale = kPreviewPixels / ((wide > high) ? wide : high);
+    ImGui::Image(reinterpret_cast<ImTextureID>(texture->native),
+                 ImVec2(wide * scale, high * scale));
+}
+
+// The two buttons and the combo, shared by the texture and the font sections
+// because the question and the words for it are the same. Returns true when
+// the value changed.
+bool DrawFilterChoice(eng::TextureFilter& filter) {
+    bool changed = false;
+
+    // ---- the presets ------------------------------------------------------
+    //
+    // TWO BUTTONS FOR THE TWO ANSWERS PEOPLE ACTUALLY HAVE. Somebody who has
+    // just drawn a 16x16 character knows they drew pixel art; they do not
+    // necessarily know that "Nearest" is the word for what they want. The
+    // combo below is the precise control, and these are the same thing in the
+    // vocabulary of the person choosing.
+    ImGui::TextDisabled("what kind of picture is this?");
+    if (ImGui::Button("Pixel Art")) {
+        filter  = eng::TextureFilter::Nearest;
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Crisp, square pixels when enlarged.\n"
+                          "For art drawn pixel by pixel.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Smooth / UI")) {
+        filter  = eng::TextureFilter::Linear;
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Blended, soft edges when scaled.\n"
+                          "For interface art, photographs and gradients.");
+    }
+
+    ImGui::Spacing();
+
+    // ---- and the setting itself -------------------------------------------
+    const char* names[] = {
+        eng::TextureFilterName(eng::TextureFilter::Nearest),
+        eng::TextureFilterName(eng::TextureFilter::Linear),
+    };
+    int current = (filter == eng::TextureFilter::Linear) ? 1 : 0;
+    if (ImGui::Combo("Scaling", &current, names, 2)) {
+        filter = (current == 1) ? eng::TextureFilter::Linear
+                                : eng::TextureFilter::Nearest;
+        changed = true;
+    }
+
+    ImGui::TextDisabled("%s", filter == eng::TextureFilter::Nearest
+                                  ? "nearest: doubles pixels up - pixel art"
+                                  : "linear: blends pixels - smooth art");
+    return changed;
+}
+
+// Where the settings are kept, and the way back to the defaults. Shown for
+// every kind that HAS settings, so the file is never a mystery.
+void DrawSidecarFooter(const std::string& path) {
+    ImGui::Separator();
+
+    if (eng::ImportLibrary::HasSettings(path)) {
+        ImGui::TextDisabled("stored in");
+        ImGui::TextDisabled("%s", eng::ImportLibrary::SidecarPath(path).c_str());
+
+        if (ImGui::Button("Revert to defaults")) {
+            std::string error;
+            if (eng::ImportLibrary::Revert(path, error)) {
+                eng::ResourceManager::RefreshImportSettings(path);
+            } else {
+                ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                                 "could not revert the import settings for '{}': {}",
+                                 path, error);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Deletes the settings file beside this asset.");
+        }
+    } else {
+        // SAYING SO MATTERS. The absence of a file IS the defaults - see
+        // ImportLibrary::Save - so without this line somebody who had set
+        // something, then set it back, would watch the file disappear and
+        // reasonably conclude the editor had lost their settings.
+        ImGui::TextDisabled("no settings file - this asset uses the defaults,");
+        ImGui::TextDisabled("and one is written as soon as you change something");
+    }
+}
+
+// The image the Inspector is previewing, and which file it came from.
+//
+// ONE OBJECT RATHER THAN TWO LOOSE STATICS so that there is something to
+// clear: see ForgetHeldTexture below, which exists because a static holding
+// a GPU texture outlives the GPU.
+struct HeldPreview {
+    std::string     path;
+    eng::TextureRef texture;
+};
+
+HeldPreview& Held() {
+    static HeldPreview held;
+    return held;
+}
+
+const eng::TextureRef& HeldTexture(const std::string& path) {
+    // ======================================================================
+    //  HELD ACROSS FRAMES, AND IT HAS TO BE.
+    //
+    //  This function runs every frame a file is selected. A TextureRef that
+    //  lived only for the call would often be the LAST owner of the image, so
+    //  the texture would be destroyed at the end of every frame and the file
+    //  read, decoded and uploaded again on the next one - sixty times a
+    //  second, for as long as somebody leaves an image selected.
+    //
+    //  The Assets panel's thumbnail usually owns it too and hides that
+    //  entirely. The case where it does not is the one that matters: navigate
+    //  to another folder and Refresh throws the thumbnails away, while the
+    //  selection deliberately survives - see the note where that clear was
+    //  removed in AssetBrowserPanel::Draw. That is exactly when somebody is
+    //  sitting looking at this panel.
+    //
+    //  A function-local static rather than a member of InspectorPanel, which
+    //  is the same trick EditorApp::ReloadChangedPrefabs uses to keep
+    //  <filesystem> out of a header every panel includes.
+    //
+    //  ONE IMAGE STAYS LOADED after you select something else, until the next
+    //  image is selected. That is the same single-image cost the panel would
+    //  pay anyway while it was on screen.
+    // ======================================================================
+    //  SHARED BY THE SHEET AND THE FRAME INSPECTORS, which is why it is a
+    //  function of its own rather than three statics inside one panel: only
+    //  one of them draws in any given frame, so one held image between them
+    //  is the whole cost, and switching from a sheet to one of its frames
+    //  loads the frame and lets the sheet go.
+    // ======================================================================
+    HeldPreview& held = Held();
+    if (held.path != path) {
+        held.path    = path;
+        held.texture = eng::ResourceManager::LoadTexture(path);
+    }
+    return held.texture;
+}
+
+// ---------------------------------------------------------------------------
+//  AND IT HAS TO BE LET GO BEFORE SDL IS.
+//
+//  A function-local static is destroyed when the PROGRAM ends - after the
+//  renderer has been shut down and SDL has been quit. Texture's destructor
+//  calls SDL_DestroyTexture, and SDL frees a renderer's textures along with
+//  the renderer, so that call would be made on memory already given back: an
+//  exit that crashes occasionally, which is the worst kind of crash to own.
+//
+//  It also left ResourceManager::Shutdown reporting the image as "still in use
+//  at shutdown", which is the line that found this.
+//
+//  InspectorPanel's destructor is where this is called from, and that works
+//  for a stated reason: EditorApp::Shutdown clears the panels BEFORE
+//  Engine::Shutdown, precisely so that a panel's destructor can still reach
+//  engine state. See the note on m_panels.clear().
+// ---------------------------------------------------------------------------
+void ForgetHeldTexture() {
+    Held() = HeldPreview{};
+}
+
+// ---------------------------------------------------------------------------
+//  The slicer
+//
+//  A spritesheet is one file holding many pictures, and the engine already
+//  knows how to hand out one of them: "textures/hero.png#walk_1" loads the
+//  rectangle called walk_1 out of hero.png - see ImportSettings.h. What it
+//  cannot do on its own is work out where those rectangles are. That is what
+//  this section is for, and the whole of it writes nothing but the four grid
+//  numbers and a list of rectangles into the same .oimport sidecar.
+//
+//  ==========================================================================
+//  TWO KINDS OF STATE, AND KEEPING THEM APART IS THE DESIGN.
+//
+//  The GRID NUMBERS are a DRAFT. They are what the next press of Slice would
+//  cut, they are dragged rather than typed, and they are not written anywhere
+//  until that press. A draggable number has to be held across frames: this
+//  panel re-reads the sidecar every frame, so a slider writing straight back
+//  into `settings` would be read back as its old value on the next frame and
+//  appear frozen - and one that wrote to the FILE every frame would hit the
+//  disk sixty times a second for the length of a drag.
+//
+//  EVERYTHING ELSE is the committed slice, read fresh from ImportLibrary every
+//  frame and written the moment it changes. Those widgets are deliberately the
+//  discrete kind - type and press Enter, click a button, tick a box - so that
+//  one gesture is one write and the "snaps back while you drag it" problem
+//  cannot arise.
+//
+//  ==========================================================================
+//  ANYTHING THAT ROUND-TRIPS IS REFUSED BY Save, NOT BY THIS FILE.
+//
+//  A name that is not a name, two frames called the same thing, an animation
+//  with nothing in it: every one of those is refused by ImportLibrary::Save,
+//  because that is where the rules belong - see IsLegalSheet. So an edit here
+//  is made OPTIMISTICALLY into a local copy and offered to Save, and a refusal
+//  is shown to the person in Save's own words. The edit then simply does not
+//  stick, because the next frame re-reads the file that was not written. A
+//  second copy of those rules in the editor would be a second copy to drift.
+//
+//  ==========================================================================
+//  THREE THINGS Save CANNOT SEE, AND THEY ARE REFUSED HERE.
+//
+//  Each one round-trips through the file perfectly, so IsLegalSheet - which is
+//  handed a SheetSlice and nothing else - has no way to object, and each is
+//  refused at the point of the gesture instead, saying why:
+//
+//    * A RECTANGLE OUTSIDE THE IMAGE. Save never learns the image's size; this
+//      panel has the texture. See the rectangle editor in the Frames list.
+//    * A FRAME RATE OF ZERO OR LESS. Clamped as it is typed, because 0 fps
+//      round-trips and is nobody's intention.
+//    * AN ANIMATION EMPTIED ONE FRAME AT A TIME. The reader drops an animation
+//      with no frames, so removing the last one is refused and the whole
+//      animation offered for deletion instead.
+//
+//  Anything added to that list belongs here, with the same shape: say what is
+//  wrong, at the moment it is asked for, and do not apply it.
+// ---------------------------------------------------------------------------
+
+// The slicer's own preview, bigger than the one above it.
+//
+// A SEPARATE CONSTANT RATHER THAN A BIGGER kPreviewPixels. That one is sized
+// to make the scaling mode visible on a small sprite; this one has a grid
+// drawn over it and has to be big enough to count the cells in.
+constexpr float kSlicePreviewPixels = 288.0f;
+
+// Past this many cells along one side, the grid is not drawn at all.
+//
+// A CEILING ON THE DRAWING, NOT ON THE SLICING. 288 pixels divided into 300
+// cells is not a grid, it is a grey rectangle - and it would cost six hundred
+// lines a frame to say nothing. The outline is still drawn and the count is
+// still written out underneath.
+constexpr int kMaxGridLines = 64;
+
+// And the same ceiling for outlining frames that have already been cut, which
+// are drawn one rectangle each because they need not line up with any grid.
+constexpr int kMaxOutlinedFrames = 512;
+
+// ---------------------------------------------------------------------------
+//  The draft - see the note above on why the grid numbers are held
+// ---------------------------------------------------------------------------
+struct SliceDraft {
+    std::string     path;       // the image these numbers belong to
+    eng::SheetSlice lastSeen;   // the committed slice they were last seeded from
+
+    int cellWidth  = 0;
+    int cellHeight = 0;
+    int margin     = 0;
+    int spacing    = 0;
+
+    // The same grid said the other way round. Some sheets are described by
+    // their cell size ("16 by 16") and some by their layout ("4 across, 3
+    // down"), and which one somebody knows depends on where the sheet came
+    // from. Both produce the same four numbers in the file.
+    bool byCount = false;
+    int  columns = 1;
+    int  rows    = 1;
+
+    char prefix[32]       = "f";
+    char newAnimation[48] = "";
+    int  pickedFrame      = 0;   // the index the Append combo is showing
+
+    // The last thing the slicer said - a refusal from Save, or a note about a
+    // guess. Kept across frames because it is the answer to a click that has
+    // already finished happening.
+    std::string note;
+    bool        noteIsError = false;
+
+    bool askUnmark = false;   // the confirmation popup wants opening
+};
+
+// ---------------------------------------------------------------------------
+//  The one draft, and the rule for when it is re-seeded.
+//
+//  ONE, not one per image, for the same reason the preview holds one texture:
+//  only one asset is selected at a time, and the draft is a scratch pad rather
+//  than a record of anything.
+//
+//  RE-SEEDED WHENEVER THE COMMITTED SLICE CHANGES UNDERNEATH IT, which is one
+//  rule covering three situations that would otherwise each need their own:
+//  this panel just wrote a slice, Revert to defaults threw one away, and
+//  somebody edited the .oimport in a text editor and came back - see
+//  EditorApp's focus-regain, which re-reads them all.
+//
+//  The grid numbers survive a re-seed when the file has nothing to say about
+//  them, so unticking the spritesheet box and ticking it again does not throw
+//  away what had been typed.
+// ---------------------------------------------------------------------------
+SliceDraft& DraftFor(const std::string& path, const eng::SheetSlice& committed) {
+    static SliceDraft draft;
+
+    bool seed = false;
+    if (draft.path != path) {
+        draft      = SliceDraft{};
+        draft.path = path;
+        seed       = true;
+    } else if (draft.lastSeen != committed) {
+        seed = true;
+    }
+
+    if (seed) {
+        draft.lastSeen = committed;
+        if (committed.cellWidth > 0) {
+            draft.cellWidth = committed.cellWidth;
+        }
+        if (committed.cellHeight > 0) {
+            draft.cellHeight = committed.cellHeight;
+        }
+        draft.margin  = committed.margin;
+        draft.spacing = committed.spacing;
+    }
+    return draft;
+}
+
+// The four numbers the draft currently describes, whichever way round they
+// were entered. In "by how many" mode the cell size is DERIVED, which is where
+// a sheet that does not divide evenly shows up as a leftover.
+eng::SheetSlice GridOf(const SliceDraft& draft, int imageWidth, int imageHeight) {
+    eng::SheetSlice grid;
+    grid.margin  = draft.margin;
+    grid.spacing = draft.spacing;
+
+    if (!draft.byCount) {
+        grid.cellWidth  = draft.cellWidth;
+        grid.cellHeight = draft.cellHeight;
+        return grid;
+    }
+
+    if (draft.columns > 0) {
+        const int usable =
+            imageWidth - 2 * draft.margin - (draft.columns - 1) * draft.spacing;
+        grid.cellWidth = (usable > 0) ? usable / draft.columns : 0;
+    }
+    if (draft.rows > 0) {
+        const int usable =
+            imageHeight - 2 * draft.margin - (draft.rows - 1) * draft.spacing;
+        grid.cellHeight = (usable > 0) ? usable / draft.rows : 0;
+    }
+    return grid;
+}
+
+// ---------------------------------------------------------------------------
+//  The ONE place the sheet section writes anything.
+//
+//  Every edit in this section goes through here, so that the refusal message
+//  from Save reaches the screen whatever the edit was, and so that there is
+//  exactly one place that remembers to forget the frames already cut.
+// ---------------------------------------------------------------------------
+bool CommitSheet(const std::string& path, const eng::TextureImport& settings,
+                 SliceDraft& draft) {
+    std::string error;
+    if (!eng::ImportLibrary::Save(path, settings, error)) {
+        draft.note        = error;
+        draft.noteIsError = true;
+        ENGINE_LOG_ERROR(eng::Channels::kEditor, "could not slice '{}': {}", path,
+                         error);
+        return false;
+    }
+
+    // THE FRAMES ALREADY CUT ARE NOW WRONG. A frame texture is cached under
+    // "<sheet>#<name>", and re-slicing moves the rectangle that name refers
+    // to - so without this the cache would go on handing out the old pixels
+    // for a name whose meaning has changed.
+    eng::ResourceManager::InvalidateSubAssets(path);
+
+    // AND THE ASSETS PANEL HAS TO HEAR ABOUT IT. Its listing is cached and
+    // refreshed on demand - deliberately, see the note in its header - so
+    // slicing a sheet would otherwise leave this panel showing twelve frames
+    // while the tile over there grew no disclosure arrow until somebody
+    // pressed Refresh. Two panels disagreeing about one file is the bug the
+    // note on m_picked was written to prevent.
+    EditorState::Get().assetsNeedRefresh = true;
+
+    draft.note.clear();
+    draft.noteIsError = false;
+    return true;
+}
+
+void DrawDraftNote(const SliceDraft& draft) {
+    if (draft.note.empty()) {
+        return;
+    }
+    if (draft.noteIsError) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s",
+                           draft.note.c_str());
+    } else {
+        ImGui::TextDisabled("%s", draft.note.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  The big preview, with the grid over it
+//
+//  Returns the name of a frame that was clicked, or an empty string. Clicking
+//  one selects it, which is how the frame Inspector is reached before the
+//  Assets panel learns to list frames of its own.
+// ---------------------------------------------------------------------------
+std::string DrawSlicePreview(const eng::TextureRef& texture,
+                             const eng::SheetSlice& committed,
+                             const eng::SheetSlice& grid,
+                             const eng::SliceGeometry& geometry) {
+    std::string clicked;
+
+    if (!texture || texture->native == nullptr || texture->width <= 0 ||
+        texture->height <= 0) {
+        ImGui::TextDisabled("the image has to load before it can be sliced");
+        return clicked;
+    }
+
+    const float wide = static_cast<float>(texture->width);
+    const float high = static_cast<float>(texture->height);
+
+    // Shrunk to fit a narrow panel rather than sticking out of it. Everything
+    // below is in terms of `scale`, so the overlay follows automatically.
+    float box = kSlicePreviewPixels;
+    if (const float room = ImGui::GetContentRegionAvail().x;
+        room > 64.0f && room < box) {
+        box = room;
+    }
+    const float scale = box / ((wide > high) ? wide : high);
+
+    ImGui::Image(reinterpret_cast<ImTextureID>(texture->native),
+                 ImVec2(wide * scale, high * scale));
+
+    const ImVec2 origin  = ImGui::GetItemRectMin();
+    const ImVec2 corner  = ImGui::GetItemRectMax();
+    const bool   hovered = ImGui::IsItemHovered();
+    ImDrawList*  draw    = ImGui::GetWindowDrawList();
+
+    // ======================================================================
+    //  FIVE ARGUMENTS, AND THAT IS NOT A TIDINESS CHOICE.
+    //
+    //  ImGui 1.92.8 swapped the last two parameters of AddRect: the current
+    //  signature is (min, max, colour, rounding, THICKNESS, flags). The
+    //  six-argument calls elsewhere in this editor were written against the
+    //  old order and still work, because ImGui keeps an inline overload in the
+    //  old order that forwards to the new one - but that overload is compiled
+    //  out by IMGUI_DISABLE_OBSOLETE_FUNCTIONS and is deleted outright in its
+    //  place. New code calls the real signature.
+    // ======================================================================
+    draw->AddRect(origin, corner, IM_COL32(255, 255, 255, 70), 0.0f, 1.0f);
+
+    const auto toScreenX = [&](int imagePixel) {
+        return origin.x + static_cast<float>(imagePixel) * scale;
+    };
+    const auto toScreenY = [&](int imagePixel) {
+        return origin.y + static_cast<float>(imagePixel) * scale;
+    };
+
+    // ---- what is already cut ---------------------------------------------
+    //
+    // Drawn one rectangle each rather than as a grid, because a frame that has
+    // been nudged or renamed by hand has no grid that describes it any more -
+    // which is exactly why the frames are stored and not recomputed.
+    const bool tooMany =
+        committed.frames.size() > static_cast<std::size_t>(kMaxOutlinedFrames);
+    const bool outlineFrames = committed.IsSliced() && !tooMany;
+    if (outlineFrames) {
+        for (const eng::SheetFrame& frame : committed.frames) {
+            draw->AddRect(ImVec2(toScreenX(frame.x), toScreenY(frame.y)),
+                          ImVec2(toScreenX(frame.x + frame.w),
+                                 toScreenY(frame.y + frame.h)),
+                          IM_COL32(120, 190, 250, 150), 0.0f, 1.0f);
+        }
+    }
+
+    // ---- and what the next press of Slice would cut ----------------------
+    //
+    // Only when it would come out DIFFERENT, so that the usual case - a sheet
+    // sliced by the grid still shown - is one set of lines and not two on top
+    // of each other.
+    // Compared number by number rather than with the struct comparison,
+    // because `committed` carries the frames as well and `grid` never does -
+    // so the two would always differ and both sets of lines would always draw.
+    const bool sameGrid = grid.cellWidth == committed.cellWidth &&
+                          grid.cellHeight == committed.cellHeight &&
+                          grid.margin == committed.margin &&
+                          grid.spacing == committed.spacing;
+
+    const bool showGrid = geometry.count > 0 && (!outlineFrames || !sameGrid);
+    if (showGrid) {
+        if (geometry.columns > kMaxGridLines || geometry.rows > kMaxGridLines) {
+            ImGui::TextDisabled("the grid is too fine to draw - %d by %d cells",
+                                geometry.columns, geometry.rows);
+        } else {
+            const ImU32 colour = IM_COL32(250, 220, 120, 170);
+            const int   stepX  = grid.cellWidth + grid.spacing;
+            const int   stepY  = grid.cellHeight + grid.spacing;
+
+            // BOTH EDGES OF EVERY CELL, not one line per boundary, because
+            // with a spacing the cells do not touch and a single line would
+            // put the gap inside a frame.
+            for (int column = 0; column < geometry.columns; ++column) {
+                const int left = grid.margin + column * stepX;
+                draw->AddLineV(toScreenX(left), origin.y, corner.y, colour, 1.0f);
+                draw->AddLineV(toScreenX(left + grid.cellWidth), origin.y, corner.y,
+                               colour, 1.0f);
+            }
+            for (int row = 0; row < geometry.rows; ++row) {
+                const int top = grid.margin + row * stepY;
+                draw->AddLineH(origin.x, corner.x, toScreenY(top), colour, 1.0f);
+                draw->AddLineH(origin.x, corner.x, toScreenY(top + grid.cellHeight),
+                               colour, 1.0f);
+            }
+        }
+    }
+
+    // ---- the frame under the cursor ---------------------------------------
+    if (hovered && outlineFrames) {
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const int    x = static_cast<int>((mouse.x - origin.x) / scale);
+        const int    y = static_cast<int>((mouse.y - origin.y) / scale);
+
+        // Tested against the RECTANGLES rather than worked out from the grid,
+        // so that hand-moved frames and overlapping ones still answer
+        // correctly. Backwards, so the frame drawn last is the one picked.
+        for (std::size_t i = committed.frames.size(); i > 0; --i) {
+            const eng::SheetFrame& frame = committed.frames[i - 1];
+            if (x < frame.x || y < frame.y || x >= frame.x + frame.w ||
+                y >= frame.y + frame.h) {
+                continue;
+            }
+            draw->AddRect(ImVec2(toScreenX(frame.x), toScreenY(frame.y)),
+                          ImVec2(toScreenX(frame.x + frame.w),
+                                 toScreenY(frame.y + frame.h)),
+                          IM_COL32(255, 255, 255, 255), 0.0f, 2.0f);
+            ImGui::SetTooltip("%s\n%d, %d  %d x %d\nclick to look at it",
+                              frame.name.c_str(), frame.x, frame.y, frame.w, frame.h);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                clicked = frame.name;
+            }
+            break;
+        }
+    }
+
+    // SAID, RATHER THAN JUST NOT DRAWN. A sliced sheet with no outlines over
+    // it looks exactly like one that was never sliced.
+    if (tooMany) {
+        ImGui::TextDisabled("%zu frames is too many to outline here",
+                            committed.frames.size());
+    }
+
+    return clicked;
+}
+
+// ---------------------------------------------------------------------------
+//  The grid numbers. Writes to the DRAFT only - nothing here touches a file.
+// ---------------------------------------------------------------------------
+void DrawGridControls(SliceDraft& draft, const eng::TextureRef& texture,
+                      const eng::SliceGeometry& geometry) {
+    if (ImGui::RadioButton("by cell size", !draft.byCount)) {
+        draft.byCount = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("by how many", draft.byCount)) {
+        // Seeded from whatever the cell-size mode was showing, so switching
+        // over does not land on 1 by 1 and lose the place.
+        draft.byCount = true;
+        if (geometry.columns > 0) {
+            draft.columns = geometry.columns;
+            draft.rows    = geometry.rows;
+        }
+    }
+
+    if (draft.byCount) {
+        int counts[2] = {draft.columns, draft.rows};
+        if (ImGui::DragInt2("Across, down", counts, 0.2f, 1, 1024)) {
+            draft.columns = counts[0];
+            draft.rows    = counts[1];
+        }
+        ImGui::TextDisabled("the cell size is worked out from these");
+    } else {
+        int cell[2] = {draft.cellWidth, draft.cellHeight};
+        if (ImGui::DragInt2("Cell size", cell, 0.5f, 1, 4096)) {
+            draft.cellWidth  = cell[0];
+            draft.cellHeight = cell[1];
+        }
+    }
+
+    int padding[2] = {draft.margin, draft.spacing};
+    if (ImGui::DragInt2("Margin, spacing", padding, 0.2f, 0, 1024)) {
+        draft.margin  = padding[0];
+        draft.spacing = padding[1];
+    }
+    ImGui::TextDisabled("margin: the border skipped on all four sides");
+    ImGui::TextDisabled("spacing: the gap between neighbouring cells");
+
+    // ---- the guess --------------------------------------------------------
+    if (ImGui::Button("Guess from the image size")) {
+        int guess = 0;
+        if (texture && eng::GuessSheetCell(texture->width, texture->height, guess)) {
+            draft.byCount    = false;
+            draft.cellWidth  = guess;
+            draft.cellHeight = guess;
+            draft.margin     = 0;
+            draft.spacing    = 0;
+            draft.note       = "guessed " + std::to_string(guess) + " by " +
+                         std::to_string(guess) + " from the dimensions alone - "
+                         "check the preview";
+            draft.noteIsError = false;
+        } else {
+            draft.note = "nothing in this image's dimensions suggests a cell "
+                         "size; set one yourself";
+            draft.noteIsError = true;
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        // SAID WHERE SOMEBODY IS ABOUT TO PRESS IT. "Auto-detect" in other
+        // tools looks at the pixels; this cannot, and a guess that silently
+        // pretended otherwise would be worse than no button.
+        ImGui::SetTooltip("Works from the width and height ONLY.\n"
+                          "The editor has no way to look at the pixels of a\n"
+                          "loaded image, so this cannot find the sprites in\n"
+                          "a sheet with uneven padding. Check the preview.");
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Frames
+// ---------------------------------------------------------------------------
+void DrawFrameList(const std::string& path, eng::TextureImport& settings,
+                   SliceDraft& draft, int imageWidth, int imageHeight) {
+    eng::SheetSlice& sheet = settings.sheet;
+
+    // OPEN BY DEFAULT. This section only exists for an image somebody has
+    // marked as a spritesheet, and for that image the frames ARE the content -
+    // a header you have to open to find out whether slicing worked is a header
+    // in the way.
+    if (!ImGui::CollapsingHeader("Frames", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    if (sheet.frames.empty()) {
+        ImGui::TextDisabled("none yet - set a grid above and press Slice");
+        return;
+    }
+
+    ImGui::TextDisabled("%zu frame(s). Each one loads as its own image:",
+                        sheet.frames.size());
+    ImGui::TextDisabled("%s",
+                        eng::MakeSubAssetPath(path, sheet.frames.front().name).c_str());
+
+    bool changed = false;
+    int  remove  = -1;
+
+    // A BOX WITH ITS OWN SCROLLBAR, because a sheet of a hundred frames would
+    // otherwise push everything below it - the animations, the settings file,
+    // the way back to the defaults - off the bottom of the panel.
+    ImGui::BeginChild("##frames", ImVec2(0.0f, 200.0f), ImGuiChildFlags_Borders);
+    for (std::size_t i = 0; i < sheet.frames.size(); ++i) {
+        eng::SheetFrame& frame = sheet.frames[i];
+
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::TreeNode("##frame", "%s      %d, %d   %d x %d", frame.name.c_str(),
+                            frame.x, frame.y, frame.w, frame.h)) {
+            char name[64];
+            std::snprintf(name, sizeof(name), "%s", frame.name.c_str());
+            if (ImGui::InputText("Name", name, sizeof(name),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                // ======================================================
+                //  THE ANIMATIONS HAVE TO FOLLOW, and this is the only
+                //  place that can do it.
+                //
+                //  An animation holds frame NAMES rather than rectangles,
+                //  deliberately - see SheetAnimation - so that moving a
+                //  rectangle does not have to be chased through everything
+                //  using it. The cost is exactly this: a rename that did
+                //  not update them would leave every animation pointing at
+                //  a name that no longer exists, and a missing name is
+                //  SKIPPED when an animation is resolved. The animation
+                //  would quietly shorten rather than break.
+                // ======================================================
+                const std::string was = frame.name;
+                for (eng::SheetAnimation& animation : sheet.animations) {
+                    for (std::string& member : animation.frames) {
+                        if (member == was) {
+                            member = name;
+                        }
+                    }
+                }
+                frame.name = name;
+                changed    = true;
+            }
+            ImGui::TextDisabled("press Enter to rename");
+
+            int rect[4] = {frame.x, frame.y, frame.w, frame.h};
+            if (ImGui::InputInt4("x, y, w, h", rect,
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                // ==========================================================
+                //  REFUSED HERE, BECAUSE HERE IS WHERE THE IMAGE'S SIZE IS.
+                //
+                //  Save cannot do it: IsLegalSheet is handed a SheetSlice
+                //  with no width or height in it, so "9000" in the w box
+                //  round-trips through the file perfectly and comes back as a
+                //  frame reaching four thousand pixels past the right edge.
+                //  The engine then refuses to cut it, once, in the log - and
+                //  the sprite that asked for it draws the magenta placeholder
+                //  while this list goes on showing the number as if it were
+                //  fine.
+                //
+                //  Two keystrokes is all it takes, so this is not a defensive
+                //  check against a hand-edited file. It is the only thing
+                //  standing between a typo and a frame that cannot load.
+                //
+                //  THE WHOLE RECTANGLE IS REFUSED, not clamped. Clamping w
+                //  from 9000 to 32 would silently answer a different question
+                //  from the one that was asked.
+                // ==========================================================
+                const bool fits = rect[2] > 0 && rect[3] > 0 && rect[0] >= 0 &&
+                                  rect[1] >= 0 && imageWidth > 0 &&
+                                  imageHeight > 0 && rect[2] <= imageWidth &&
+                                  rect[3] <= imageHeight &&
+                                  rect[0] <= imageWidth - rect[2] &&
+                                  rect[1] <= imageHeight - rect[3];
+                if (fits) {
+                    frame.x = rect[0];
+                    frame.y = rect[1];
+                    frame.w = rect[2];
+                    frame.h = rect[3];
+                    changed = true;
+                } else {
+                    draft.note = "that rectangle is not inside the image, which "
+                                 "is " + std::to_string(imageWidth) + " by " +
+                                 std::to_string(imageHeight) + " pixels";
+                    draft.noteIsError = true;
+                }
+            }
+
+            if (ImGui::SmallButton("Look at it")) {
+                EditorState::Get().selectedAsset = eng::MakeSubAssetPath(path,
+                                                                         frame.name);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) {
+                remove = static_cast<int>(i);
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    if (remove >= 0) {
+        // THE ANIMATIONS ARE LEFT ALONE ON PURPOSE. A removed frame's name
+        // stops resolving and is skipped, which is recoverable by putting the
+        // frame back; silently editing it out of every animation is not.
+        sheet.frames.erase(sheet.frames.begin() + remove);
+        changed = true;
+    }
+
+    if (ImGui::Button("Remove every frame")) {
+        sheet.frames.clear();
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Anything using a path like\n"
+                          "\"%s\"\nwill stop finding its picture.",
+                          eng::MakeSubAssetPath(path, "walk_1").c_str());
+    }
+
+    if (changed) {
+        CommitSheet(path, settings, draft);
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Animations
+//
+//  STORED IN THE SAME PLACE AND ADDRESSED THE SAME WAY as a frame, which is
+//  the whole point: "textures/hero.png#walk" is a path like any other, and
+//  anything that can take an image can take it.
+// ---------------------------------------------------------------------------
+void DrawAnimationList(const std::string& path, eng::TextureImport& settings,
+                       SliceDraft& draft, const eng::SliceGeometry& geometry) {
+    eng::SheetSlice& sheet = settings.sheet;
+
+    if (!ImGui::CollapsingHeader("Animations", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    bool changed = false;
+    int  remove  = -1;
+
+    if (sheet.animations.empty()) {
+        ImGui::TextDisabled("none yet");
+    } else {
+        ImGui::BeginChild("##animations", ImVec2(0.0f, 220.0f),
+                          ImGuiChildFlags_Borders);
+        for (std::size_t i = 0; i < sheet.animations.size(); ++i) {
+            eng::SheetAnimation& animation = sheet.animations[i];
+
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::TreeNode("##animation", "%s      %zu frame(s), %.1f fps%s",
+                                animation.name.c_str(), animation.frames.size(),
+                                static_cast<double>(animation.fps),
+                                animation.loop ? ", looping" : ", once")) {
+                char name[64];
+                std::snprintf(name, sizeof(name), "%s", animation.name.c_str());
+                if (ImGui::InputText("Name", name, sizeof(name),
+                                     ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    animation.name = name;
+                    changed        = true;
+                }
+
+                float fps = animation.fps;
+                if (ImGui::InputFloat("Frames a second", &fps, 0.0f, 0.0f, "%.1f",
+                                      ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    // CLAMPED HERE RATHER THAN REFUSED BY Save. A rate of zero
+                    // round-trips through the file perfectly well, so it is not
+                    // IsLegalSheet's business - but it is nobody's intention.
+                    animation.fps = (fps < 0.1f) ? 0.1f : fps;
+                    changed       = true;
+                }
+
+                bool loop = animation.loop;
+                if (ImGui::Checkbox("Repeat for ever", &loop)) {
+                    animation.loop = loop;
+                    changed        = true;
+                }
+
+                bool resume = animation.resume;
+                if (ImGui::Checkbox("Carry on where it left off", &resume)) {
+                    animation.resume = resume;
+                    changed          = true;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "When something plays THIS animation while it is already\n"
+                        "the one loaded, carry on from the frame it stopped on\n"
+                        "rather than starting over.\n\n"
+                        "On for a walk cycle: stopping and walking off again\n"
+                        "should not visibly hitch. Off for a swing or a jump,\n"
+                        "or the second one begins half way through the first.\n\n"
+                        "A clip that ran to its end always starts again - there\n"
+                        "is nothing to carry on with.");
+                }
+
+                ImGui::Spacing();
+                int moveFrom = -1;
+                int moveTo   = -1;
+                int dropped  = -1;
+                for (std::size_t f = 0; f < animation.frames.size(); ++f) {
+                    const std::string& member = animation.frames[f];
+                    ImGui::PushID(static_cast<int>(f));
+
+                    ImGui::Text("%zu.", f + 1);
+                    ImGui::SameLine();
+                    if (sheet.FindFrame(member) != nullptr) {
+                        ImGui::Text("%s", member.c_str());
+                    } else {
+                        // SAID IN RED AND NOT REFUSED. The reader keeps a name
+                        // that matches no frame, and resolving the animation
+                        // skips it - so this is an animation that is quietly
+                        // shorter than it looks, which is worth seeing.
+                        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                                           "%s  - no such frame", member.c_str());
+                    }
+
+                    // DISABLED AT THE ENDS RATHER THAN IGNORED THERE. These used
+                    // to be drawn live and have the press thrown away by a
+                    // trailing condition, so the first row's "up" highlighted,
+                    // depressed, returned true and did nothing at all - a button
+                    // that works and achieves nothing, repeatably.
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(f == 0);
+                    if (ImGui::SmallButton("up")) {
+                        moveFrom = static_cast<int>(f);
+                        moveTo   = static_cast<int>(f) - 1;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(f + 1 >= animation.frames.size());
+                    if (ImGui::SmallButton("down")) {
+                        moveFrom = static_cast<int>(f);
+                        moveTo   = static_cast<int>(f) + 1;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x")) {
+                        dropped = static_cast<int>(f);
+                    }
+                    ImGui::PopID();
+                }
+                if (moveFrom >= 0) {
+                    std::swap(animation.frames[static_cast<std::size_t>(moveFrom)],
+                              animation.frames[static_cast<std::size_t>(moveTo)]);
+                    changed = true;
+                }
+                if (dropped >= 0) {
+                    if (animation.frames.size() == 1) {
+                        // REFUSED HERE, with the reason, rather than offered and
+                        // then refused by Save. An animation with nothing in it
+                        // is dropped by the reader, so the alternative is a
+                        // confusing error on a perfectly reasonable-looking
+                        // click. Deleting the whole animation is right below.
+                        draft.note = "an animation needs at least one frame - "
+                                     "delete the animation instead";
+                        draft.noteIsError = true;
+                    } else {
+                        animation.frames.erase(animation.frames.begin() + dropped);
+                        changed = true;
+                    }
+                }
+
+                // ---- appending a frame ------------------------------------
+                if (!sheet.frames.empty()) {
+                    // Rebuilt every frame the section is open, which is a few
+                    // thousand pointers at the very worst and only while
+                    // somebody is looking at this list.
+                    std::vector<const char*> names;
+                    names.reserve(sheet.frames.size());
+                    for (const eng::SheetFrame& frame : sheet.frames) {
+                        names.push_back(frame.name.c_str());
+                    }
+                    if (draft.pickedFrame >= static_cast<int>(names.size())) {
+                        draft.pickedFrame = 0;
+                    }
+
+                    ImGui::SetNextItemWidth(160.0f);
+                    ImGui::Combo("##pick", &draft.pickedFrame, names.data(),
+                                 static_cast<int>(names.size()));
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Append")) {
+                        animation.frames.push_back(
+                            sheet.frames[static_cast<std::size_t>(draft.pickedFrame)]
+                                .name);
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Append all")) {
+                        for (const eng::SheetFrame& frame : sheet.frames) {
+                            animation.frames.push_back(frame.name);
+                        }
+                        changed = true;
+                    }
+                }
+
+                if (ImGui::SmallButton("Delete this animation")) {
+                    remove = static_cast<int>(i);
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
+
+    if (remove >= 0) {
+        sheet.animations.erase(sheet.animations.begin() + remove);
+        changed = true;
+    }
+
+    // ---- making one -------------------------------------------------------
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputTextWithHint("##newanimation", "walk", draft.newAnimation,
+                             sizeof(draft.newAnimation));
+    ImGui::SameLine();
+    ImGui::BeginDisabled(sheet.frames.empty() || draft.newAnimation[0] == '\0');
+    if (ImGui::Button("Add animation")) {
+        // STARTED WITH EVERY FRAME IN IT, and not empty, because an empty one
+        // cannot be saved: the reader drops an animation that lists no frames,
+        // so writing one would show it until the next reload and then lose it.
+        // Every frame is also the right guess for a sheet that is one strip.
+        eng::SheetAnimation made;
+        made.name = draft.newAnimation;
+        for (const eng::SheetFrame& frame : sheet.frames) {
+            made.frames.push_back(frame.name);
+        }
+        sheet.animations.push_back(std::move(made));
+        changed = true;
+        draft.newAnimation[0] = '\0';
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("a new animation starts with every frame in it;");
+    ImGui::TextDisabled("take out the ones it does not use");
+
+    // ---- the common layout, in one press ----------------------------------
+    //
+    // OFFERED ONLY WHEN THE FRAMES STILL MATCH THE GRID, because that is the
+    // only time "a row" means anything: once a frame has been moved or removed
+    // by hand, the nth group of `columns` frames is not a row of the picture.
+    const bool matchesGrid =
+        geometry.count > 0 && geometry.columns > 0 &&
+        static_cast<long long>(sheet.frames.size()) == geometry.count;
+    if (matchesGrid) {
+        if (ImGui::Button("One animation per row")) {
+            int made    = 0;
+            int skipped = 0;
+            for (int row = 0; row < geometry.rows; ++row) {
+                const std::string name = "row" + std::to_string(row);
+                if (sheet.FindFrame(name) != nullptr ||
+                    sheet.FindAnimation(name) != nullptr) {
+                    ++skipped;
+                    continue;
+                }
+                eng::SheetAnimation animation;
+                animation.name = name;
+                for (int column = 0; column < geometry.columns; ++column) {
+                    const std::size_t index =
+                        static_cast<std::size_t>(row) *
+                            static_cast<std::size_t>(geometry.columns) +
+                        static_cast<std::size_t>(column);
+                    animation.frames.push_back(sheet.frames[index].name);
+                }
+                sheet.animations.push_back(std::move(animation));
+                ++made;
+            }
+            if (made > 0) {
+                changed = true;
+            }
+            draft.note = std::to_string(made) + " animation(s) added" +
+                         (skipped > 0 ? ", " + std::to_string(skipped) +
+                                            " skipped - the name was taken"
+                                      : "");
+            draft.noteIsError = (made == 0);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Most sheets put one movement on each row.\n"
+                              "Makes row0, row1, ... from the %d rows.",
+                              geometry.rows);
+        }
+    }
+
+    if (changed) {
+        CommitSheet(path, settings, draft);
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  The whole spritesheet section
+// ---------------------------------------------------------------------------
+void DrawSheetSection(const std::string& path, eng::TextureImport& settings,
+                      const eng::TextureRef& texture) {
+    SliceDraft& draft = DraftFor(path, settings.sheet);
+
+    // ======================================================================
+    //  "MARKED AS A SPRITESHEET" IS NOT A FLAG IN THE FILE.
+    //
+    //  It is simply whether the sheet block says anything at all - a grid, or
+    //  frames, or both. A separate bool would be a second source of truth
+    //  about the same question, free to disagree with the frames beside it,
+    //  and it would have to be read, written, defaulted and migrated.
+    //
+    //  So ticking the box writes a grid (guessed, or the whole image when
+    //  there is nothing to guess from) and unticking it clears the block. The
+    //  box therefore cannot be ticked without a usable grid underneath it,
+    //  which is the one thing that would make it appear not to stick.
+    // ======================================================================
+    bool marked = !(settings.sheet == eng::SheetSlice{});
+    if (ImGui::Checkbox("This image is a spritesheet", &marked)) {
+        if (!marked) {
+            if (settings.sheet.frames.empty() && settings.sheet.animations.empty()) {
+                settings.sheet = eng::SheetSlice{};
+                CommitSheet(path, settings, draft);
+                return;
+            } else {
+                draft.askUnmark = true;
+            }
+        } else {
+            int guess = 0;
+            if (texture && eng::GuessSheetCell(texture->width, texture->height,
+                                               guess)) {
+                settings.sheet.cellWidth  = guess;
+                settings.sheet.cellHeight = guess;
+            } else if (texture && texture->width > 0 && texture->height > 0) {
+                settings.sheet.cellWidth  = texture->width;
+                settings.sheet.cellHeight = texture->height;
+                draft.note = "no cell size to guess from the dimensions - "
+                             "set one below";
+                draft.noteIsError = false;
+            } else {
+                draft.note        = "the image has to load before it can be sliced";
+                draft.noteIsError = true;
+                return;
+            }
+            CommitSheet(path, settings, draft);
+            return;
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("A spritesheet is one file holding many pictures.\n"
+                          "Slicing it gives each one a name and makes it\n"
+                          "usable anywhere an image is - including tiles.");
+    }
+
+    // ---- giving it up is destructive, so it is asked about ----------------
+    if (draft.askUnmark) {
+        ImGui::OpenPopup("Not a spritesheet?");
+        draft.askUnmark = false;
+    }
+    const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Not a spritesheet?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("This throws away %zu frame(s) and %zu animation(s).",
+                    settings.sheet.frames.size(), settings.sheet.animations.size());
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "Anything already using a path like");
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f), "   %s",
+                           eng::MakeSubAssetPath(path, "walk_1").c_str());
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "will stop finding its picture, and this editor");
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "cannot tell you what that is.");
+
+        bool cleared = false;
+        if (ImGui::Button("Throw them away", ImVec2(150, 0))) {
+            settings.sheet = eng::SheetSlice{};
+            CommitSheet(path, settings, draft);
+            cleared = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Keep them", ImVec2(150, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+
+        if (cleared) {
+            return;
+        }
+    }
+
+    if (!marked) {
+        return;
+    }
+
+    // ---- the slicer -------------------------------------------------------
+    ImGui::Separator();
+
+    // ======================================================================
+    //  A PLACEHOLDER HAS NO SIZE, as far as this panel is concerned.
+    //
+    //  An image that will not decode - a truncated download, a git-lfs
+    //  pointer, a .psd renamed to .png - comes back as the shared 32x32
+    //  magenta square with isPlaceholder set. Taking the size off THAT drew
+    //  a slicing grid over the magenta, offered to re-slice a 512x512 sheet
+    //  into 32x32 frames, and refused a frame's own existing rectangle with
+    //  "that rectangle is not inside the image, which is 32 by 32 pixels" -
+    //  a sentence that is simply false about the file on screen.
+    //
+    //  Zero instead, which every consumer below already treats as "not yet":
+    //  MeasureGrid refuses it with "the image has no size", the preview says
+    //  the image has to load first, and the rectangle editor refuses an edit
+    //  rather than inventing a bound for it.
+    // ======================================================================
+    const bool measurable = texture && !texture->isPlaceholder;
+    const int  imageWidth  = measurable ? texture->width : 0;
+    const int  imageHeight = measurable ? texture->height : 0;
+
+    const eng::SheetSlice    grid = GridOf(draft, imageWidth, imageHeight);
+    const eng::SliceGeometry geometry =
+        eng::MeasureGrid(imageWidth, imageHeight, grid);
+
+    const std::string picked =
+        DrawSlicePreview(texture, settings.sheet, grid, geometry);
+    if (!picked.empty()) {
+        EditorState::Get().selectedAsset = eng::MakeSubAssetPath(path, picked);
+    }
+
+    DrawGridControls(draft, texture, geometry);
+
+    // ---- what that comes to ----------------------------------------------
+    if (geometry.count > 0) {
+        ImGui::Text("%d across, %d down - %lld frame(s) of %d x %d",
+                    geometry.columns, geometry.rows, geometry.count, grid.cellWidth,
+                    grid.cellHeight);
+        if (geometry.leftoverX > 0 || geometry.leftoverY > 0) {
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                               "%d pixel(s) over on the right, %d along the bottom",
+                               geometry.leftoverX, geometry.leftoverY);
+            ImGui::TextDisabled("blank space in the sheet is fine; otherwise one");
+            ImGui::TextDisabled("of the four numbers above is not quite right");
+        }
+    } else {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s",
+                           geometry.reason.c_str());
+    }
+
+    // ---- and the button that writes it down -------------------------------
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputText("Name frames", draft.prefix, sizeof(draft.prefix));
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s0, %s1, ...", draft.prefix, draft.prefix);
+
+    const bool alreadySliced = settings.sheet.IsSliced();
+    if (alreadySliced) {
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "slicing again replaces all %zu frame(s);",
+                           settings.sheet.frames.size());
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f),
+                           "names you have changed will not survive it");
+    }
+
+    ImGui::BeginDisabled(geometry.count <= 0);
+    if (ImGui::Button(alreadySliced ? "Slice again" : "Slice")) {
+        std::string                        reason;
+        const std::vector<eng::SheetFrame> cut =
+            eng::SliceGrid(imageWidth, imageHeight, grid, draft.prefix, reason);
+        if (cut.empty()) {
+            draft.note        = reason;
+            draft.noteIsError = true;
+        } else {
+            // THE GRID IS STORED WITH THE FRAMES so that coming back to this
+            // panel shows what was last asked for rather than starting again.
+            settings.sheet.cellWidth  = grid.cellWidth;
+            settings.sheet.cellHeight = grid.cellHeight;
+            settings.sheet.margin     = grid.margin;
+            settings.sheet.spacing    = grid.spacing;
+            settings.sheet.frames     = cut;
+
+            // THE ANIMATIONS ARE KEPT. They hold frame NAMES, and a re-slice
+            // with the same prefix produces the same names - so an animation
+            // over f0 to f3 still means something afterwards. Throwing them
+            // away would be the one irreversible part of a reversible action.
+            CommitSheet(path, settings, draft);
+        }
+    }
+    ImGui::EndDisabled();
+
+    // THE LIMIT OF ALL OF THIS, SAID ONCE. InvalidateSubAssets cannot reach a
+    // texture something is already holding - the cache is weak - so a sprite
+    // in the open scene goes on drawing the old rectangle until it asks again.
+    //
+    // AN ANIMATION IS THE EXCEPTION NOW, and the difference is worth stating
+    // because it used to be the worst case rather than the best. A
+    // SpriteAnimationComponent holds the frames it is playing, so
+    // InvalidateSubAssets cannot reach them either - but it remembers the
+    // ImportLibrary generation it resolved at, and slicing moves that, so it
+    // re-reads the animation and re-cuts every frame on its next step. See
+    // SpriteAnimation.h.
+    if (alreadySliced) {
+        ImGui::TextDisabled("a sprite already showing one frame keeps it until");
+        ImGui::TextDisabled("the scene is reloaded; a playing animation re-reads");
+        ImGui::TextDisabled("itself and follows this straight away");
+    }
+
+    DrawDraftNote(draft);
+
+    DrawFrameList(path, settings, draft, imageWidth, imageHeight);
+    DrawAnimationList(path, settings, draft, geometry);
+}
+
+// ---------------------------------------------------------------------------
+//  One frame of a sheet, selected on its own
+//
+//  READ-ONLY, AND THAT IS THE POINT. A frame is not a file: it has no settings
+//  of its own, it cannot be renamed here, and ImportLibrary::Save refuses its
+//  path outright - "import settings belong to the whole image, not to one
+//  frame of it". Everything that CAN be changed about it is a property of the
+//  sheet, so this panel's job is to show what it is and offer the way there.
+// ---------------------------------------------------------------------------
+void DrawSubAssetInspector(const std::string& path) {
+    const std::string sheetPath = eng::SheetPathOf(path);
+    const std::string name      = eng::SubAssetNameOf(path);
+
+    const eng::TextureRef& texture = HeldTexture(path);
+    DrawTexturePreview(texture);
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    if (texture && !texture->isPlaceholder) {
+        ImGui::Text("%d x %d pixels", texture->width, texture->height);
+    } else {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           "this frame could not be cut");
+        ImGui::TextDisabled("the log says why - usually a rectangle");
+        ImGui::TextDisabled("that reaches outside the image");
+    }
+    ImGui::TextDisabled("part of a spritesheet");
+    ImGui::EndGroup();
+
+    ImGui::Separator();
+
+    // ======================================================================
+    //  ForTexture IS ASKED ABOUT THE SHEET, NEVER ABOUT THIS PATH.
+    //
+    //  A sidecar's path is derived by APPENDING, so asking about a frame would
+    //  look for "textures/hero.png#walk_1.oimport" - a file that does not and
+    //  must not exist. Everything shown below belongs to the sheet.
+    // ======================================================================
+    const eng::TextureImport sheetSettings = eng::ImportLibrary::ForTexture(sheetPath);
+
+    const eng::SheetFrame*     frame     = sheetSettings.sheet.FindFrame(name);
+    const eng::SheetAnimation* animation = sheetSettings.sheet.FindAnimation(name);
+
+    if (frame != nullptr) {
+        ImGui::Text("Frame '%s'", name.c_str());
+        ImGui::TextDisabled("at %d, %d, %d by %d pixels of the sheet", frame->x,
+                            frame->y, frame->w, frame->h);
+    } else if (animation != nullptr) {
+        ImGui::Text("Animation '%s'", name.c_str());
+        ImGui::TextDisabled("%zu frame(s) at %.1f fps, %s", animation->frames.size(),
+                            static_cast<double>(animation->fps),
+                            animation->loop ? "repeating" : "played once");
+
+        // WHICH FRAME THIS PATH ACTUALLY DRAWS, said plainly. Loading an
+        // animation's path gives its FIRST frame - a still - because a path
+        // names a picture and an animation is not one.
+        if (!animation->frames.empty()) {
+            ImGui::TextDisabled("as an image this is its first frame, '%s'",
+                                animation->frames.front().c_str());
+        }
+
+        // AND WHAT MAKES IT MOVE, which is the question the line above
+        // immediately raises. Dropping this onto an entity does both halves -
+        // the still on the sprite and a component to play it - so the answer
+        // is one gesture rather than an instruction to go and add something.
+        ImGui::TextDisabled("drag it onto an entity to play it: that adds a");
+        ImGui::TextDisabled("Sprite Animation beside the sprite");
+        for (const std::string& member : animation->frames) {
+            if (sheetSettings.sheet.FindFrame(member) == nullptr) {
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                                   "'%s' is not a frame of this sheet",
+                                   member.c_str());
+            }
+        }
+    } else {
+        // The sheet was re-sliced, or the name was changed, while something
+        // was still pointing here.
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           "the sheet has nothing called '%s'", name.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("scaling and slicing belong to the whole sheet:");
+    ImGui::TextDisabled("%s", sheetPath.c_str());
+    if (ImGui::Button("Open the sheet")) {
+        EditorState::Get().selectedAsset = sheetPath;
+    }
+}
+
+void DrawTextureImport(const std::string& path) {
+    const eng::TextureRef& texture = HeldTexture(path);
+
+    DrawTexturePreview(texture);
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    if (texture) {
+        ImGui::Text("%d x %d pixels", texture->width, texture->height);
+        if (texture->isPlaceholder) {
+            // THE SHARED MAGENTA SQUARE, not this image. Worth saying plainly,
+            // because the preview above is showing a picture that is not the
+            // file you selected.
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                               "this image failed to load");
+        } else {
+            // WHAT SDL ACTUALLY HAS, not what the file below asks for. The two
+            // agree whenever the editor made the change; this is how a sidecar
+            // edited outside and not yet re-read shows up as the disagreement
+            // it is, rather than as the panel confidently reporting its own
+            // input back to itself.
+            ImGui::TextDisabled("drawn with %s right now",
+                                eng::Renderer::TextureIsSmooth(texture)
+                                    ? eng::TextureFilterName(eng::TextureFilter::Linear)
+                                    : eng::TextureFilterName(eng::TextureFilter::Nearest));
+        }
+    }
+    ImGui::TextDisabled("the preview is enlarged, so that");
+    ImGui::TextDisabled("the scaling mode is visible in it");
+    ImGui::EndGroup();
+
+    ImGui::Separator();
+
+    eng::TextureImport settings = eng::ImportLibrary::ForTexture(path);
+    if (DrawFilterChoice(settings.filter)) {
+        std::string error;
+        if (eng::ImportLibrary::Save(path, settings, error)) {
+            // THE LIVE TEXTURE TOO, not just the file. Without this the
+            // setting would be right on the next run and appear to do nothing
+            // now, which is indistinguishable from broken.
+            eng::ResourceManager::RefreshImportSettings(path);
+        } else {
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "could not save the import settings for '{}': {}", path,
+                             error);
+        }
+    }
+
+    ImGui::Separator();
+
+    // AFTER THE SCALING AND BEFORE THE FOOTER. Both sections write the same
+    // sidecar, and the footer is what says where that file is - so it belongs
+    // underneath everything that writes to it.
+    //
+    // It writes its own changes rather than reporting them back here, which is
+    // why nothing is done with a return value: see CommitSheet.
+    DrawSheetSection(path, settings, texture);
+
+    DrawSidecarFooter(path);
+}
+
+void DrawFontImport(const std::string& path) {
+    // NO PREVIEW. A font is baked into one atlas PER SIZE, so there is no
+    // single image to show - and the thing you would want to look at is the
+    // text in the Game view, which is already on screen.
+    ImGui::TextDisabled("a font is baked into a separate image for each size");
+    ImGui::TextDisabled("it is used at; this applies to all of them");
+    ImGui::Separator();
+
+    eng::FontImport settings = eng::ImportLibrary::ForFont(path);
+    if (DrawFilterChoice(settings.filter)) {
+        std::string error;
+        if (eng::ImportLibrary::Save(path, settings, error)) {
+            eng::ResourceManager::RefreshImportSettings(path);
+        } else {
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "could not save the import settings for '{}': {}", path,
+                             error);
+        }
+    }
+
+    // SMOOTH IS THE DEFAULT HERE AND NEAREST IS THE DEFAULT FOR AN IMAGE, and
+    // saying so where somebody can see it saves them wondering whether the
+    // panel is confused. A letter is a curve approximated into coverage
+    // values; drawing those unfiltered throws away what makes it look curved.
+    ImGui::TextDisabled("fonts default to Linear, unlike images");
+
+    DrawSidecarFooter(path);
+}
+
+void DrawAssetInspector(const std::string& path) {
+    const std::size_t slash = path.find_last_of('/');
+    const std::string name  = (slash == std::string::npos) ? path
+                                                           : path.substr(slash + 1);
+
+    ImGui::Text("%s", name.c_str());
+    ImGui::TextDisabled("%s", path.c_str());
+    ImGui::Separator();
+
+    // ======================================================================
+    //  A FRAME OF A SHEET IS NOT A FILE, AND THIS TEST COMES FIRST.
+    //
+    //  Before the switch below, because ClassifyAsset deliberately answers
+    //  Texture for "textures/hero.png#walk_1" - a frame of an image is an
+    //  image, which is what makes one draggable onto an entity. Falling into
+    //  DrawTextureImport with that path would ask ImportLibrary about
+    //  "textures/hero.png#walk_1.oimport": a sidecar that does not and must
+    //  not exist, since a sidecar's path is derived by APPENDING. Every
+    //  setting shown would be a default, and every change would be refused.
+    //
+    //  So it is taken before ANY ImportLibrary call. See DrawSubAssetInspector
+    //  for the one call it does make, which is about the sheet.
+    // ======================================================================
+    if (eng::IsSubAsset(path)) {
+        DrawSubAssetInspector(path);
+        return;
+    }
+
+    switch (ClassifyAsset(path)) {
+        case AssetKind::Texture:
+            DrawTextureImport(path);
+            return;
+        case AssetKind::Font:
+            DrawFontImport(path);
+            return;
+
+        // ---- everything else -------------------------------------------
+        //
+        // SAID OUT LOUD RATHER THAN LEFT BLANK, and each one points at where
+        // that kind of file IS edited. An empty Inspector after clicking a
+        // file reads as a panel that has failed, and the question somebody
+        // actually has is "then where do I change this?".
+        case AssetKind::Scene:
+            ImGui::TextDisabled("a scene has no import settings.");
+            ImGui::TextDisabled("double-click it to open it.");
+            return;
+        case AssetKind::Prefab:
+            ImGui::TextDisabled("a prefab has no import settings.");
+            ImGui::TextDisabled("double-click it to place one, then edit that.");
+            return;
+        case AssetKind::Tile:
+            ImGui::TextDisabled("a tile's settings are its own file.");
+            ImGui::TextDisabled("double-click it to open the Tile Palette.");
+            return;
+        case AssetKind::Script:
+            ImGui::TextDisabled("a script has no import settings.");
+            ImGui::TextDisabled("its variables appear on the entity it is attached to.");
+            return;
+        case AssetKind::Unknown:
+            break;
+    }
+
+    ImGui::TextDisabled("this kind of file has no import settings.");
+}
+
+} // namespace
+
+// Nothing but letting the preview go. See ForgetHeldTexture.
+InspectorPanel::~InspectorPanel() {
+    ForgetHeldTexture();
+}
+
 void InspectorPanel::Draw() {
     // FIRST, before anything reads the component list - including the early
     // return below for "nothing is selected". Carrying it out at the end of
@@ -1747,6 +4154,44 @@ void InspectorPanel::Draw() {
 
     EditorState& state = EditorState::Get();
     eng::Scene&  scene = eng::Engine::Get().GetScene();
+
+    // ---- a FILE is selected, not an entity --------------------------------
+    //
+    // AFTER ApplyPendingRemoval and before anything reads a component list.
+    // Returning here is safe for one reason and it is worth stating: the only
+    // work this function owes anybody regardless of what is selected is that
+    // pending removal, and it has already happened - which is exactly why
+    // that call is the first line of this function rather than the last.
+    //
+    // ONE RULE, NO RECENCY. A file selected means a file shown; selecting an
+    // entity clears it. See EditorState::selectedAsset.
+    //
+    // ======================================================================
+    //  NOT WHILE SOMETHING IS BEING DRAGGED, and that condition is the whole
+    //  reason this branch is not simply "is a file selected".
+    //
+    //  The Assets panel selects on mouse-DOWN - deliberately, so that a click
+    //  which turns into a drag still selects what it started from. That is the
+    //  SAME press that begins the drag. Without this test the Inspector
+    //  switched to the asset view the instant an image was picked up, taking
+    //  every drop target in it along too, so dragging an image from the Assets
+    //  panel onto an entity here was not awkward, it was impossible.
+    //
+    //  While something is in flight, what you need to see is the thing you are
+    //  dropping ONTO. ImGui::IsDragDropActive is from imgui_internal.h, which
+    //  this file already includes for BeginDragDropTargetCustom.
+    // ======================================================================
+    if (!state.selectedAsset.empty() && !ImGui::IsDragDropActive()) {
+        // A COPY, NOT THE MEMBER. Three things inside DrawAssetInspector
+        // reassign selectedAsset - "Look at it", a frame clicked in the slice
+        // preview, and "Open the sheet" - and it was being handed a reference
+        // to the very string they write. The rest of the function then
+        // described a different asset from the one it had started on, with the
+        // header it had already drawn naming the old one. One copy a frame.
+        const std::string selected = state.selectedAsset;
+        DrawAssetInspector(selected);
+        return;
+    }
 
     // Looked up from the ID every frame. A selection that has been destroyed
     // comes back as nothing and is reported, rather than crashing - which is
@@ -1779,6 +4224,13 @@ void InspectorPanel::Draw() {
                 continue;
             }
             const auto* path = static_cast<const char*>(payload->Data);
+
+            // THE ENTITY IS WHAT THIS PANEL SHOULD DESCRIBE NOW. The file was
+            // selected on mouse-down, before the drag began; having landed it
+            // on an entity, what somebody wants to look at is the entity that
+            // just changed, not the file it came from.
+            state.selectedAsset.clear();
+
             if (ApplyAssetToEntity(state.selected, path, message)) {
                 ENGINE_LOG_INFO(eng::Channels::kEditor, "{}", message);
             } else {
@@ -1825,9 +4277,22 @@ void InspectorPanel::Draw() {
         ImGui::TextDisabled("below: the components of the active entity only");
     }
 
-    ImGui::Text("%s", entity->Name().c_str());
+    // The name in blue when this entity belongs to a prefab, exactly as the
+    // Hierarchy colours its row - the one signal that says editing this is
+    // editing one copy of something.
+    if (scene.PrefabInstanceOf(entity->Id()) != nullptr) {
+        ImGui::TextColored(kPrefabBlue, "%s", entity->Name().c_str());
+    } else {
+        ImGui::Text("%s", entity->Name().c_str());
+    }
+
+    // A PREFAB'S CHILD CANNOT BE DESTROYED ON ITS OWN, and the button says so
+    // rather than refusing after the click. DestroyEntity refuses it too -
+    // this is the explanation, not the enforcement. See IsPrefabChild.
+    const bool locked = IsPrefabChild(entity->Id());
 
     ImGui::SameLine(ImGui::GetWindowWidth() - 90.0f);
+    ImGui::BeginDisabled(locked);
     if (ImGui::Button("Destroy")) {
         // Answer 3: through the deferred queue, like everything else - and
         // through the one shared door, which is what marks the scene so undo
@@ -1836,8 +4301,77 @@ void InspectorPanel::Draw() {
         // DestroyEntity in EditorApp.h.
         DestroyEntity(entity->Id());
     }
+    ImGui::EndDisabled();
+    if (locked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", PrefabChildRefusal());
+    }
+
+    // ---- switched on, and what kind of thing it is -----------------------
+    //
+    // Both on one row, directly under the name, because both are properties
+    // of the ENTITY rather than of any component - the same place Unity puts
+    // them and the first place anybody looks.
+    {
+        bool active = entity->IsActiveSelf();
+        if (ImGui::Checkbox("##active", &active)) {
+            entity->SetActive(active);
+            EditorState::Get().MarkDirty();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Switched on. An entity that is off keeps everything it has but "
+                "nothing acts on it: it is not drawn, it does not collide, its "
+                "scripts do not run, and it is invisible to every physics query.\n\n"
+                "Switching off a parent switches off everything under it.");
+        }
+
+        // THE REASON IT LOOKS OFF WHEN THE BOX IS TICKED, said rather than
+        // left to be puzzled over. Switching off a parent is the one way an
+        // entity can be inactive while its own flag is true, and without this
+        // line the Hierarchy greys it out for no visible reason.
+        if (active && !entity->IsActiveInHierarchy()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 1.0f), "off: a parent is off");
+        } else {
+            ImGui::SameLine();
+            ImGui::TextDisabled("on");
+        }
+
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Tag");
+        ImGui::SameLine();
+
+        char tagBuffer[64] = {};
+        const std::string& tag = entity->Tag();
+        std::snprintf(tagBuffer, sizeof(tagBuffer), "%s", tag.c_str());
+
+        ImGui::SetNextItemWidth(130.0f);
+        if (ImGui::InputText("##tag", tagBuffer, sizeof(tagBuffer))) {
+            entity->SetTag(tagBuffer);
+            EditorState::Get().MarkDirty();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "What KIND of thing this is - \"Player\", \"Enemy\", \"Pickup\".\n\n"
+                "Unlike the name, a tag is not unique, so every bullet can carry "
+                "the same one. Unlike a collision layer, it changes nothing about "
+                "what this collides with, and it works on things that have no "
+                "collider at all.\n\n"
+                "A script asks entity->HasTag(\"Enemy\"), or "
+                "FindEntityWithTag(\"Player\").");
+        }
+    }
 
     ImGui::Separator();
+
+    // ---- which prefab, and what has been changed about this instance ------
+    //
+    // Before the components, because it is about all of them. The list comes
+    // back so that the components below can mark themselves without running
+    // the diff again.
+    const std::vector<eng::PrefabOverrideItem> prefabOverrides =
+        DrawPrefabBlock(*entity);
+    const int prefabLocalId = scene.PrefabLocalIdOf(entity->Id());
 
     // WALKED BY INDEX rather than with ForEachComponent, because removing
     // needs to say WHICH component - not which type. An entity can hold
@@ -1848,12 +4382,18 @@ void InspectorPanel::Draw() {
     // Re-reading ComponentCount each time round is what makes it safe for the
     // body to add a component, which is the same reason ForEachComponent is
     // written this way. Removal is deferred and so does not come into it.
+    // Which of several components of the same type this is - the second
+    // ScriptComponent is slot 1 - because that is how an override names one.
+    // Counted as the loop walks, which is the same order the diff walks in.
+    std::map<std::string, int> slotsSeen;
+
     for (std::size_t i = 0; i < entity->ComponentCount(); ++i) {
         eng::Component* componentPtr = entity->ComponentAt(i);
         if (componentPtr == nullptr) {
             continue;
         }
         eng::Component& component = *componentPtr;
+        const int       slot      = slotsSeen[component.TypeName()]++;
 
         // PushID makes every widget inside this block unique to this
         // component, so two components with a field called "Offset" do not end
@@ -1911,12 +4451,25 @@ void InspectorPanel::Draw() {
         // CollapsingHeader draws its own x when given somewhere to report it,
         // which is the ordinary way a panel like this offers "remove". `keep`
         // comes back false on the frame the x is clicked.
+        // BLUE WHEN THIS COMPONENT HAS BEEN CHANGED on this instance, so that
+        // a collapsed one still says there is something inside it. Unity puts
+        // the component name in bold blue for the same reason.
+        const bool overridden =
+            ComponentIsOverridden(prefabOverrides, prefabLocalId, typeName, slot);
+        if (overridden) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kPrefabBlue);
+        }
+
         bool       keep = true;
         const bool open = removable
                               ? ImGui::CollapsingHeader(header, &keep,
                                                         ImGuiTreeNodeFlags_DefaultOpen)
                               : ImGui::CollapsingHeader(header,
                                                         ImGuiTreeNodeFlags_DefaultOpen);
+
+        if (overridden) {
+            ImGui::PopStyleColor();
+        }
 
         // The same thing by right-click, because an x is easy to miss and
         // impossible to find by looking for the word "remove". Attached to the
@@ -1967,6 +4520,9 @@ void InspectorPanel::Draw() {
                 DrawRigidbody(static_cast<eng::Rigidbody2DComponent&>(component));
             } else if (type == eng::TilemapComponent::kTypeName) {
                 DrawTilemap(static_cast<eng::TilemapComponent&>(component));
+            } else if (type == eng::SpriteAnimationComponent::kTypeName) {
+                DrawSpriteAnimation(
+                    static_cast<eng::SpriteAnimationComponent&>(component));
             } else if (type == eng::SpinComponent::kTypeName) {
                 DrawSpin(static_cast<eng::SpinComponent&>(component));
             } else if (type == eng::ScriptComponent::kTypeName) {
@@ -1989,6 +4545,11 @@ void InspectorPanel::Draw() {
                 // not there.
                 ImGui::TextDisabled("no editor written for this component type yet");
             }
+
+            // AFTER the fields, so the list of what differs reads as a summary
+            // of what is above it rather than as a header for it.
+            DrawComponentOverrides(prefabOverrides, entity->Id(), prefabLocalId,
+                                   typeName, slot);
         }
         ImGui::PopID();
     }

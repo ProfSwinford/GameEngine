@@ -330,6 +330,25 @@ public:
 
     // Clears the per-step flags. Called at the top of a step.
     static void BeginStep(Scene& scene);
+
+    // ---- reading the pointer back -----------------------------------------
+    //
+    // WHAT THIS IS FOR: it is the only correct answer to "where is the mouse"
+    // for game code, and the obvious answer is wrong. EventPump::MouseX gives
+    // WINDOW pixels, which in a shipped game happen to be right and in the
+    // editor are out by the whole width of the panel border - so a script
+    // written against the pump works when the game is played and picks the
+    // wrong tile when the same scene is run in the Game view. The value here
+    // has already been put into view space by whoever owns the view.
+    //
+    // input/Pointer.h is the front door for this; these exist so that it has
+    // something to read. See that header for the world-space version.
+    static Vec2 PointerPosition();
+    static Vec2 PointerViewport();
+    static bool PointerIsActive();
+    static bool PointerIsDown();
+    static bool PointerWentDown();
+    static bool PointerWentUp();
 };
 
 } // namespace eng

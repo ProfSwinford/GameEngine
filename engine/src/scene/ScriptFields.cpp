@@ -51,6 +51,7 @@ const char* ScriptFieldTypeName(ScriptFieldType type) {
         case ScriptFieldType::Vec2:   return "position";
         case ScriptFieldType::Color:  return "colour";
         case ScriptFieldType::Entity: return "entity";
+        case ScriptFieldType::Prefab: return "prefab";
     }
     return "unknown";
 }
@@ -82,6 +83,10 @@ Color* ScriptField::AsColor() const {
 }
 EntityRef* ScriptField::AsEntityRef() const {
     return type == ScriptFieldType::Entity ? static_cast<EntityRef*>(value) : nullptr;
+}
+
+PrefabRef* ScriptField::AsPrefabRef() const {
+    return type == ScriptFieldType::Prefab ? static_cast<PrefabRef*>(value) : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +148,31 @@ void ScriptFields::Add(std::string_view name, ScriptFieldType type, void* value,
     }
 
     m_fields.push_back(std::move(field));
+}
+
+void ScriptFields::AddAsset(std::string_view name, std::string* value,
+                            std::string_view kind, std::string_view tooltip) {
+    // THE KINDS THE INSPECTOR HAS A SLOT FOR. Anything else is almost
+    // certainly a tooltip written where the kind goes - the same mistake
+    // AddRef guards against, and worth the same sentence.
+    const bool known = (kind == "image") || (kind == "texture") ||
+                       (kind == "sprite") || (kind == "animation");
+    if (!known) {
+        ENGINE_LOG_WARN(Channels::kScene,
+                        "the variable '{}' is marked [{}], which is not a kind of "
+                        "asset this engine can draw a slot for - it knows 'image' "
+                        "and 'animation'. It will be shown as ordinary text.",
+                        name, kind);
+    }
+
+    Add(name, ScriptFieldType::String, value, tooltip, false, 0.0f, 0.0f);
+
+    // Written after the fact for the same reason as AddRef's: Add already
+    // takes seven arguments, and a marker only two field types can carry does
+    // not belong in the signature every other type pays for.
+    if (known && !m_fields.empty() && m_fields.back().name == name) {
+        m_fields.back().requiredType = std::string(kind);
+    }
 }
 
 void ScriptFields::AddRef(std::string_view name, EntityRef* value,
@@ -216,6 +246,7 @@ bool JsonFitsFieldType(ScriptFieldType type, const Json& value) {
 
         case ScriptFieldType::String:
         case ScriptFieldType::Entity:
+        case ScriptFieldType::Prefab:
             // An entity reference IS a string in the file - the target's name.
             // Nothing here checks that anything answers to it: a scene saved
             // half-built refers to entities that do not exist yet, and
@@ -259,6 +290,10 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
                 break;
             case ScriptFieldType::Entity:
                 outError += " written as the target entity's name, like \"Player\"";
+                break;
+            case ScriptFieldType::Prefab:
+                outError += " written as the prefab's path, like "
+                            "\"prefabs/bullet.oprefab\"";
                 break;
             default:
                 break;
@@ -304,6 +339,10 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
                 field.AsEntityRef()->Set(value.get<std::string>());
                 return true;
 
+            case ScriptFieldType::Prefab:
+                field.AsPrefabRef()->Set(value.get<std::string>());
+                return true;
+
             case ScriptFieldType::Vec2:
                 *field.AsVec2() = Vec2{value[0].get<float>(), value[1].get<float>()};
                 return true;
@@ -347,6 +386,12 @@ Json FieldToJson(const ScriptField& field) {
             // was never set - and would do it the first time the scene was
             // saved, which is to say immediately.
             return Json(field.AsEntityRef()->TargetName());
+
+        case ScriptFieldType::Prefab:
+            // The path as stored, for exactly the reason above: a prefab that
+            // has been moved is a reference somebody can see and put right,
+            // and blanking it would destroy the only record of what was meant.
+            return Json(field.AsPrefabRef()->Path());
 
         case ScriptFieldType::Vec2: {
             const Vec2 v = *field.AsVec2();

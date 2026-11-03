@@ -8,6 +8,7 @@
 #include "panels/InspectorPanel.h"
 
 #include "EditorApp.h"
+#include "ScriptBuild.h"
 #include "Shortcuts.h"
 
 #include <imgui.h>
@@ -32,9 +33,29 @@ void ToolbarPanel::Draw() {
     //
     // That is what makes it safe to press Play on something you have been
     // editing for an hour, and it is the most important behaviour here.
+    // ======================================================================
+    //  PLAY IS REFUSED WHILE THE SCRIPTS ARE BEING COMPILED.
+    //
+    //  A build UNLOADS the script libraries for its whole duration - see
+    //  ScriptBuild::BeginBuild - and on a project the editor has not compiled
+    //  before, that duration is the first eight to fifteen seconds of the
+    //  session. The editor is fully interactive throughout, so without this
+    //  there is a green Play button that starts a scene in which every
+    //  behaviour is unbound: the game runs and nothing moves, which is
+    //  indistinguishable from scripts that do not work. That is exactly the
+    //  bug this was reported as.
+    //
+    //  DISABLED RATHER THAN HIDDEN, and never for Stop: the toolbar keeps its
+    //  shape, and the tooltip below says what is happening and how long it is
+    //  likely to be. A button you cannot press and which tells you why is a
+    //  far better answer than one that works and achieves nothing.
+    // ======================================================================
+    const bool building = !playing && ScriptBuild::IsBuilding();
+
     ImGui::PushStyleColor(ImGuiCol_Button,
                           playing ? ImVec4(0.62f, 0.24f, 0.22f, 1.0f)    // red for Stop
                                   : ImVec4(0.20f, 0.45f, 0.26f, 1.0f));  // green for Play
+    ImGui::BeginDisabled(building);
     if (ImGui::Button(playing ? "Stop" : "Play", ImVec2(72, 0))) {
         if (playing) {
             engine.ExitPlayMode();
@@ -47,6 +68,7 @@ void ToolbarPanel::Draw() {
             }
         }
     }
+    ImGui::EndDisabled();
     ImGui::PopStyleColor();
 
     // ---- THE CHORD, ON THE BUTTON ---------------------------------------
@@ -55,9 +77,19 @@ void ToolbarPanel::Draw() {
     // menu item, so a tooltip is the only place somebody could find out. The
     // string comes from the same table the key check reads - see Shortcuts.h
     // - so it cannot end up advertising a key that has moved.
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s - takes a snapshot of the scene, and puts it back on Stop",
-                          Shortcuts::Hint(Shortcuts::Action::PlayStop));
+    // AllowWhenDisabled, so the one case where somebody most needs the
+    // explanation is the one case they could still read it - the same flag
+    // the Pause and Step tooltips below already use.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (building) {
+            ImGui::SetTooltip("the scripts are being compiled - Play would run a\n"
+                              "scene with none of its behaviour attached.\n"
+                              "This usually takes a few seconds.");
+        } else {
+            ImGui::SetTooltip(
+                "%s - takes a snapshot of the scene, and puts it back on Stop",
+                Shortcuts::Hint(Shortcuts::Action::PlayStop));
+        }
     }
     ImGui::SameLine();
 

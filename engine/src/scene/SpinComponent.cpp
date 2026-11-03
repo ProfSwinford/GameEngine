@@ -89,7 +89,7 @@ void SpinSystem::Update(float deltaSeconds) {
             continue;
         }
         Transform2D* transform = spin->OwnerTransform();
-        if (transform == nullptr) {
+        if (transform == nullptr || !spin->OwnerIsActive()) {
             continue;
         }
 

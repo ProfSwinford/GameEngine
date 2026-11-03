@@ -154,6 +154,14 @@ public:
         std::string binding;
     };
     static void Snapshot(std::vector<BindingInfo>& out);
+
+    // Is ANYTHING bound at all?
+    //
+    // For the editor, which can then say so where somebody is looking. A
+    // project whose settings file has no "input" section loads, runs every
+    // script, and answers no to every key - and the only trace is one warning
+    // during start-up, long scrolled away by the time Play is pressed.
+    static bool HasBindings();
 };
 
 } // namespace eng

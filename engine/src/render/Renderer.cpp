@@ -332,6 +332,39 @@ void Renderer::DrawTextFont(const FontRef& font, Vec2 topLeft, std::string_view 
     SDL_SetTextureAlphaMod(sdlTexture, 255);
 }
 
+void Renderer::SetTextureFilter(const TextureRef& texture, bool smooth) {
+    if (!texture || texture->native == nullptr) {
+        return;
+    }
+
+    // THE ONE REFUSAL THAT MATTERS. ResourceManager hands the same placeholder
+    // texture to every image that would not load, so a caller holding "the
+    // texture for textures/typo.png" may in fact be holding the one magenta
+    // square the whole project shares. Filtering that on its behalf would
+    // change it for every other failed sprite too. See Renderer.h.
+    if (texture->isPlaceholder) {
+        return;
+    }
+
+    SDL_SetTextureScaleMode(static_cast<SDL_Texture*>(texture->native),
+                            smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+}
+
+bool Renderer::TextureIsSmooth(const TextureRef& texture) {
+    if (!texture || texture->native == nullptr) {
+        return false;
+    }
+
+    SDL_ScaleMode mode = SDL_SCALEMODE_NEAREST;
+    if (!SDL_GetTextureScaleMode(static_cast<SDL_Texture*>(texture->native), &mode)) {
+        // Asked and not answered. NEAREST is the safer thing to report,
+        // because it is what the loader defaults to - so a failure here reads
+        // as "the default" rather than as a setting nobody chose.
+        return false;
+    }
+    return mode == SDL_SCALEMODE_LINEAR;
+}
+
 // ---------------------------------------------------------------------------
 //  Sprites
 // ---------------------------------------------------------------------------

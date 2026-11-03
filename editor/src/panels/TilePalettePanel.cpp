@@ -1,5 +1,6 @@
 #include "TilePalettePanel.h"
 
+#include "../AssetDragDrop.h"   // kPayloadTexture, for dropping art on a tile
 #include "../EditorApp.h"
 
 #include <imgui.h>
@@ -42,11 +43,12 @@ std::string ShortName(const std::string& virtualPath) {
     return name;
 }
 
-// A preview of one tile: the Fill band, which is the tile as it looks in the
-// middle of a solid area and so the one that reads as "this material".
+// A preview of one tile: for an auto-tile the Fill band, which is the tile as
+// it looks in the middle of a solid area and so the one that reads as "this
+// material"; for an image tile, the picture, which is all there is.
 void DrawTilePreview(const eng::TileAsset& asset, float size) {
-    const eng::TextureRef& sheet = asset.Sheet();
-    if (!asset.HasSheet() || !sheet || sheet->native == nullptr ||
+    const eng::TextureRef& sheet = asset.ArtTexture();
+    if (!asset.HasArt() || !sheet || sheet->native == nullptr ||
         sheet->width <= 0 || sheet->height <= 0) {
         // A connector has no art at all, so it gets its editor tint as a
         // swatch - which is the same thing it draws in the Scene view.
@@ -61,10 +63,14 @@ void DrawTilePreview(const eng::TileAsset& asset, float size) {
     }
 
     // The Fill band is the LAST of the five, so it starts four fifths of the
-    // way down. Frame 0 is the leftmost column.
+    // way down. Frame 0 is the leftmost column. An image tile has one band and
+    // starts at the top.
     const float frameWidth = static_cast<float>(asset.TileSize()) /
                              static_cast<float>(sheet->width);
-    const ImVec2 uv0(0.0f, 4.0f / static_cast<float>(eng::kSheetBands));
+    const float top        = asset.IsAutoTile()
+                                 ? 4.0f / static_cast<float>(eng::kSheetBands)
+                                 : 0.0f;
+    const ImVec2 uv0(0.0f, top);
     const ImVec2 uv1(frameWidth, 1.0f);
 
     ImGui::Image(reinterpret_cast<ImTextureID>(sheet->native), ImVec2(size, size),
@@ -468,9 +474,22 @@ namespace {
 // than placing them directly.
 void DrawAssembledTile(ImDrawList* draw, const eng::TileAsset& asset,
                        unsigned char mask, ImVec2 topLeft, float size, int frame) {
-    const eng::TextureRef& sheet = asset.Sheet();
-    if (!asset.HasSheet() || !sheet || sheet->native == nullptr ||
+    const eng::TextureRef& sheet = asset.ArtTexture();
+    if (!asset.HasArt() || !sheet || sheet->native == nullptr ||
         sheet->width <= 0 || sheet->height <= 0) {
+        return;
+    }
+
+    // AN IMAGE TILE HAS NOTHING TO ASSEMBLE, so every arrangement of
+    // neighbours is the same square. Drawn here rather than refused, because
+    // this is what the brush cursor and the palette grid both call.
+    if (!asset.IsAutoTile()) {
+        const float wide = static_cast<float>(asset.TileSize()) /
+                           static_cast<float>(sheet->width);
+        const float u0   = static_cast<float>(frame) * wide;
+        draw->AddImage(reinterpret_cast<ImTextureID>(sheet->native), topLeft,
+                       ImVec2(topLeft.x + size, topLeft.y + size), ImVec2(u0, 0.0f),
+                       ImVec2(u0 + wide, 1.0f));
         return;
     }
 
@@ -606,9 +625,26 @@ void TilePalettePanel::RefreshTilemapsUsing(const std::string& otilePath) {
     });
 }
 
+// The picture an image tile draws, at the frame the slider is on. The whole of
+// the preview for that kind - which is the point of the kind.
+void TilePalettePanel::DrawImagePreview(const eng::TileAsset& asset) {
+    const eng::TextureRef& art = asset.ArtTexture();
+    if (!asset.HasArt() || !art || art->native == nullptr || art->width <= 0) {
+        return;
+    }
+
+    const float width      = 96.0f;
+    const float frameWidth = static_cast<float>(asset.TileSize()) /
+                             static_cast<float>(art->width);
+    const float u0         = static_cast<float>(m_previewFrame) * frameWidth;
+
+    ImGui::Image(reinterpret_cast<ImTextureID>(art->native), ImVec2(width, width),
+                 ImVec2(u0, 0.0f), ImVec2(u0 + frameWidth, 1.0f));
+}
+
 void TilePalettePanel::DrawBandStrip(const eng::TileAsset& asset) {
-    const eng::TextureRef& sheet = asset.Sheet();
-    if (!asset.HasSheet() || !sheet || sheet->native == nullptr || sheet->width <= 0) {
+    const eng::TextureRef& sheet = asset.ArtTexture();
+    if (!asset.HasArt() || !sheet || sheet->native == nullptr || sheet->width <= 0) {
         return;
     }
 
@@ -713,12 +749,64 @@ void TilePalettePanel::DrawTileEditor() {
     const bool        valid = probe.Deserialize(m_editJson, why);
 
     // ---- the fields -------------------------------------------------------
-    char sheetBuffer[256];
-    std::snprintf(sheetBuffer, sizeof(sheetBuffer), "%s",
-                  JsonString(m_editJson, "sheet", "").c_str());
-    if (ImGui::InputText("Sheet", sheetBuffer, sizeof(sheetBuffer))) {
-        m_editJson["sheet"] = sheetBuffer;
-        m_editDirty         = true;
+    //
+    // WHICH KIND OF ART FIRST, because in a .otile the KEY is the kind: a
+    // "sheet" is assembled from five bands and an "image" is drawn whole. See
+    // engine/include/engine/tilemap/TileAsset.h.
+    bool isImage = m_editJson.contains("image");
+    {
+        int kind = isImage ? 1 : 0;
+        if (ImGui::Combo("Art", &kind,
+                         "Sheet - five bands, joins up\0Image - one picture\0")) {
+            // THE PATH MOVES ACROSS and the derived numbers are DROPPED. A
+            // tileSize worked out for one kind is wrong by a factor of five
+            // for the other, and a stale one would fail the load rather than
+            // be re-measured. See TileAsset.h on why they are derived.
+            const std::string path = isImage ? JsonString(m_editJson, "image", "")
+                                             : JsonString(m_editJson, "sheet", "");
+            m_editJson.erase("image");
+            m_editJson.erase("sheet");
+            m_editJson.erase("tileSize");
+            m_editJson.erase("frames");
+
+            isImage                                = (kind == 1);
+            m_editJson[isImage ? "image" : "sheet"] = path;
+            m_editDirty                             = true;
+        }
+    }
+
+    char artBuffer[256];
+    std::snprintf(artBuffer, sizeof(artBuffer), "%s",
+                  JsonString(m_editJson, isImage ? "image" : "sheet", "").c_str());
+    if (ImGui::InputText(isImage ? "Picture" : "Sheet", artBuffer,
+                         sizeof(artBuffer))) {
+        m_editJson[isImage ? "image" : "sheet"] = artBuffer;
+        m_editDirty                             = true;
+    }
+
+    // ======================================================================
+    //  DROPPED FROM THE ASSETS PANEL AS WELL AS TYPED - an addition here,
+    //  where the Inspector's reference slots are a replacement.
+    //
+    //  The difference is what is being edited. A component's sprite reference
+    //  is a reference, so it shows a NAME and the path is incidental. This is
+    //  a FIELD OF A FILE: the panel re-reads its own buffer every frame
+    //  precisely so that a wrong path turns red as you type it, and a frame of
+    //  a sliced sheet is typed here as "textures/atlas.png#rock". Taking the
+    //  text box away would take that with it.
+    // ======================================================================
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload =
+                ImGui::AcceptDragDropPayload(kPayloadTexture)) {
+            m_editJson[isImage ? "image" : "sheet"] =
+                static_cast<const char*>(payload->Data);
+            m_editDirty = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+    if (isImage) {
+        ImGui::TextDisabled("one frame of a sliced sheet works here too, "
+                            "e.g. textures/atlas.png#rock");
     }
 
     bool connector = JsonBool(m_editJson, "connector", false);
@@ -921,8 +1009,20 @@ void TilePalettePanel::DrawTileEditor() {
         m_previewFrame = 0;
     }
 
-    if (!probe.HasSheet()) {
+    if (!probe.HasArt()) {
         ImGui::TextDisabled("a connector has no art, so there is nothing to preview");
+        return;
+    }
+
+    // NEITHER OF THESE MEANS ANYTHING FOR AN IMAGE TILE, and showing them
+    // greyed out would suggest the kind was a limitation rather than a choice.
+    // One picture has no bands to be in the wrong order and no shapes to vary,
+    // which is said plainly instead.
+    if (!probe.IsAutoTile()) {
+        ImGui::SeparatorText("The picture");
+        DrawImagePreview(probe);
+        ImGui::TextDisabled("an image tile looks the same in every cell: there are no "
+                            "bands to check and no shapes to vary");
         return;
     }
 

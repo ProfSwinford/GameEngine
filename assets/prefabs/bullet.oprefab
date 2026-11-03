@@ -1,0 +1,45 @@
+{
+  "prefab": 1,
+  "name": "Bullet",
+  "root": 1,
+  "_note": "The worked example for assets/scripts/Gun.cpp. Drag this onto a Gun script's 'bullet' slot in the Inspector. A trigger collider rather than a solid one, so it reports what it passes through instead of pushing it.",
+  "entities": [
+    {
+      "id": 1,
+      "name": "Bullet",
+      "tag": "Bullet",
+      "components": [
+        {
+          "type": "TransformComponent",
+          "position": [0.0, 0.0],
+          "rotation": 0.0,
+          "scale": [1.0, 1.0]
+        },
+        {
+          "type": "SpriteComponent",
+          "texture": "textures/checker_red.bmp",
+          "tint": [255, 220, 120, 255],
+          "layer": 10,
+          "size": [12.0, 6.0]
+        },
+        {
+          "type": "Rigidbody2DComponent",
+          "bodyType": "Dynamic",
+          "gravityScale": 0.0,
+          "freezeRotation": true
+        },
+        {
+          "type": "BoxColliderComponent",
+          "size": [12.0, 6.0],
+          "trigger": true,
+          "layer": "Default",
+          "collidesWith": ["Default"]
+        },
+        {
+          "type": "ScriptComponent",
+          "script": "Bullet"
+        }
+      ]
+    }
+  ]
+}

@@ -776,8 +776,15 @@ TEST_CASE("the broad phase skips pairs that are nowhere near each other") {
     SceneFixture fixture;
 
     for (int i = 0; i < 40; ++i) {
-        eng::Entity* entity =
-            fixture.Add("Spread", eng::Vec2{static_cast<float>(i) * 500.0f, 0.0f});
+        // A DISTINCT NAME EACH, which this loop used not to bother with. Names
+        // are an identity in this engine - parents and entity references are
+        // both recorded by name - so forty live entities called "Spread" is
+        // forty things claiming to be one, and Scene::CreateEntity now says so
+        // at Error level. Nothing here depended on the collision; the loop
+        // simply had no reason to invent names and now has one.
+        const std::string name = "Spread" + std::to_string(i);
+        eng::Entity*      entity =
+            fixture.Add(name.c_str(), eng::Vec2{static_cast<float>(i) * 500.0f, 0.0f});
         AddBox(*entity, eng::Vec2{10.0f, 10.0f});
     }
 
@@ -957,4 +964,211 @@ TEST_CASE("Distance reports a gap when apart and an overlap when not") {
     const eng::Physics2D::Distance2D touching = eng::Physics2D::Distance(*boxA, *boxB);
     CHECK(touching.overlapped);
     CHECK(touching.distance == doctest::Approx(-5.0f));
+}
+
+// ===========================================================================
+//  A kinematic body against something that cannot move
+//
+//  Rigidbody.h recommends a kinematic body FOR A CHARACTER CONTROLLER, and a
+//  character controller that walks through walls is not one. These are the
+//  cases that said it did.
+// ===========================================================================
+
+TEST_CASE("a kinematic body is stopped by static scenery") {
+    // ======================================================================
+    //  THE REPORTED BUG, AS A TEST.
+    //
+    //  Both sides report an inverse mass of zero - "immovable" - so the sum
+    //  was zero and both halves of the solver returned without doing
+    //  anything. The body sailed through the wall at full speed.
+    // ======================================================================
+    SceneFixture fixture;
+    eng::Physics2D::SetGravity(eng::Vec2{0.0f, 0.0f});   // walking, not falling
+
+    // A wall at x = 100, two units thick.
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{100.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{2.0f, 100.0f});
+    AddBody(*wall)->SetBodyType(eng::RigidbodyType::Static);
+
+    eng::Entity*               entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddBox(*entity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* player = AddBody(*entity);
+    player->SetBodyType(eng::RigidbodyType::Kinematic);
+    player->SetFreezeRotation(true);
+
+    // Walking right, hard, for two seconds. Unstopped it would reach x = 520.
+    for (int i = 0; i < 120; ++i) {
+        player->SetVelocity(eng::Vec2{260.0f, 0.0f});   // a script, every step
+        Step();
+    }
+
+    // SHORT OF THE WALL'S NEAR FACE, give or take the sliver of overlap the
+    // position correction deliberately leaves - see kSlop in Collider.cpp.
+    const float x = entity->Transform().WorldPosition().x;
+    CHECK(x < 95.0f);
+    CHECK(x > 85.0f);   // and it DID walk up to it rather than stopping early
+}
+
+TEST_CASE("a kinematic body slides along a wall rather than sticking to it") {
+    // The other half of what a character controller needs: the velocity INTO
+    // the surface goes, the velocity ALONG it survives. A solver that zeroed
+    // the whole vector would make walls flypaper.
+    SceneFixture fixture;
+    eng::Physics2D::SetGravity(eng::Vec2{0.0f, 0.0f});
+
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{100.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{2.0f, 400.0f});
+    AddBody(*wall)->SetBodyType(eng::RigidbodyType::Static);
+
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{80.0f, 0.0f});
+
+    // FRICTIONLESS, so that this is about the solver removing the velocity
+    // INTO the wall and nothing else. With grip, sliding up it would also be
+    // slowed by friction and the test would be measuring two things.
+    eng::BoxColliderComponent* box = AddBox(*entity, eng::Vec2{8.0f, 16.0f});
+    eng::PhysicsMaterial2D     slippery;
+    slippery.friction = 0.0f;
+    box->SetMaterial(slippery);
+    eng::Rigidbody2DComponent* player = AddBody(*entity);
+    player->SetBodyType(eng::RigidbodyType::Kinematic);
+    player->SetFreezeRotation(true);
+
+    for (int i = 0; i < 60; ++i) {
+        player->SetVelocity(eng::Vec2{260.0f, 120.0f});   // into it AND along it
+        Step();
+    }
+
+    // It went UP, which is the whole point.
+    CHECK(entity->Transform().WorldPosition().y > 80.0f);
+    // And not THROUGH.
+    CHECK(entity->Transform().WorldPosition().x < 95.0f);
+}
+
+TEST_CASE("a kinematic body still shoves a dynamic one and is not shoved back") {
+    // ======================================================================
+    //  THE THING THAT MUST NOT CHANGE.
+    //
+    //  Zero inverse mass against anything that CAN move is what makes a lift
+    //  carry a crate and a door shove a barrel - "infinite mass, in effect",
+    //  as Rigidbody.h puts it. The fix above only applies when the other side
+    //  cannot move at all, and this is the case that proves it did not leak.
+    // ======================================================================
+    SceneFixture fixture;
+    eng::Physics2D::SetGravity(eng::Vec2{0.0f, 0.0f});
+
+    eng::Entity*               doorEntity = fixture.Add("Door", eng::Vec2{0.0f, 0.0f});
+    AddBox(*doorEntity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* door = AddBody(*doorEntity);
+    door->SetBodyType(eng::RigidbodyType::Kinematic);
+    door->SetFreezeRotation(true);
+
+    eng::Entity*               barrelEntity = fixture.Add("Barrel", eng::Vec2{40.0f, 0.0f});
+    AddBox(*barrelEntity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* barrel = AddBody(*barrelEntity);
+    barrel->SetBodyType(eng::RigidbodyType::Dynamic);
+    barrel->SetFreezeRotation(true);
+
+    for (int i = 0; i < 60; ++i) {
+        door->SetVelocity(eng::Vec2{100.0f, 0.0f});
+        Step();
+    }
+
+    // THE DOOR WENT WHERE IT WAS TOLD, undisturbed: 60 steps at 100 px/s.
+    CHECK(doorEntity->Transform().WorldPosition().x == doctest::Approx(100.0f).epsilon(0.05));
+
+    // AND THE BARREL WAS PUSHED AHEAD OF IT.
+    CHECK(barrelEntity->Transform().WorldPosition().x > 100.0f);
+}
+
+TEST_CASE("two kinematic bodies are left alone, as Box2D leaves them") {
+    // Each would see the other as immovable and both would give way, which is
+    // a tug of war between two things a script is positioning. Documented in
+    // SolverMasses rather than solved, so this pins the documented answer.
+    SceneFixture fixture;
+    eng::Physics2D::SetGravity(eng::Vec2{0.0f, 0.0f});
+
+    eng::Entity*               leftEntity = fixture.Add("Left", eng::Vec2{0.0f, 0.0f});
+    AddBox(*leftEntity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* left = AddBody(*leftEntity);
+    left->SetBodyType(eng::RigidbodyType::Kinematic);
+
+    eng::Entity*               rightEntity = fixture.Add("Right", eng::Vec2{40.0f, 0.0f});
+    AddBox(*rightEntity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* right = AddBody(*rightEntity);
+    right->SetBodyType(eng::RigidbodyType::Kinematic);
+
+    for (int i = 0; i < 60; ++i) {
+        left->SetVelocity(eng::Vec2{100.0f, 0.0f});
+        Step();
+    }
+
+    // Straight through, both where their scripts put them.
+    CHECK(leftEntity->Transform().WorldPosition().x == doctest::Approx(100.0f).epsilon(0.05));
+    CHECK(rightEntity->Transform().WorldPosition().x == doctest::Approx(40.0f).epsilon(0.05));
+}
+
+TEST_CASE("a static body is never moved by a kinematic one walking into it") {
+    // The asymmetry has a direction, and getting it the wrong way round would
+    // push the scenery about instead.
+    SceneFixture fixture;
+    eng::Physics2D::SetGravity(eng::Vec2{0.0f, 0.0f});
+
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{100.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{2.0f, 100.0f});
+    eng::Rigidbody2DComponent* wallBody = AddBody(*wall);
+    wallBody->SetBodyType(eng::RigidbodyType::Static);
+
+    eng::Entity*               entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddBox(*entity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* player = AddBody(*entity);
+    player->SetBodyType(eng::RigidbodyType::Kinematic);
+
+    for (int i = 0; i < 120; ++i) {
+        player->SetVelocity(eng::Vec2{260.0f, 0.0f});
+        Step();
+    }
+
+    CHECK(wall->Transform().WorldPosition().x == doctest::Approx(100.0f));
+    CHECK(wallBody->Velocity().x == doctest::Approx(0.0f));
+}
+
+TEST_CASE("a kinematic body is stopped by a collider with no rigidbody at all") {
+    // "No rigidbody" is the same thing as static - Rigidbody.h says so out
+    // loud - so it has to behave the same way here. This is the commonest
+    // shape of scenery in a scene somebody has just built.
+    SceneFixture fixture;
+    eng::Physics2D::SetGravity(eng::Vec2{0.0f, 0.0f});
+
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{100.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{2.0f, 100.0f});   // and NO body
+
+    eng::Entity*               entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddBox(*entity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* player = AddBody(*entity);
+    player->SetBodyType(eng::RigidbodyType::Kinematic);
+    player->SetFreezeRotation(true);
+
+    for (int i = 0; i < 120; ++i) {
+        player->SetVelocity(eng::Vec2{260.0f, 0.0f});
+        Step();
+    }
+
+    CHECK(entity->Transform().WorldPosition().x < 95.0f);
+}
+
+TEST_CASE("a kinematic body falls through nothing: gravity still ignores it") {
+    // The fix must not have made a kinematic body dynamic by the back door.
+    SceneFixture fixture;   // gravity is -1000 here
+
+    eng::Entity*               entity = fixture.Add("Lift", eng::Vec2{0.0f, 0.0f});
+    AddBox(*entity, eng::Vec2{8.0f, 16.0f});
+    eng::Rigidbody2DComponent* lift = AddBody(*entity);
+    lift->SetBodyType(eng::RigidbodyType::Kinematic);
+
+    for (int i = 0; i < 60; ++i) {
+        Step();
+    }
+
+    CHECK(entity->Transform().WorldPosition().y == doctest::Approx(0.0f));
+    CHECK(lift->Velocity().y == doctest::Approx(0.0f));
 }

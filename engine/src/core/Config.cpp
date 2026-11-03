@@ -95,6 +95,36 @@ bool LoadBootConfig(std::string_view virtualPath, BootConfig& outConfig,
     outConfig.solverIterations =
         ReadInt(physics, "solverIterations", outConfig.solverIterations, "physics");
 
+    // ======================================================================
+    //  A MISSING "physics" SECTION IS SAID OUT LOUD, because this is the one
+    //  default in the file that is wrong for every project that uses it.
+    //
+    //  The built-in gravity is Unity's -9.81, which is metres per second
+    //  squared, and this engine works in pixels - so a project that does not
+    //  override it accelerates everything at a hundredth of the intended
+    //  rate. Fall time goes as 1/sqrt(g): everything falls and jumps about
+    //  ten times too slowly, and it reads as the whole game running in slow
+    //  motion rather than as a settings file missing four lines.
+    //
+    //  THE SAME SHAPE AS THE "input" WARNING in InputMap::LoadBindings, and
+    //  for the same reason: silence about an absent section is only kind when
+    //  the default is one somebody would have chosen.
+    //
+    //  Projects created before the template wrote this section are the ones
+    //  that need it, which is why it names the JSON to paste rather than
+    //  pointing at the documentation.
+    // ======================================================================
+    if (!document.is_object() || document.find("physics") == document.end()) {
+        ENGINE_LOG_WARN(
+            Channels::kConfig,
+            "the settings file has no \"physics\" section, so gravity is the "
+            "built-in {} px/s^2 - Unity's metres-per-second number used as pixels, "
+            "which is a barely visible drift rather than gravity. Things will fall "
+            "about ten times too slowly. A 2D game in pixels wants roughly -981: "
+            "add  \"physics\": {{ \"gravity\": [0.0, -981.0] }}",
+            outConfig.gravity.y);
+    }
+
     // --- startup ----------------------------------------------------------
     outConfig.startupScene =
         ReadString(Section(document, "startup"), "scene", outConfig.startupScene, "startup");

@@ -6,6 +6,8 @@
 
 #include "EditorApp.h"
 
+#include <engine/input/InputMap.h>   // HasBindings, for the overlay
+
 #include <imgui.h>
 
 namespace editor {
@@ -107,6 +109,33 @@ void GamePanel::Draw() {
     } else if (!m_focused) {
         ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 0.95f),
                            "click here to give the game the keyboard");
+    }
+
+    // ======================================================================
+    //  THE TWO WAYS A RUNNING GAME CAN LOOK BROKEN WHILE WORKING PERFECTLY.
+    //
+    //  Both were reported as "the game is in slow motion and my scripts do
+    //  not work", and neither leaves a mark anywhere somebody looks while
+    //  playing: one is a slider two panels away, the other is a warning
+    //  printed during start-up and scrolled away long before Play.
+    //
+    //  SAID HERE, OVER THE GAME, because that is where the person who is
+    //  confused is looking. Only when they are true, so an ordinary session
+    //  shows nothing.
+    // ======================================================================
+    const float scale = engine.Clock().TimeScale();
+    if (scale < 0.999f || scale > 1.001f) {
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 8.0f, origin.y + size.y - 46.0f));
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.30f, 0.95f),
+                           "game time is running at %.2fx - Speed, on the Toolbar",
+                           static_cast<double>(scale));
+    }
+
+    if (!eng::InputMap::HasBindings()) {
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 8.0f, origin.y + size.y - 26.0f));
+        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.45f, 0.95f),
+                           "no controls are bound: config/engine.json has no "
+                           "\"input\" section, so nothing answers the keyboard");
     }
 }
 

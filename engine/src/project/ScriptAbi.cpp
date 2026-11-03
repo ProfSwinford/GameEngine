@@ -96,10 +96,51 @@ std::string ScriptAbi::Stamp() {
     return stamp.str();
 }
 
+std::string ScriptAbi::StampFor(const EngineBuildInfo& engine) {
+    // THE SAME THREE KEYS IN THE SAME ORDER AS Stamp(), because the two are
+    // compared against each other. See the header on where the CRT comes from.
+    std::ostringstream stamp;
+    stamp << "abi=" << engine.scriptAbi << "\n";
+    stamp << "crt=" << (engine.configuration == "Debug" ? "/MDd" : "/MD") << "\n";
+    stamp << "engine=" << engine.id << "\n";
+    return stamp.str();
+}
+
+std::string ScriptAbi::RecordedEngine(std::string_view recorded) {
+    const std::map<std::string, std::string> their = Parse(recorded);
+    const auto found = their.find("engine");
+    return (found == their.end()) ? std::string{} : found->second;
+}
+
+ScriptAbiCheck ScriptAbi::CheckAgainst(std::string_view recorded,
+                                       const EngineBuildInfo& engine) {
+    if (!engine.known) {
+        // NOTHING TO COMPARE WITH. An engine folder with no
+        // engine-version.json records a zero ABI and an empty configuration,
+        // and comparing against those would report a mismatch against every
+        // project on the machine. See the header.
+        ScriptAbiCheck result;
+        result.verdict = ScriptAbiCheck::Verdict::Unverifiable;
+        result.explanation =
+            "that engine folder has no engine-version.json, so there is no way to "
+            "tell which engine it is or whether these scripts were built for it";
+        return result;
+    }
+    return CompareStamps(recorded, StampFor(engine));
+}
+
 ScriptAbiCheck ScriptAbi::Check(std::string_view recorded) {
+    return CompareStamps(recorded, Stamp());
+}
+
+// THE COMPARISON ITSELF, with both sides passed in. It used to read Stamp()
+// directly, which quietly made "is this loadable by the running engine?" the
+// only question it could answer. See CheckAgainst in the header.
+ScriptAbiCheck ScriptAbi::CompareStamps(std::string_view recorded,
+                                        std::string_view expected) {
     ScriptAbiCheck result;
 
-    const std::map<std::string, std::string> mine  = Parse(Stamp());
+    const std::map<std::string, std::string> mine  = Parse(expected);
     const std::map<std::string, std::string> their = Parse(recorded);
 
     if (their.empty()) {

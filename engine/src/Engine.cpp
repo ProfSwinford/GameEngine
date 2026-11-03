@@ -130,6 +130,7 @@ bool Engine::SceneSubsystem::Init(const BootConfig&) {
     RigidbodySystem::RegisterComponentTypes();
     TilemapRenderSystem::RegisterComponentTypes();
     SpinSystem::RegisterComponentTypes();
+    SpriteAnimationSystem::RegisterComponentTypes();
     ScriptSystem::RegisterComponentTypes();
     UISystem::RegisterComponentTypes();
 
@@ -139,11 +140,18 @@ bool Engine::SceneSubsystem::Init(const BootConfig&) {
                                    return std::make_unique<CameraComponent>();
                                });
 
-    engine.m_spinSystem   = std::make_unique<SpinSystem>();
-    engine.m_scriptSystem = std::make_unique<ScriptSystem>();
-    engine.m_cameraSystem = std::make_unique<CameraSystem>();
+    engine.m_spinSystem      = std::make_unique<SpinSystem>();
+    engine.m_scriptSystem    = std::make_unique<ScriptSystem>();
+    engine.m_animationSystem = std::make_unique<SpriteAnimationSystem>();
+    engine.m_cameraSystem    = std::make_unique<CameraSystem>();
     SystemScheduler::Register(engine.m_spinSystem.get());
     SystemScheduler::Register(engine.m_scriptSystem.get());
+
+    // AFTER THE SCRIPTS, and the order matters because both sit at the
+    // gameplay stage: ties keep registration order, so a script calling
+    // Play("jump") in its OnFixedUpdate is honoured on that step rather than
+    // being a step late.
+    SystemScheduler::Register(engine.m_animationSystem.get());
     SystemScheduler::Register(engine.m_cameraSystem.get());
 
     engine.m_scene = std::make_unique<Scene>();
@@ -165,12 +173,17 @@ void Engine::SceneSubsystem::Shutdown() {
         SystemScheduler::Unregister(engine.m_scriptSystem.get());
         engine.m_scriptSystem.reset();
     }
+    if (engine.m_animationSystem != nullptr) {
+        SystemScheduler::Unregister(engine.m_animationSystem.get());
+        engine.m_animationSystem.reset();
+    }
     if (engine.m_cameraSystem != nullptr) {
         SystemScheduler::Unregister(engine.m_cameraSystem.get());
         engine.m_cameraSystem.reset();
     }
     SpinSystem::Clear();
     ScriptSystem::Clear();
+    SpriteAnimationSystem::Clear();
     SpriteRenderSystem::Clear();
     TilemapRenderSystem::Clear();
     TileLibrary::Clear();
@@ -626,6 +639,12 @@ void Engine::Simulate() {
 
         // Stage 600: create and destroy entities, at one defined point.
         if (m_scene != nullptr) {
+            // The fuses first, so anything whose delay ran out this step is
+            // in the queue before it is drained and dies on this step rather
+            // than next. Inside the step loop, not outside it, because a fuse
+            // is measured in GAME time: a paused clock asks for no steps, so a
+            // fuse stops burning - which is what DeferredOps.h promises.
+            DeferredOps::TickFuses(fixedStep);
             DeferredOps::Apply(*m_scene);
         }
 

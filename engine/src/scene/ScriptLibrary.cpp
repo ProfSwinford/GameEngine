@@ -158,26 +158,56 @@ std::string ScriptLibrary::ShippedVirtualPath() {
 std::string ScriptLibrary::ModuleDirVirtualPath() { return ".build/modules"; }
 
 bool ScriptLibrary::HasModules() {
+    // ASKED BEFORE LISTING, because ListFiles WARNS about a folder that is
+    // not there - and "'.build/modules' is not a folder" is the ordinary
+    // state of a project nobody has compiled yet, printed in the colour of a
+    // problem on the first line of every first open.
+    if (!FileSystem::Exists(ModuleDirVirtualPath())) {
+        return false;   // no such folder: a new project, or a shipped game
+    }
+
     std::vector<std::string> found;
     if (!FileSystem::ListFiles(ModuleDirVirtualPath(), LibraryExtension(), found)) {
-        return false;   // no such folder, which is the shipped-game case
+        return false;
     }
     return !found.empty();
 }
 
 std::string ScriptLibrary::FindLibraryPath() {
-    // THE BUILD FOLDER IS CHECKED FIRST, and the order is deliberate.
+    // ======================================================================
+    //  THE PACKED LIBRARY, AND ONLY THE PACKED LIBRARY.
     //
-    // In a shipped game .build/ does not exist, so this falls straight through
-    // to the packed one and costs nothing. In a project being developed the
-    // editor has just rebuilt .build/, and checking it first means a stale
-    // assets/userContent.dll - committed by accident, or left behind by
-    // someone who exported into their own project once - can never shadow the
-    // library the editor just compiled. Loading yesterday's scripts while the
-    // Console reports a successful build is a bad afternoon.
-    if (FileSystem::Exists(DefaultVirtualPath())) {
-        return DefaultVirtualPath();
-    }
+    //  assets/userContent.dll is what an exported game ships with. A project
+    //  being developed uses the per-script libraries in .build/modules
+    //  instead, and Init finds those through HasModules before asking this -
+    //  so by the time this is called, the question is only whether this is a
+    //  shipped game.
+    //
+    // ======================================================================
+    //  .build/userContent.dll IS NO LONGER LOOKED AT, and that is a fix for a
+    //  reproduced memory-corruption hazard rather than a tidy-up.
+    //
+    //  That file is a BUNDLE, produced only by an export (see
+    //  ScriptBuild::BuildBundle), and nothing deletes it afterwards. The
+    //  per-script libraries the editor builds live in .build/modules and are
+    //  found by HasModules before this function is reached at all. So this
+    //  branch could only ever fire in a developed project whose modules
+    //  folder was empty - and then it loaded an EXPORT LEFTOVER.
+    //
+    //  Which would be merely stale, except that a build writes its new ABI
+    //  stamp whether or not it produced a library. Observed: an export bundle
+    //  compiled against /MD, a failed rebuild that wrote a /MDd stamp, and
+    //  then "loaded 1 script(s)" on the next start - a release-CRT bundle
+    //  inside a debug-CRT engine, reported as success. That does not fail, it
+    //  corrupts the heap, which is the one thing project/ScriptAbi.h exists to
+    //  prevent.
+    //
+    //  An empty modules folder now honestly means "no scripts yet".
+    //
+    //  THE ORIGINAL REASON FOR LOOKING IN .build FIRST SURVIVES WITHOUT IT: a
+    //  stale assets/userContent.dll must never shadow what the editor just
+    //  built, and it cannot, because HasModules is asked before this is.
+    // ======================================================================
     if (FileSystem::Exists(ShippedVirtualPath())) {
         return ShippedVirtualPath();
     }
@@ -249,13 +279,13 @@ bool ScriptLibrary::Init(const BootConfig&) {
     //  A shipped game has no .build/, so this costs one failed directory
     //  listing there and falls straight through to the bundle.
     //
-    //  In a project being developed it is the other way round: the modules are
-    //  what the editor last built, and a .build/userContent.dll is a leftover
-    //  from the last EXPORT - which is a bundle of whatever the scripts were
-    //  at that moment. Letting that shadow the modules would run yesterday's
-    //  code while the Console reported a successful build, which is the same
-    //  bad afternoon FindLibraryPath already guards against from the other
-    //  direction.
+    //  In a project being developed the modules are what the editor last
+    //  built, and they are the only thing it will load: a leftover
+    //  .build/userContent.dll from the last EXPORT is a bundle of whatever
+    //  the scripts happened to be at that moment, and FindLibraryPath no
+    //  longer looks at it, for reasons given there. So this is now the quick
+    //  path rather than the safe one - and it is still asked first, because a
+    //  project with modules should not depend on that second opinion.
     // ======================================================================
     if (HasModules()) {
         std::string error;
@@ -266,10 +296,15 @@ bool ScriptLibrary::Init(const BootConfig&) {
     // exists and will not load is a failure.
     const std::string path = FindLibraryPath();
     if (path.empty()) {
+        // THE TWO PLACES IT ACTUALLY LOOKED, which is the only reason to say
+        // so at all. This used to name DefaultVirtualPath, which is now a
+        // path the search deliberately ignores - and telling somebody their
+        // scripts are missing from a location nothing consults is worse than
+        // saying nothing.
         ENGINE_LOG_INFO(Channels::kScene,
-                        "no compiled scripts found (looked for '{}' and '{}') - write "
-                        "one in the Assets panel and the editor will build it",
-                        DefaultVirtualPath(), ShippedVirtualPath());
+                        "no compiled scripts found (looked in '{}' and for '{}') - "
+                        "write one in the Assets panel and the editor will build it",
+                        ModuleDirVirtualPath(), ShippedVirtualPath());
         return true;
     }
 

@@ -493,6 +493,15 @@ bool FileSystem::ListFiles(std::string_view virtualDirectory, std::string_view e
     return true;
 }
 
+long long FileSystem::ModifiedAt(std::string_view virtualPath) {
+    std::error_code ec;
+    const auto when = fs::last_write_time(Resolve(virtualPath), ec);
+    if (ec) {
+        return 0;
+    }
+    return static_cast<long long>(when.time_since_epoch().count());
+}
+
 bool FileSystem::ListDirectory(std::string_view virtualDirectory,
                                std::vector<DirEntry>& out) {
     out.clear();
@@ -530,6 +539,16 @@ bool FileSystem::ListDirectory(std::string_view virtualDirectory,
 
         item.virtualPath = prefix + item.name;
         if (!item.isDirectory) {
+            // Read from the SAME cached status file_size uses, so this costs
+            // nothing extra. See DirEntry::modifiedAt for what it is for.
+            item.modifiedAt =
+                static_cast<long long>(
+                    entry.last_write_time(ec).time_since_epoch().count());
+            if (ec) {
+                item.modifiedAt = 0;
+                ec.clear();
+            }
+
             item.byteSize = static_cast<unsigned long long>(entry.file_size(ec));
             if (ec) {
                 item.byteSize = 0;

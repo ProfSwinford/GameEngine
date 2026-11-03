@@ -400,6 +400,15 @@ std::vector<Item> CollectSorted(Scene& scene, const Camera& camera, Vec2 viewpor
         if (rect == nullptr || !rect->visible) {
             return;
         }
+        // A switched-off entity's interface is neither drawn NOR CLICKABLE.
+        // One gate for both, because CollectSorted feeds Update and Render
+        // alike - which is what stops an invisible panel from swallowing
+        // clicks meant for whatever is behind it. See
+        // Entity::IsActiveInHierarchy, and note that `visible` is a different
+        // thing: it hides one rect without switching the entity off.
+        if (!entity.IsActiveInHierarchy()) {
+            return;
+        }
         ResolveRect(entity, *rect, camera, viewport);
         items.push_back(Item{&entity, rect});
     });
@@ -423,6 +432,23 @@ void UISystem::BeginStep(Scene& scene) {
             slider->m_changed = false;
         }
     });
+}
+
+// ---- reading the pointer back; see the note in UI.h -----------------------
+Vec2 UISystem::PointerPosition()  { return g_pointer; }
+Vec2 UISystem::PointerViewport()  { return g_pointerViewport; }
+bool UISystem::PointerIsActive()  { return g_pointerActive; }
+bool UISystem::PointerIsDown()    { return g_pointerActive && g_pointerDown; }
+
+// The two edges, worked out the same way the buttons work them out: from this
+// step's state against the previous step's. g_pointerWasDown is updated once
+// per step by Update below, so these are stable for the whole step rather than
+// changing under a script depending on when it runs.
+bool UISystem::PointerWentDown() {
+    return g_pointerActive && g_pointerDown && !g_pointerWasDown;
+}
+bool UISystem::PointerWentUp() {
+    return g_pointerActive && !g_pointerDown && g_pointerWasDown;
 }
 
 void UISystem::Update(Scene& scene, const Camera& camera) {

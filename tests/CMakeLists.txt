@@ -19,6 +19,7 @@ set(TEST_SOURCES
     src/test_transform.cpp
     src/test_random.cpp
     src/test_assets.cpp
+    src/test_import.cpp
     src/test_time.cpp
     src/test_physics.cpp
     src/test_tilemap.cpp
@@ -27,6 +28,9 @@ set(TEST_SOURCES
     src/test_project.cpp
     src/test_scriptabi.cpp
     src/test_snapshot.cpp
+    src/test_prefab.cpp
+    src/test_scriptapi.cpp
+    src/test_spriteanimation.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

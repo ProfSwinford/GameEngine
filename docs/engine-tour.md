@@ -67,7 +67,13 @@ another one.
 | what an entity actually is                       | `scene/Entity.h`                           |
 | how to write your own component                  | `scene/Component.h`, then `SpinComponent.h`|
 | how a level file becomes a world                 | `scene/Scene.h`                            |
+| why twenty copies of an enemy are one enemy      | `scene/Prefab.h`                           |
 | how to write your own behaviour                  | `scene/ScriptComponent.h`                  |
+| what a script can actually call                  | [scripting-reference.md](scripting-reference.md) |
+| how a script spawns or destroys something        | `scene/DeferredOps.h`, `scene/Scene.h`     |
+| how a script chooses which prefab to spawn       | `scene/PrefabRef.h`                        |
+| how switching an entity off reaches every system | `scene/Entity.h`                           |
+| where the mouse is, correctly in both programs   | `input/Pointer.h`                          |
 | how a variable reaches the Inspector by itself    | `tools/ScriptVars.h`                       |
 | how a script puts its own variables on screen     | `scene/ScriptFields.h`                     |
 | how one entity refers to another                 | `scene/EntityRef.h`                        |
@@ -82,6 +88,9 @@ another one.
 | what a matrix is doing in a 2D game              | `math/Mat3.h`                              |
 | how clicking on something works                  | `render/Camera.h`                          |
 | how images are shared and unloaded               | `render/Texture.h`                         |
+| why one sprite is crisp and another is blurred   | `resource/ImportSettings.h`                |
+| how one image becomes many named sprites         | `resource/ImportSettings.h`                |
+| what a row of the Assets grid is, if not a file  | `panels/AssetBrowserPanel.h`               |
 | how key bindings are changed without rebuilding  | `input/InputMap.h`                         |
 | why files are named the short way                | `fs/FileSystem.h`                          |
 | what makes a folder a project                    | `project/Project.h`                        |

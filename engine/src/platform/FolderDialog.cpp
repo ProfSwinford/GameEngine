@@ -9,6 +9,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <mutex>
 
 namespace eng {
@@ -60,6 +61,15 @@ void FolderDialog::Ask(int purpose) {
     {
         const std::lock_guard<std::mutex> lock(g_mutex);
         g_purpose = purpose;
+
+        // ANY UNCOLLECTED ANSWER IS DROPPED HERE, which is the one place it
+        // can be dropped safely. Take now leaves an answer alone when it is
+        // not the caller's, so one for a purpose nobody collects would
+        // otherwise sit here until a collector that does want that number
+        // came along - and then act on a folder picked for something else,
+        // minutes ago. Opening a dialog is the moment the previous answer
+        // stops mattering.
+        g_pending = Result{};
     }
 
     // THE WINDOW IS PASSED AS THE PARENT, so the dialog is modal to it and
@@ -76,10 +86,24 @@ void FolderDialog::Ask(int purpose) {
     SDL_ShowOpenFolderDialog(OnChosen, nullptr, window, nullptr, false);
 }
 
-FolderDialog::Result FolderDialog::Take() {
+FolderDialog::Result FolderDialog::Take(std::initializer_list<int> purposes) {
     const std::lock_guard<std::mutex> lock(g_mutex);
-    const Result                      taken = g_pending;
-    g_pending                               = Result{};
+
+    if (g_pending.choice == Choice::None) {
+        return Result{};
+    }
+
+    // LEFT WHERE IT IS WHEN IT IS NOT OURS, so the collector it belongs to
+    // still finds it this frame. See the header for what the unconditional
+    // clear used to cost.
+    if (purposes.size() > 0 &&
+        std::find(purposes.begin(), purposes.end(), g_pending.purpose) ==
+            purposes.end()) {
+        return Result{};
+    }
+
+    const Result taken = g_pending;
+    g_pending          = Result{};
     return taken;
 }
 

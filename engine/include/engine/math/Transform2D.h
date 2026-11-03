@@ -73,6 +73,19 @@ public:
     Transform2D*                     Parent()   const { return m_parent; }
     const std::vector<Transform2D*>& Children() const { return m_children; }
 
+    // Unity's childCount / GetChild(i) / root. ChildAt returns null for an
+    // index past the end rather than reading off the end of the vector,
+    // because "how many children does this have" and "give me the third one"
+    // get asked by loops whose bound somebody got wrong.
+    std::size_t  ChildCount() const { return m_children.size(); }
+    Transform2D* ChildAt(std::size_t index) const {
+        return index < m_children.size() ? m_children[index] : nullptr;
+    }
+
+    // The top of this chain - itself, when it has no parent.
+    Transform2D*       Root();
+    const Transform2D* Root() const;
+
     // Attaches this transform to a new parent.
     //
     // `keepWorldTransform` decides what happens on screen. With it false, the
@@ -103,6 +116,72 @@ public:
     // Moves the object to a world position, working out for you what local
     // position that corresponds to under the current parent.
     void SetWorldPosition(Vec2 world);
+
+    // The other two, which were missing - and their absence was not symmetric
+    // with SetWorldPosition, it was just a gap. "Point this at the player" is
+    // a world-space statement, and under a rotating parent there is no way to
+    // say it in local terms without doing the subtraction by hand.
+    //
+    void SetWorldRotation(float radians);
+
+    // ---- and world scale, which is the one with a caveat ------------------
+    //
+    // WORLD SCALE IS NOT ALWAYS EXPRESSIBLE, and this is a property of
+    // hierarchies rather than of this engine - Unity calls its version
+    // `lossyScale` and the "lossy" is the same admission.
+    //
+    // When a NON-UNIFORM SCALE sits ABOVE A ROTATION in the chain - including
+    // this node's own rotation - the combined transform contains SHEAR: the
+    // axes stop being at right angles, and no (x, y) pair describes the
+    // result. The numbers WorldScale() returns are the LENGTHS OF THE COMPOSED
+    // AXES, which is the most useful summary available and is not a value this
+    // function can invert. In that case this gets as close as a
+    // component-wise division can, and reading WorldScale() back afterwards
+    // will not give exactly what was asked for.
+    //
+    // IT IS EXACT whenever every scale above this node is uniform, and
+    // whenever nothing between here and the unevenly scaled ancestor is
+    // rotated. Which covers no parent at all, a parent that is only moved, a
+    // parent that is only rotated, and a stack of evenly scaled parents - so
+    // in practice, everything except deliberately squashing a rotated rig.
+    //
+    // A PARENT FLAT ON AN AXIS LEAVES THAT AXIS ALONE. There is no local scale
+    // that produces the asked-for world scale through a zero, and dividing
+    // would produce an infinity that turns every world position in the
+    // subtree into a NaN. NaN positions are silent - the sprites simply stop
+    // being drawn, for as long as the parent is flat, which is usually one
+    // frame of an animation.
+    void SetWorldScale(Vec2 world);
+
+    // ---- which way it faces -----------------------------------------------
+    //
+    // Unity's transform.right / transform.up, in 2D. Right is the direction
+    // the object's own +X axis points in the world, which for a sprite is
+    // "forwards" - this is what a bullet should be fired along and what a
+    // car should be driven along.
+    //
+    // NORMALISED, so a scaled object still reports a unit direction. The
+    // alternative - scaling the direction too - means a bullet from a
+    // half-size gun travels at half speed, which nobody ever wants and which
+    // reads as a physics bug.
+    Vec2 Right() const;
+    Vec2 Up() const;
+
+    // Turn to face a world point. The angle is measured so that Right() ends
+    // up pointing at `worldTarget`.
+    //
+    // A TARGET AT EXACTLY THIS OBJECT'S POSITION LEAVES THE ROTATION ALONE.
+    // There is no direction to face, and atan2(0,0) is zero - so the
+    // unguarded version snaps to facing right, which looks like a glitch
+    // every time two things touch.
+    void LookAt(Vec2 worldTarget);
+
+    // Turn around a world point rather than around this object's own origin.
+    // An orbit, a door on its hinge, a camera swinging about a target.
+    //
+    // Both halves, because turning without moving is already Rotate() and
+    // this is specifically the one that does both.
+    void RotateAround(Vec2 worldPivot, float radians);
 
     // Converting a point or a direction between this object's own frame of
     // reference and the world's. A POINT is affected by the object's position;

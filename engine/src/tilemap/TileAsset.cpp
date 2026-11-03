@@ -2,6 +2,7 @@
 
 #include <engine/core/Log.h>
 #include <engine/fs/FileSystem.h>
+#include <engine/resource/ImportSettings.h>   // to refuse a sliced spritesheet
 #include <engine/resource/ResourceManager.h>
 
 #include <algorithm>
@@ -149,6 +150,88 @@ bool TileAsset::ConnectsToAsset(const TileAsset& other) const {
 //  Reading a .otile
 // ---------------------------------------------------------------------------
 
+const char* TileArtName(TileArt art) {
+    switch (art) {
+        case TileArt::AutoTile: return "AutoTile";
+        case TileArt::Image:    return "Image";
+    }
+    return "AutoTile";
+}
+
+int TileSizeFor(TileArt art, int imageHeight) {
+    return (art == TileArt::Image) ? imageHeight : imageHeight / kSheetBands;
+}
+
+TileArtShape CheckTileArtShape(TileArt art, int tileSize, int imageWidth,
+                               int imageHeight, int statedFrames,
+                               std::string_view artPath) {
+    TileArtShape out;
+
+    const std::string key  = (art == TileArt::Image) ? "image" : "sheet";
+    const std::string path(artPath);
+    const std::string size =
+        std::to_string(imageWidth) + "x" + std::to_string(imageHeight);
+
+    // A GUARD RATHER THAN A CHECK, and not the duplicate it looks like.
+    // Deserialize refuses a non-positive tileSize before it ever gets here,
+    // in the same words; this is for a direct caller, and it is load-bearing
+    // because the frame count below divides by it.
+    if (tileSize <= 0) {
+        out.problem = "a tile size must be a positive number of pixels (got " +
+                      std::to_string(tileSize) + ")";
+        return out;
+    }
+
+    // ---- the height says whether this really is what it claims to be ------
+    const int wantHeight =
+        (art == TileArt::Image) ? tileSize : tileSize * kSheetBands;
+    if (imageHeight != wantHeight) {
+        out.problem = "TileAsset." + key + " '" + path + "' is " + size +
+                      ", but art for a " + std::to_string(tileSize) +
+                      "px tile must be exactly " + std::to_string(wantHeight) +
+                      "px tall" +
+                      (art == TileArt::Image
+                           ? " - one tile, drawn whole."
+                           : " - five bands of one tile each. See AutoTile.h. If "
+                             "this is an ordinary picture rather than a five-band "
+                             "sheet, it wants \"image\" and not \"sheet\".");
+        return out;
+    }
+
+    // ---- and the width says how many frames there are ---------------------
+    out.frames = (statedFrames > 0) ? statedFrames
+                                    : std::max(imageWidth / tileSize, 1);
+
+    if (imageWidth < tileSize * out.frames) {
+        if (art == TileArt::Image && statedFrames <= 0) {
+            // THE COMMONEST WAY TO MEET THIS, and the generic message below is
+            // true and useless for it: the reader is not thinking in frames at
+            // all, they have a picture that is not square.
+            out.problem = "TileAsset.image '" + path + "' is " + size +
+                          ", and a tile is square. An image tile must be one square "
+                          "picture, or a sideways strip of them - so this one would "
+                          "have to be " + std::to_string(imageHeight) +
+                          "px wide, or a multiple of it. Crop it square, or state "
+                          "\"tileSize\" if you meant something else.";
+        } else {
+            out.problem = "TileAsset." + key + " '" + path + "' is only " +
+                          std::to_string(imageWidth) + "px wide, which is not enough "
+                          "for " + std::to_string(out.frames) + " frame(s) of " +
+                          std::to_string(tileSize) + "px";
+        }
+        return out;
+    }
+
+    if (imageWidth % tileSize != 0) {
+        out.note = "tile art '" + path + "' is " + std::to_string(imageWidth) +
+                   "px wide, which is not a whole number of " +
+                   std::to_string(tileSize) + "px tiles; the rightmost " +
+                   std::to_string(imageWidth % tileSize) +
+                   "px will never be drawn";
+    }
+    return out;
+}
+
 bool TileAsset::Deserialize(const Json& node, std::string& outError) {
     if (!node.is_object()) {
         outError = "a tile asset must be a JSON object";
@@ -158,16 +241,38 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
     // Read FIRST, because it decides whether a sheet is required at all.
     m_connector = ReadBool(node, "connector", false, "TileAsset");
 
-    m_sheetPath = ReadString(node, "sheet", "", "TileAsset");
-    if (m_sheetPath.empty() && !m_connector) {
-        outError = "TileAsset.sheet is required: the five-band tile sheet to draw "
-                   "from. (Only a \"connector\" tile may omit it, because a "
+    // ---- which kind of art, decided by which key is present ---------------
+    //
+    // THE KEY IS THE KIND. See the note at the top of TileAsset.h for why
+    // there is no "kind" field to disagree with it.
+    const bool hasSheetKey = HasKey(node, "sheet");
+    const bool hasImageKey = HasKey(node, "image");
+
+    if (hasSheetKey && hasImageKey) {
+        outError = "TileAsset names both \"sheet\" and \"image\", and they are the "
+                   "two kinds of art a tile can have - not two settings. A "
+                   "\"sheet\" is five bands assembled from its neighbours; an "
+                   "\"image\" is one picture drawn whole. Keep the one you meant.";
+        return false;
+    }
+
+    m_art       = hasImageKey ? TileArt::Image : TileArt::AutoTile;
+    m_artPath = ReadString(node, hasImageKey ? "image" : "sheet", "", "TileAsset");
+
+    if (m_artPath.empty() && !m_connector) {
+        // BOTH KEYS NAMED, because somebody writing their first .otile does
+        // not yet know there are two kinds, and "sheet is required" sent them
+        // to point it at whatever picture they had.
+        outError = "a tile needs art: either \"sheet\", the five-band sheet that is "
+                   "assembled from its neighbours (see AutoTile.h), or \"image\", "
+                   "one picture drawn whole in every cell. An ordinary picture is "
+                   "\"image\". (Only a \"connector\" tile may omit both, because a "
                    "connector is invisible.)";
         return false;
     }
 
     // A connector draws nothing, so it needs a tile size and no art at all.
-    if (m_sheetPath.empty()) {
+    if (m_artPath.empty()) {
         m_tileSize   = std::max(ReadInt(node, "tileSize", 16, "TileAsset"), 2);
         m_frameCount = 1;
         m_frameMode  = TileFrameMode::Single;
@@ -175,11 +280,11 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
         return DeserializeConnections(node, outError);
     }
 
-    m_sheet = ResourceManager::LoadTexture(m_sheetPath);
+    m_artTexture = ResourceManager::LoadTexture(m_artPath);
 
-    const bool sheetMissing = (!m_sheet || m_sheet->isPlaceholder);
-    const int  sheetWidth   = m_sheet ? m_sheet->width : 0;
-    const int  sheetHeight  = m_sheet ? m_sheet->height : 0;
+    const bool sheetMissing = (!m_artTexture || m_artTexture->isPlaceholder);
+    const int  sheetWidth   = m_artTexture ? m_artTexture->width : 0;
+    const int  sheetHeight  = m_artTexture ? m_artTexture->height : 0;
 
     // ---- tile size: derived unless stated, and checked when stated ---------
     const bool tileSizeGiven = HasKey(node, "tileSize");
@@ -188,12 +293,14 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
     } else if (sheetMissing) {
         // Nothing to measure and nothing stated. Guessing would produce a map
         // whose cells are the wrong size, which looks like a different bug.
-        outError = "TileAsset.sheet '" + m_sheetPath +
+        outError = std::string("TileAsset.") +
+                   (m_art == TileArt::Image ? "image" : "sheet") + " '" +
+                   m_artPath +
                    "' could not be loaded, so tileSize cannot be worked out from "
                    "it. Fix the path, or state \"tileSize\" explicitly.";
         return false;
     } else {
-        m_tileSize = sheetHeight / kSheetBands;
+        m_tileSize = TileSizeFor(m_art, sheetHeight);
     }
 
     if (m_tileSize <= 0) {
@@ -202,61 +309,84 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
         return false;
     }
 
-    // A tile is drawn as four quarters, so an odd size would split a pixel and
-    // leave a one-pixel seam down the middle of every tile in the game.
-    if (m_tileSize % 2 != 0) {
-        outError = "TileAsset.tileSize must be EVEN (got " +
+    // An AUTO-TILE is drawn as four quarters, so an odd size would split a
+    // pixel and leave a one-pixel seam down the middle of every tile in the
+    // game. AN IMAGE IS DRAWN WHOLE and has no such problem, so a 15px image
+    // tile is perfectly legal - the rule follows the reason for it rather than
+    // applying to tiles in general.
+    if (m_art == TileArt::AutoTile && m_tileSize % 2 != 0) {
+        outError = "TileAsset.tileSize must be EVEN for a \"sheet\" (got " +
                    std::to_string(m_tileSize) +
-                   "): a tile is drawn as four half-size quarters, and an odd "
-                   "size cannot be halved without losing a pixel";
+                   "): an auto-tile is drawn as four half-size quarters, and an "
+                   "odd size cannot be halved without losing a pixel. An "
+                   "\"image\" tile is drawn whole and may be any size.";
         return false;
     }
 
-    // ---- frame count: derived unless stated --------------------------------
-    const bool framesGiven = HasKey(node, "frames");
-    if (framesGiven) {
-        m_frameCount = ReadInt(node, "frames", 1, "TileAsset");
-    } else if (sheetMissing) {
-        m_frameCount = 1;
-    } else {
-        m_frameCount = sheetWidth / m_tileSize;
-    }
-    m_frameCount = std::max(m_frameCount, 1);
+    // ---- the frame count and the shape, which are one question ------------
+    //
+    // ONE FUNCTION ANSWERS BOTH, because the number of frames IS a reading of
+    // the width and the shape check is the other half of the same reading.
+    // It lives outside this class so that it can be tested without an image -
+    // see CheckTileArtShape in TileAsset.h.
+    const int statedFrames =
+        HasKey(node, "frames") ? ReadInt(node, "frames", 1, "TileAsset") : 0;
 
-    // ---- now check the sheet is actually the shape we have been told -------
     if (sheetMissing) {
         // A WARNING and not an error, because ResourceManager has already
         // reported the real failure at error level. Saying it twice would
         // make one broken path look like two broken things; what this adds
         // is the tile-specific consequence.
         ENGINE_LOG_WARN(Channels::kTilemap,
-                        "tile sheet '{}' could not be loaded; tiles using it will "
+                        "tile art '{}' could not be loaded; tiles using it will "
                         "draw as the magenta placeholder at {}px",
-                        m_sheetPath, m_tileSize);
+                        m_artPath, m_tileSize);
+        m_frameCount = std::max(statedFrames, 1);
     } else {
-        if (sheetHeight != m_tileSize * kSheetBands) {
-            outError = "TileAsset.sheet '" + m_sheetPath + "' is " +
-                       std::to_string(sheetWidth) + "x" + std::to_string(sheetHeight) +
-                       ", but a sheet for a " + std::to_string(m_tileSize) +
-                       "px tile must be exactly " +
-                       std::to_string(m_tileSize * kSheetBands) +
-                       "px tall - five bands of one tile each. See AutoTile.h.";
+        const TileArtShape shape = CheckTileArtShape(
+            m_art, m_tileSize, sheetWidth, sheetHeight, statedFrames, m_artPath);
+        if (!shape.Ok()) {
+            outError = shape.problem;
             return false;
         }
-        if (sheetWidth < m_tileSize * m_frameCount) {
-            outError = "TileAsset.sheet '" + m_sheetPath + "' is only " +
-                       std::to_string(sheetWidth) + "px wide, which is not enough "
-                       "for " + std::to_string(m_frameCount) + " frame(s) of " +
-                       std::to_string(m_tileSize) + "px";
-            return false;
+        m_frameCount = shape.frames;
+        if (!shape.note.empty()) {
+            ENGINE_LOG_WARN(Channels::kTilemap, "{}", shape.note);
         }
-        if (sheetWidth % m_tileSize != 0) {
-            ENGINE_LOG_WARN(Channels::kTilemap,
-                            "tile sheet '{}' is {}px wide, which is not a whole "
-                            "number of {}px tiles; the rightmost {}px will never "
-                            "be drawn",
-                            m_sheetPath, sheetWidth, m_tileSize,
-                            sheetWidth % m_tileSize);
+
+        // ======================================================================
+        //  A SPRITESHEET IS NOT A TILE SHEET, and no measurement can tell them
+        //  apart - they are the same shape. This is the one signal that can.
+        //
+        //  The height check above derives the tile size as height / 5 and then
+        //  asks whether the height is five times it, which every image whose
+        //  height is a multiple of ten passes. So a 48x80 character sheet was
+        //  accepted as a 16px tile with three frames, and drawn as scrambled
+        //  quarters - a bug that looks like a renderer fault and is not one.
+        //
+        //  SLICING AN IMAGE IS A STATEMENT THAT IT IS A SPRITESHEET. It is
+        //  written in the sidecar, by somebody who meant it, which is worth
+        //  more than anything guessable from the dimensions. See
+        //  resource/ImportSettings.h.
+        //
+        //  REFUSED rather than warned, because a warning is dropped entirely
+        //  when the log threshold is Error - and this is precisely the case
+        //  where the result on screen is nonsense rather than nothing.
+        // ======================================================================
+        if (m_art == TileArt::AutoTile) {
+            const TextureImport imported = ImportLibrary::ForTexture(m_artPath);
+            if (!imported.sheet.frames.empty()) {
+                outError = "TileAsset.sheet '" + m_artPath + "' has been sliced "
+                           "into " + std::to_string(imported.sheet.frames.size()) +
+                           " frame(s), so it is a spritesheet rather than a "
+                           "five-band tile sheet - and as one it would draw as "
+                           "scrambled quarters. Use \"image\" with one of its "
+                           "frames (e.g. \"" + m_artPath + "#" +
+                           imported.sheet.frames.front().name +
+                           "\"), or remove the slicing in the Inspector if this "
+                           "really is a tile sheet.";
+                return false;
+            }
         }
     }
 
@@ -280,11 +410,11 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
 
     if (m_frameMode != TileFrameMode::Single && m_frameCount <= 1) {
         ENGINE_LOG_WARN(Channels::kTilemap,
-                        "tile '{}' asks for frameMode \"{}\" but its sheet '{}' "
+                        "tile '{}' asks for frameMode \"{}\" but its art '{}' "
                         "holds only one frame, so it will not vary. Frames go "
-                        "SIDEWAYS: widen the sheet to a multiple of {}px.",
-                        m_path.empty() ? m_sheetPath : m_path,
-                        TileFrameModeName(m_frameMode), m_sheetPath, m_tileSize);
+                        "SIDEWAYS: widen the image to a multiple of {}px.",
+                        m_path.empty() ? m_artPath : m_path,
+                        TileFrameModeName(m_frameMode), m_artPath, m_tileSize);
     }
 
     // ---- collision ---------------------------------------------------------
@@ -345,7 +475,7 @@ bool TileAsset::DeserializeConnections(const Json& node, std::string& outError) 
                         "tile '{}' is a connector, so its \"collision\" setting is "
                         "ignored: a connector exists only to be seen by its "
                         "neighbours, and a solid one would be an invisible wall",
-                        m_path.empty() ? m_sheetPath : m_path);
+                        m_path.empty() ? m_artPath : m_path);
         m_collision = TileCollision::None;
     }
 
@@ -366,8 +496,10 @@ bool TileAsset::Serialize(Json& out) const {
     if (m_connector) {
         out["connector"] = true;
     }
-    if (!m_sheetPath.empty()) {
-        out["sheet"] = m_sheetPath;
+    if (!m_artPath.empty()) {
+        // THE KEY CARRIES THE KIND, so writing the right one is the whole of
+        // saving it. See TileAsset.h.
+        out[m_art == TileArt::Image ? "image" : "sheet"] = m_artPath;
     }
 
     // tileSize and frames are written out even though they are derived, so the
@@ -376,7 +508,7 @@ bool TileAsset::Serialize(Json& out) const {
     // different tile size and scrambling every map that uses it.
     out["tileSize"] = m_tileSize;
 
-    if (!m_sheetPath.empty()) {
+    if (!m_artPath.empty()) {
         out["frames"]    = m_frameCount;
         out["frameMode"] = TileFrameModeName(m_frameMode);
     }

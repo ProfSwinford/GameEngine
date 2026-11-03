@@ -187,6 +187,19 @@ template <class T> concept NamesLateUpdate  = requires { &T::LateUpdate; };
 template <class T> concept NamesStart       = requires { &T::Start; };
 template <class T> concept NamesAwake       = requires { &T::Awake; };
 
+// OnEnable / OnDisable, which were the ONE Unity pair this wall did not catch.
+//
+// They start with On, like every real hook here, so they look right - and a
+// script with OnStart plus OnEnable compiled perfectly and silently never had
+// its OnEnable called. That is exactly the failure the rest of this block
+// exists to prevent, and it was the easiest one of all to hit.
+//
+// Entity::SetActive exists and every system honours it, so the flag is real.
+// What does not exist yet is a hook that fires when it changes, and saying so
+// is better than either leaving the function uncalled or pretending.
+template <class T> concept NamesOnEnable    = requires { &T::OnEnable; };
+template <class T> concept NamesOnDisable   = requires { &T::OnDisable; };
+
 // The spellings somebody reaches for instead of OnExpose. Same reasoning as
 // the block above: a function nobody calls is worse than a compile error, and
 // a variable list that is never asked for leaves the Inspector empty with
@@ -456,6 +469,13 @@ std::string DescribeHooks(const ScriptHooks& hooks);
     static_assert(!::eng::hooks::NamesAwake<Type>,                                     \
                   "This engine has no Awake. The first hook is OnStart(), which runs " \
                   "on the first update after the script is attached.");                \
+    static_assert(!(::eng::hooks::NamesOnEnable<Type> ||                               \
+                    ::eng::hooks::NamesOnDisable<Type>),                               \
+                  "This engine has no OnEnable / OnDisable yet. Entity::SetActive "    \
+                  "works and every system honours it, but nothing calls a hook when "  \
+                  "it changes - so this function would never run. To notice the "       \
+                  "change, compare IsActive() in OnFixedUpdate against what you saw "  \
+                  "last step. See scene/Entity.h.");                                   \
     /* --- the spellings reached for instead of OnExpose -------------------- */       \
     /* An unasked-for variable list is invisible: the Inspector simply shows  */       \
     /* nothing, which looks exactly like a script that exposes nothing.       */       \

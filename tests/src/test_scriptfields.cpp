@@ -1875,3 +1875,100 @@ TEST_CASE("a component written out and read back in behaves identically") {
     CHECK(*second.Fields().Find("count")->AsInt() == 7);
     CHECK_FALSE(second.IsFieldOverridden("count"));
 }
+
+// ===========================================================================
+//  A string that holds an asset's path
+// ===========================================================================
+
+TEST_CASE("Asset marks a string as a kind the Inspector has a slot for") {
+    ScriptFields fields;
+    std::string  image     = "textures/hero.png";
+    std::string  animation = "textures/hero.png#walk";
+
+    fields.Asset("portrait", image, "image", "shown on the HUD");
+    fields.Asset("walk", animation, "animation");
+
+    REQUIRE(fields.All().size() == 2);
+
+    // STILL A STRING, which is the point: every mechanism behind a script
+    // variable - the scene file, prefab overrides, the undo stack - goes on
+    // treating it as text. Only the widget changes.
+    CHECK(fields.All()[0].type == ScriptFieldType::String);
+    CHECK(fields.All()[0].requiredType == "image");
+    CHECK(fields.All()[0].tooltip == "shown on the HUD");
+    CHECK(fields.All()[1].requiredType == "animation");
+
+    // And the value is reachable and writable through it, as any string is.
+    REQUIRE(fields.All()[0].AsString() != nullptr);
+    *fields.All()[0].AsString() = "textures/other.png";
+    CHECK(image == "textures/other.png");
+}
+
+TEST_CASE("an unknown asset kind leaves the variable as ordinary text") {
+    // A KIND NOBODY CAN DRAW is almost always a tooltip written where the kind
+    // goes - the same mistake Ref guards against. The variable is KEPT either
+    // way, so a typo in a marker costs a message rather than a variable.
+    ScriptFields fields;
+    std::string  value = "something";
+
+    fields.Asset("thing", value, "a picture of a thing");
+
+    REQUIRE(fields.All().size() == 1);
+    CHECK(fields.All()[0].type == ScriptFieldType::String);
+    CHECK(fields.All()[0].requiredType.empty());   // so it draws as a box
+    REQUIRE(fields.All()[0].AsString() != nullptr);
+    CHECK(*fields.All()[0].AsString() == "something");
+}
+
+TEST_CASE("after a revert there is no saved value left to read") {
+    // ======================================================================
+    //  THE INVARIANT A CRASH CAME FROM NOT RESPECTING.
+    //
+    //  The Inspector worked out "is this overridden?" at the top of a field's
+    //  row, drew a revert button, and then - further down the SAME row - read
+    //  SavedValues().at(name) to check the saved value's type. Pressing the
+    //  button erased that key between the two, nlohmann's at() throws for a
+    //  key that is not there, nothing caught it, and the editor died with a
+    //  crash dialogue instead of saying anything.
+    //
+    //  So this pins both halves down: the key is gone, and the component says
+    //  so through IsFieldOverridden - which is the question the Inspector now
+    //  asks again before reading. Anything that erases a value and then reads
+    //  it back in the same breath is the same bug wearing a different hat.
+    // ======================================================================
+    Json vars;
+    vars["number"] = 42.0;
+    vars["label"]  = "saved";
+
+    Attached attached("TestAllTypes", vars);
+    REQUIRE(attached.component.IsFieldOverridden("number"));
+    REQUIRE(attached.component.SavedValues().contains("number"));
+
+    REQUIRE(attached.component.RevertFieldValue("number"));
+
+    // BOTH, because the Inspector trusted the first to decide whether to read
+    // the second.
+    CHECK_FALSE(attached.component.IsFieldOverridden("number"));
+    CHECK_FALSE(attached.component.SavedValues().contains("number"));
+
+    // And the one beside it is untouched - a revert is one variable.
+    CHECK(attached.component.IsFieldOverridden("label"));
+    CHECK(attached.component.SavedValues().contains("label"));
+}
+
+TEST_CASE("reverting twice is harmless, as a double click on the button would be") {
+    // The second press finds nothing to erase. It must not be an error and
+    // must not throw: a button that crashes the editor when pressed twice in
+    // quick succession is the same bug one frame later.
+    Json vars;
+    vars["number"] = 42.0;
+
+    Attached attached("TestAllTypes", vars);
+    REQUIRE(attached.component.RevertFieldValue("number"));
+
+    // TRUE, not false: the FIELD is still there and it still holds its
+    // default. There was simply nothing saved to forget.
+    CHECK(attached.component.RevertFieldValue("number"));
+    CHECK_FALSE(attached.component.IsFieldOverridden("number"));
+    CHECK(*attached.Field("number")->AsFloat() == doctest::Approx(1.5f));
+}

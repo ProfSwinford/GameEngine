@@ -1166,7 +1166,7 @@ TEST_CASE("a tile with no sheet is refused unless it is a connector") {
     REQUIRE(error.empty());
     CHECK(connector.Deserialize(asConnector, error));
     CHECK(connector.IsConnector());
-    CHECK_FALSE(connector.HasSheet());
+    CHECK_FALSE(connector.HasArt());
     CHECK(connector.TileSize() == 32);
 }
 
@@ -1391,4 +1391,287 @@ TEST_CASE("a palette entry that will not load is not added") {
     scene.Unload();
     Scene::SetActive(nullptr);
     TilemapRenderSystem::Clear();
+}
+
+// ===========================================================================
+//  The two kinds of tile art - Stage 5
+//
+//  THE ARITHMETIC IS REACHED DIRECTLY, through CheckTileArtShape, and that is
+//  the only way these cases can be tested at all: Deserialize only checks a
+//  shape when the art LOADED, and nothing loads in this binary - there is no
+//  renderer to make a texture with. See the note above CheckTileArtShape.
+// ===========================================================================
+
+TEST_CASE("a sheet is five bands tall and an image is one") {
+    // The whole difference between the kinds, in the one line that decides it.
+    CHECK(TileSizeFor(TileArt::AutoTile, 80) == 16);
+    CHECK(TileSizeFor(TileArt::Image, 80) == 80);
+
+    CHECK(TileSizeFor(TileArt::AutoTile, 160) == 32);
+    CHECK(TileSizeFor(TileArt::Image, 160) == 160);
+}
+
+TEST_CASE("a proper auto-tile sheet passes, and says how many frames it holds") {
+    const TileArtShape one =
+        CheckTileArtShape(TileArt::AutoTile, 16, 16, 80, 0, "textures/grass.png");
+    CHECK(one.Ok());
+    CHECK(one.frames == 1);
+    CHECK(one.note.empty());
+
+    // Frames go SIDEWAYS: three bands-wide columns of a 16px tile.
+    const TileArtShape three =
+        CheckTileArtShape(TileArt::AutoTile, 16, 48, 80, 0, "textures/water.png");
+    CHECK(three.Ok());
+    CHECK(three.frames == 3);
+}
+
+TEST_CASE("the shape check CANNOT tell a spritesheet from a tile sheet") {
+    // ======================================================================
+    //  THIS TEST ASSERTS THE LIMIT, not the fix, and it is here so that the
+    //  limit cannot be forgotten.
+    //
+    //  48x80 is a character spritesheet - twelve 16x20 frames in the user's
+    //  project it came from. Read as an auto-tile the size is derived as
+    //  80 / 5 = 16, and the height check then asks whether 80 is five times
+    //  16, which it is. So it PASSES, with three frames, and draws as
+    //  scrambled quarters.
+    //
+    //  No measurement can do better: a tile sheet and a spritesheet of those
+    //  dimensions are the same image. That is why TileAsset::Deserialize goes
+    //  on to ask the SIDECAR whether the image has been sliced - a statement
+    //  of intent, which arithmetic cannot supply. See TileAsset.h.
+    // ======================================================================
+    const TileArtShape asSheet =
+        CheckTileArtShape(TileArt::AutoTile, TileSizeFor(TileArt::AutoTile, 80), 48,
+                          80, 0, "textures/spritesheet.png");
+    CHECK(asSheet.Ok());
+    CHECK(asSheet.frames == 3);
+
+    // THE SAME IMAGE AS AN IMAGE TILE IS REFUSED, and that is not a
+    // contradiction: as one picture it would have to be square.
+    const TileArtShape asImage =
+        CheckTileArtShape(TileArt::Image, TileSizeFor(TileArt::Image, 80), 48, 80, 0,
+                          "textures/spritesheet.png");
+    CHECK_FALSE(asImage.Ok());
+    CHECK(asImage.problem.find("square") != std::string::npos);
+}
+
+TEST_CASE("a height that is not five tiles is refused, and the message offers image") {
+    // 96x128: the other sheet in the same project. 128 / 5 is 25, and 25 x 5
+    // is 125, so it fails - which is the case the check DOES catch.
+    const TileArtShape shape =
+        CheckTileArtShape(TileArt::AutoTile, TileSizeFor(TileArt::AutoTile, 128), 96,
+                          128, 0, "textures/spear.png");
+    CHECK_FALSE(shape.Ok());
+
+    // THE WAY OUT IS NAMED. Somebody who has just been told their picture is
+    // the wrong shape for a sheet wants to know what it IS the right shape
+    // for, and the answer is almost always "image".
+    CHECK(shape.problem.find("image") != std::string::npos);
+    CHECK(shape.problem.find("128") != std::string::npos);
+    CHECK(shape.problem.find("125") != std::string::npos);
+}
+
+TEST_CASE("one square picture is one frame of an image tile") {
+    const TileArtShape square =
+        CheckTileArtShape(TileArt::Image, 32, 32, 32, 0, "textures/rock.png");
+    CHECK(square.Ok());
+    CHECK(square.frames == 1);
+    CHECK(square.note.empty());
+}
+
+TEST_CASE("an image tile's frames go sideways, like a sheet's") {
+    const TileArtShape strip =
+        CheckTileArtShape(TileArt::Image, 32, 96, 32, 0, "textures/torch.png");
+    CHECK(strip.Ok());
+    CHECK(strip.frames == 3);
+}
+
+TEST_CASE("an odd size is fine for an image and not for a sheet") {
+    // An auto-tile is drawn as four half-size quarters; an image is drawn
+    // whole. The rule follows the reason for it.
+    const TileArtShape odd =
+        CheckTileArtShape(TileArt::Image, 15, 15, 15, 0, "textures/odd.png");
+    CHECK(odd.Ok());
+    CHECK(odd.frames == 1);
+
+    // The even rule is enforced in Deserialize, which is where the tile size
+    // is known before the shape is looked at; see the Deserialize cases below.
+}
+
+TEST_CASE("a width that is not a whole number of tiles is a note, not a refusal") {
+    const TileArtShape ragged =
+        CheckTileArtShape(TileArt::Image, 32, 100, 32, 0, "textures/ragged.png");
+    CHECK(ragged.Ok());
+    CHECK(ragged.frames == 3);   // 100 / 32, and the last 4px are not a frame
+
+    // SAID, BECAUSE IT IS INVISIBLE OTHERWISE: the art looks complete and four
+    // pixels of it can never appear.
+    CHECK_FALSE(ragged.note.empty());
+    CHECK(ragged.note.find("4px") != std::string::npos);
+}
+
+TEST_CASE("asking for more frames than the art holds is refused") {
+    const TileArtShape tooMany =
+        CheckTileArtShape(TileArt::Image, 32, 96, 32, 5, "textures/torch.png");
+    CHECK_FALSE(tooMany.Ok());
+    CHECK(tooMany.problem.find("5 frame(s)") != std::string::npos);
+
+    // And stating the number it really has is fine.
+    const TileArtShape exact =
+        CheckTileArtShape(TileArt::Image, 32, 96, 32, 3, "textures/torch.png");
+    CHECK(exact.Ok());
+    CHECK(exact.frames == 3);
+}
+
+TEST_CASE("a tile size of zero is refused rather than dividing by it") {
+    const TileArtShape zero =
+        CheckTileArtShape(TileArt::Image, 0, 32, 32, 0, "textures/rock.png");
+    CHECK_FALSE(zero.Ok());
+}
+
+// ---------------------------------------------------------------------------
+//  ...and the file format around it
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the key says which kind of art a tile has") {
+    std::string error;
+
+    TileAsset image;
+    Json      asImage =
+        ParseJson(R"({"image":"textures/rock.png","tileSize":32})", error);
+    REQUIRE(error.empty());
+    REQUIRE(image.Deserialize(asImage, error));
+    CHECK(image.Art() == TileArt::Image);
+    CHECK_FALSE(image.IsAutoTile());
+    CHECK(image.ArtPath() == "textures/rock.png");
+
+    TileAsset sheet;
+    Json      asSheet =
+        ParseJson(R"({"sheet":"textures/grass.png","tileSize":32})", error);
+    REQUIRE(error.empty());
+    REQUIRE(sheet.Deserialize(asSheet, error));
+    CHECK(sheet.Art() == TileArt::AutoTile);
+    CHECK(sheet.IsAutoTile());
+}
+
+TEST_CASE("naming both kinds of art is refused") {
+    // They are two KINDS, not two settings, so there is no sensible way to
+    // honour both - and picking one silently would be the worst of it.
+    std::string error;
+    TileAsset   both;
+    Json        node = ParseJson(
+        R"({"sheet":"textures/grass.png","image":"textures/rock.png"})", error);
+    REQUIRE(error.empty());
+
+    CHECK_FALSE(both.Deserialize(node, error));
+    CHECK(error.find("sheet") != std::string::npos);
+    CHECK(error.find("image") != std::string::npos);
+}
+
+TEST_CASE("a tile with no art names both keys in the refusal") {
+    // Somebody writing their first .otile does not yet know there are two
+    // kinds. "sheet is required" used to send them to point it at whatever
+    // picture they had, which is how the scrambled-quarters bug was met.
+    std::string error;
+    TileAsset   nothing;
+    Json        node = ParseJson(R"({"tileSize":32})", error);
+    REQUIRE(error.empty());
+
+    CHECK_FALSE(nothing.Deserialize(node, error));
+    CHECK(error.find("sheet") != std::string::npos);
+    CHECK(error.find("image") != std::string::npos);
+}
+
+TEST_CASE("an odd tile size is refused for a sheet and allowed for an image") {
+    std::string error;
+
+    TileAsset sheet;
+    Json      asSheet =
+        ParseJson(R"({"sheet":"textures/none.png","tileSize":15})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(sheet.Deserialize(asSheet, error));
+    CHECK(error.find("EVEN") != std::string::npos);
+
+    // THE SAME NUMBER, ACCEPTED, because an image is drawn whole and there is
+    // no half of it to lose a pixel from.
+    TileAsset image;
+    Json      asImage =
+        ParseJson(R"({"image":"textures/none.png","tileSize":15})", error);
+    REQUIRE(error.empty());
+    CHECK(image.Deserialize(asImage, error));
+    CHECK(image.TileSize() == 15);
+}
+
+TEST_CASE("an image tile round-trips through its file") {
+    std::string error;
+
+    TileAsset written;
+    Json      node = ParseJson(
+        R"({"image":"textures/atlas.png#rock","tileSize":24,"collision":"None"})",
+        error);
+    REQUIRE(error.empty());
+    REQUIRE(written.Deserialize(node, error));
+
+    Json out;
+    REQUIRE(written.Serialize(out));
+
+    // THE KEY CARRIES THE KIND, so writing the right one is the whole of
+    // saving it - and "sheet" must not appear at all.
+    CHECK(out.contains("image"));
+    CHECK_FALSE(out.contains("sheet"));
+    CHECK(out["image"].get<std::string>() == "textures/atlas.png#rock");
+
+    TileAsset read;
+    REQUIRE(read.Deserialize(out, error));
+    CHECK(read.Art() == TileArt::Image);
+    CHECK(read.ArtPath() == "textures/atlas.png#rock");
+    CHECK(read.TileSize() == 24);
+    CHECK_FALSE(read.IsSolid());
+}
+
+TEST_CASE("a frame of a sliced sheet is a legal path for an image tile") {
+    // The point of the kind: one picture out of a spritesheet, with no file of
+    // its own. Nothing here loads it - that needs a renderer - but the format
+    // must accept the path.
+    std::string error;
+    TileAsset   asset;
+    Json        node = ParseJson(
+        R"({"image":"textures/hero.png#f3","tileSize":16})", error);
+    REQUIRE(error.empty());
+    REQUIRE(asset.Deserialize(node, error));
+    CHECK(asset.ArtPath() == "textures/hero.png#f3");
+    CHECK(asset.HasArt());
+}
+
+TEST_CASE("an unloadable image is reported as an image and not as a sheet") {
+    // The message names the key the file used. Being told "sheet could not be
+    // loaded" about a line that says "image" is a small thing that wastes a
+    // real amount of somebody's time.
+    TileSandbox box("artkey");
+    std::string error;
+    TileAsset   asset;
+    Json        node = ParseJson(R"({"image":"textures/nope.png"})", error);
+    REQUIRE(error.empty());
+
+    CHECK_FALSE(asset.Deserialize(node, error));
+    CHECK(error.find("image") != std::string::npos);
+    CHECK(error.find("sheet") == std::string::npos);
+}
+
+TEST_CASE("an image tile loads through the library like any other") {
+    TileSandbox box("imagetile");
+    box.Write("tiles/rock.otile",
+              R"({"image":"textures/rock.png","tileSize":32,"collision":"Grid"})");
+
+    const TileAsset* asset = TileLibrary::Load("tiles/rock.otile");
+    REQUIRE(asset != nullptr);
+    CHECK(asset->Art() == TileArt::Image);
+    CHECK(asset->TileSize() == 32);
+    CHECK(asset->IsSolid());
+    CHECK(asset->Path() == "tiles/rock.otile");
+
+    // And the cache hands back the same one, as it does for a sheet.
+    CHECK(TileLibrary::Load("tiles/rock.otile") == asset);
+    CHECK(TileLibrary::Count() == 1);
 }

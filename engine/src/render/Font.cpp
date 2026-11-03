@@ -83,7 +83,8 @@ int AtlasSideFor(float pixelHeight) {
 
 } // namespace
 
-FontRef BakeFont(std::string_view virtualPath, float pixelHeight, std::string& outError) {
+FontRef BakeFont(std::string_view virtualPath, float pixelHeight, bool smooth,
+                 std::string& outError) {
     FontRef font    = std::make_shared<Font>();
     font->path        = std::string(virtualPath);
     font->pixelHeight = pixelHeight;
@@ -156,8 +157,11 @@ FontRef BakeFont(std::string_view virtualPath, float pixelHeight, std::string& o
         rgba[i * 4 + 3] = coverage[i];
     }
 
-    TextureRef atlas = Renderer::CreateTextureFromPixels(rgba.data(), side, side,
-                                                         /*smooth=*/true, outError);
+    // `smooth` comes from the font's own import settings, resolved by
+    // ResourceManager::LoadFont. It was a hardcoded `true` here, and the
+    // argument for that default is now written down beside the caller.
+    TextureRef atlas =
+        Renderer::CreateTextureFromPixels(rgba.data(), side, side, smooth, outError);
     if (!atlas) {
         font->isFallback = true;
         return font;

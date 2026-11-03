@@ -88,6 +88,14 @@ public:
     // Nearly every component wants its entity's transform, so here it is.
     Transform2D* OwnerTransform() const;
 
+    // Whether the entity this is attached to is switched on - meaning itself
+    // AND every ancestor. See Entity::IsActiveInHierarchy, which also has the
+    // argument for why EVERY system has to ask this and not just the renderer.
+    //
+    // Here rather than written out in each system, so that "a component that
+    // is not attached to anything" has one answer instead of nine.
+    bool OwnerIsActive() const;
+
 private:
     friend class Entity;
     Entity* m_owner = nullptr;
@@ -142,6 +150,20 @@ public:
 
     Transform2D&       Transform()       { return m_transform; }
     const Transform2D& Transform() const { return m_transform; }
+
+    // ---- the ONLY writer of the scene's transform-to-entity table ---------
+    //
+    // This component is the one place in the engine where a Transform2D and
+    // the entity that owns it are both in hand, which is what makes it the
+    // right - and only - place to record the pairing. Scene::EntityOf reads
+    // what these two write and has the full argument for why the table lives
+    // on the scene instead of on the transform.
+    //
+    // Registering in OnAttach rather than in the constructor matters for the
+    // reason the Component header gives: mid-constructor there is no owner
+    // yet, so there would be nothing to record.
+    void OnAttach() override;
+    void OnDetach() override;
 
 private:
     Transform2D m_transform;
@@ -201,6 +223,37 @@ public:
     void SetTint(Color tint);
     void SetLayer(int layer);
     void SetTexture(std::string_view virtualPath);
+
+    // ======================================================================
+    //  SHOWS A PICTURE WITHOUT CHANGING THE SAVED PATH.
+    //
+    //  SetTexture above writes m_texturePath, which Serialize writes into the
+    //  scene file. That is right for an edit and WRONG FOR PLAYBACK: Ctrl+S
+    //  is not blocked while the game is playing - unlike New Scene - so an
+    //  animation calling SetTexture twelve times a second would eventually
+    //  have one of those frames saved as the sprite's authored picture.
+    //  Silently, because a frame path loads perfectly well, and invisibly,
+    //  because Stop puts the authored value back in memory afterwards. Undo
+    //  is the same path: every snapshot is a full Scene::SaveToString.
+    //
+    //  TAKES A TextureRef, NOT A PATH, and both halves of that are
+    //  deliberate: the caller already holds the pinned frame, so this is a
+    //  pointer copy with no string to construct and no cache to look in - and
+    //  there is structurally no path here for the body to be tempted to write
+    //  down.
+    //
+    //  AN EMPTY REFERENCE IS ACCEPTED AND SIMPLY NOT DRAWN. The render loop
+    //  already skips a sprite with no texture, and nothing is logged here
+    //  because the reason is only known one level up: the refusal with a
+    //  reason belongs to whoever could not find a frame, said once, by name.
+    //
+    //  THE PIXEL SIZE IS DELIBERATELY UNTOUCHED. Left at zero the renderer
+    //  takes each frame's own width and height, so a sheet whose frames differ
+    //  in size pulses as it plays. That is what "use the image's own size"
+    //  means, and it belongs in the documentation rather than in a special
+    //  case here.
+    // ======================================================================
+    void ShowTexture(const TextureRef& texture);
 
 private:
     TextureRef  m_texture;         // shared; see render/Texture.h

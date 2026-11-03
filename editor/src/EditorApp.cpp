@@ -8,6 +8,8 @@
 
 #include "EditorApp.h"
 
+#include <engine/resource/ImportSettings.h>
+
 #include <algorithm>
 
 #include "EditorGui.h"
@@ -32,6 +34,8 @@
 #include <imgui.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <map>
 
 namespace editor {
 
@@ -49,6 +53,7 @@ bool EditorState::IsSelected(eng::EntityId id) const {
 }
 
 void EditorState::SelectOnly(eng::EntityId id) {
+    selectedAsset.clear();
     selection.clear();
     if (!id.IsNull()) {
         selection.push_back(id);
@@ -60,6 +65,7 @@ void EditorState::AddToSelection(eng::EntityId id) {
     if (id.IsNull()) {
         return;
     }
+    selectedAsset.clear();
     if (!IsSelected(id)) {
         selection.push_back(id);
     }
@@ -73,6 +79,7 @@ void EditorState::ToggleSelection(eng::EntityId id) {
     if (id.IsNull()) {
         return;
     }
+    selectedAsset.clear();
     const auto it = std::find(selection.begin(), selection.end(), id);
     if (it == selection.end()) {
         selection.push_back(id);
@@ -91,6 +98,7 @@ void EditorState::ToggleSelection(eng::EntityId id) {
 }
 
 void EditorState::ClearSelection() {
+    selectedAsset.clear();
     selection.clear();
     selected = eng::EntityId{};
 }
@@ -107,6 +115,48 @@ void EditorState::PruneSelection() {
     // one of its members is deleted, which is the common case.
     if (scene.Get(selected) == nullptr) {
         selected = selection.empty() ? eng::EntityId{} : selection.back();
+    }
+
+    // ---- and the selected FILE, for the same reason -----------------------
+    //
+    // A path goes stale exactly as an entity id does, and in one more way: the
+    // file can be deleted from outside the editor entirely. This is the only
+    // place that runs every frame REGARDLESS OF WHICH PANEL HAS FOCUS, which
+    // is what makes it the right home - the Assets panel used to drop its own
+    // stale selection, and could only do so on the frames it was focused.
+    //
+    // ONE fs::exists PER FRAME, and only while a file is selected. The
+    // alternative is an Inspector describing the import settings of something
+    // that is not there, with a Revert button aimed at it.
+    // ======================================================================
+    //  EITHER THE SHEET OR THE PATH ITSELF, and it has to be both tests.
+    //
+    //  A sliced frame - "textures/hero.png#walk_1" - is not a file, so asking
+    //  Exists about it is always false and a frame could never stay selected
+    //  for even one frame: clicking one would set it here and have it cleared
+    //  before any panel drew. Hence the SheetPathOf test.
+    //
+    //  But that test alone is wrong the other way round. "textures/hero.png#f0"
+    //  can be a REAL FILE - '#' is a legal filename character, and the Assets
+    //  panel's own rename dialog will write one - and if no hero.png sits
+    //  beside it, SheetPathOf names a file that does not exist. The selection
+    //  was then cleared on the very next frame: the Assets panel kept its blue
+    //  border on a file that is plainly there while the Inspector showed
+    //  "select an entity in the Hierarchy", for ever, with nothing to explain
+    //  it.
+    //
+    //  So it is dropped only when NEITHER reading finds anything. This is the
+    //  same ambiguity ResourceManager::LoadTexture resolves the same way: try
+    //  the frame, and fall back to the literal path when a real file is there.
+    //
+    //  ONE OR TWO fs::exists PER FRAME, and only while something is selected.
+    //  The second is reached only for a path containing a '#', which is rare
+    //  and is the case that was broken.
+    // ======================================================================
+    if (!selectedAsset.empty() &&
+        !eng::FileSystem::Exists(eng::SheetPathOf(selectedAsset)) &&
+        !eng::FileSystem::Exists(selectedAsset)) {
+        selectedAsset.clear();
     }
 }
 
@@ -168,7 +218,9 @@ bool EditorApp::Init(const std::string& projectRoot) {
     AddPanel(std::make_unique<ToolbarPanel>());        // Play / Pause / Step
     AddPanel(std::make_unique<HierarchyPanel>());      // every entity
     AddPanel(std::make_unique<InspectorPanel>());      // the selected entity
-    AddPanel(std::make_unique<AssetBrowserPanel>());   // files on disk
+    auto assets         = std::make_unique<AssetBrowserPanel>();
+    m_assetBrowserPanel = assets.get();
+    AddPanel(std::move(assets));                       // files on disk
     auto tiles         = std::make_unique<TilePalettePanel>();
     m_tilePalettePanel = tiles.get();
     AddPanel(std::move(tiles));                        // tiles, and the brush
@@ -202,6 +254,16 @@ void EditorApp::RefreshSceneList() {
     }
 }
 
+bool IsPrefabChild(eng::EntityId id) {
+    eng::Scene& scene = eng::Engine::Get().GetScene();
+    return scene.PrefabInstanceOf(id) != nullptr && !scene.IsPrefabRoot(id);
+}
+
+const char* PrefabChildRefusal() {
+    return "that belongs to a prefab - the prefab would put it straight back. "
+           "Unpack the instance first, or change the prefab itself.";
+}
+
 std::size_t DestroySelection() {
     EditorState& state = EditorState::Get();
     if (state.selection.empty()) {
@@ -212,20 +274,123 @@ std::size_t DestroySelection() {
     // from the selection, but the prune at the top of the next frame will -
     // and iterating the thing that is about to be cleared is how one of these
     // two copies would eventually have grown a bug the other did not.
-    const std::vector<eng::EntityId> doomed = state.selection;
+    const std::vector<eng::EntityId> selected = state.selection;
+
+    // ======================================================================
+    //  PREFAB CHILDREN ARE LEFT OUT, and the rest still go.
+    //
+    //  Refusing the WHOLE delete because one of eight selected entities
+    //  happened to be inside a prefab would be the more annoying answer by
+    //  far: the obvious next move is to deselect it and try again, which is
+    //  exactly what this does for you. What must not happen is the delete
+    //  appearing to work on a child and then being undone by the next rebuild
+    //  - see IsPrefabChild.
+    // ======================================================================
+    eng::Scene& scene = eng::Engine::Get().GetScene();
+
+    std::vector<eng::EntityId> doomed;
+    std::size_t                refused = 0;
+    for (const eng::EntityId id : selected) {
+        if (IsPrefabChild(id)) {
+            // ==============================================================
+            //  UNLESS ITS ROOT IS GOING TOO, in which case it is not being
+            //  kept at all - destroying a prefab root destroys the whole
+            //  instance, this child included. Without this test, selecting an
+            //  instance and one of its children and pressing Delete would do
+            //  exactly the right thing and then report "kept 1 prefab
+            //  member", which is a message that is simply not true.
+            // ==============================================================
+            const eng::EntityId root = scene.PrefabRootOf(id);
+            const bool rootIsGoingToo =
+                std::find(selected.begin(), selected.end(), root) != selected.end();
+            if (!rootIsGoingToo) {
+                ++refused;
+                continue;
+            }
+            continue;   // taken care of by its root; not queued twice
+        }
+        doomed.push_back(id);
+    }
+
     for (const eng::EntityId id : doomed) {
         eng::DeferredOps::QueueDestroy(id);
     }
     state.ClearSelection();
-    state.MarkDirty();
 
+    if (refused > 0) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor, "kept {} prefab member(s): {}", refused,
+                        PrefabChildRefusal());
+    }
+    if (doomed.empty()) {
+        return 0;   // nothing happened, so the scene is not dirty
+    }
+
+    state.MarkDirty();
     ENGINE_LOG_INFO(eng::Channels::kEditor, "destroyed {} entit{}", doomed.size(),
                     doomed.size() == 1 ? "y" : "ies");
     return doomed.size();
 }
 
+eng::EntityId DuplicateOne(eng::EntityId id) {
+    eng::Scene& scene = eng::Engine::Get().GetScene();
+
+    eng::PrefabInstance* instance = scene.PrefabInstanceOf(id);
+    if (instance != nullptr && scene.IsPrefabRoot(id)) {
+        // So that parentName describes where the original actually is rather
+        // than where it was when the instance was built - somebody may have
+        // dragged it onto something else since.
+        eng::RefreshPrefabPlacement(scene, *instance);
+
+        const std::string path       = instance->prefabPath;
+        const std::string parentName = instance->parentName;
+
+        eng::Entity* source = scene.Get(id);
+        if (source == nullptr) {
+            return {};
+        }
+        const eng::Vec2  position = source->Transform().LocalPosition();
+        const float      rotation = source->Transform().LocalRotation();
+        const eng::Vec2  scale    = source->Transform().LocalScale();
+
+        std::string         error;
+        const eng::EntityId copy = scene.InstantiatePrefab(path, error);
+        if (copy.IsNull()) {
+            ENGINE_LOG_WARN(eng::Channels::kEditor, "could not duplicate: {}", error);
+            return {};
+        }
+
+        if (eng::PrefabInstance* made = scene.PrefabInstanceOf(copy)) {
+            made->parentName = parentName;
+        }
+        if (eng::Entity* made = scene.Get(copy); made != nullptr) {
+            // ON TOP OF THE ORIGINAL, including its rotation and scale, which
+            // is what makes "duplicate, then drag it aside" one gesture. The
+            // parent is set first so the local numbers mean the same thing.
+            if (eng::Entity* parent = scene.Get(scene.Find(parentName));
+                parent != nullptr) {
+                made->Transform().SetParent(&parent->Transform());
+            }
+            made->Transform().SetLocalPosition(position);
+            made->Transform().SetLocalRotation(rotation);
+            made->Transform().SetLocalScale(scale);
+        }
+        return copy;
+    }
+
+    std::string         error;
+    const eng::EntityId copy = scene.DuplicateEntity(id, error);
+    if (copy.IsNull()) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor, "could not duplicate: {}", error);
+    }
+    return copy;
+}
+
 void DestroyEntity(eng::EntityId id) {
     if (id.IsNull()) {
+        return;
+    }
+    if (IsPrefabChild(id)) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor, "{}", PrefabChildRefusal());
         return;
     }
     eng::DeferredOps::QueueDestroy(id);
@@ -272,8 +437,6 @@ std::string StepUndoStack(bool forward) {
 // That is its existing behaviour, which the Hierarchy's own Duplicate item
 // has always had; this does not quietly change it.
 std::size_t DuplicateSelection() {
-    eng::Scene& scene = eng::Engine::Get().GetScene();
-
     // COPIED BEFORE ANY DUPLICATING, because duplicating adds entities and
     // the selection is about to be replaced by the copies.
     const std::vector<eng::EntityId> sources = EditorState::Get().selection;
@@ -283,10 +446,11 @@ std::size_t DuplicateSelection() {
 
     std::vector<eng::EntityId> copies;
     for (const eng::EntityId id : sources) {
-        std::string         error;
-        const eng::EntityId copy = scene.DuplicateEntity(id, error);
+        // Through the shared door, which is what makes Ctrl+D on a prefab
+        // instance produce another instance rather than a loose copy of its
+        // root. See DuplicateOne in EditorApp.h.
+        const eng::EntityId copy = DuplicateOne(id);
         if (copy.IsNull()) {
-            ENGINE_LOG_WARN(eng::Channels::kEditor, "could not duplicate: {}", error);
             continue;
         }
         copies.push_back(copy);
@@ -1072,6 +1236,11 @@ void EditorApp::DrawPanels() {
     // The Begin/End pair lives HERE, not inside each panel's Draw. See the
     // note in Panel.h.
     for (const std::unique_ptr<Panel>& panel : m_panels) {
+        // RECORDED FOR EVERY PANEL, EVERY FRAME, including the ones that
+        // return early below - a stale "visible" would have the world
+        // rendered into a closed panel's picture. See Panel::IsVisible.
+        panel->SetVisible(false);
+
         if (!panel->IsOpen()) {
             panel->OnHidden();
             continue;
@@ -1080,6 +1249,7 @@ void EditorApp::DrawPanels() {
         // panel is open but not visible this frame. Telling the panel so is
         // what keeps it from acting on stale information; see Panel::OnHidden.
         if (ImGui::Begin(panel->Title(), panel->OpenFlag())) {
+            panel->SetVisible(true);
             panel->Draw();
         } else {
             panel->OnHidden();
@@ -1118,6 +1288,26 @@ void EditorApp::FocusGameViewIfRequested() {
     ImGui::SetWindowFocus(m_gamePanel->Title());
 }
 
+void EditorApp::RevealAssetsPanelIfRequested() {
+    if (EditorState::Get().revealAsset.empty() || m_assetBrowserPanel == nullptr) {
+        return;
+    }
+
+    // Opened first and focused on the NEXT frame, exactly as the Game view and
+    // the Tile Palette are, and for the same reason: a closed panel has never
+    // been shown to ImGui, so there is no window of that name to focus yet.
+    if (!m_assetBrowserPanel->IsOpen()) {
+        m_assetBrowserPanel->SetOpen(true);
+        return;
+    }
+
+    // THE REQUEST IS NOT CONSUMED HERE. All this does is make sure the panel
+    // will be DRAWN, so that its own RevealRequestedAsset can navigate to the
+    // folder and select the file - which only it knows how to do. Clearing the
+    // flag here would bring the tab forward and select nothing.
+    ImGui::SetWindowFocus(m_assetBrowserPanel->Title());
+}
+
 void EditorApp::RevealTilePaletteIfRequested() {
     TilePaintState& tiles = TilePaintState::Get();
     if (!tiles.revealRequested || m_tilePalettePanel == nullptr) {
@@ -1135,7 +1325,247 @@ void EditorApp::RevealTilePaletteIfRequested() {
     tiles.revealRequested = false;
     ImGui::SetWindowFocus(m_tilePalettePanel->Title());
 }
+
+// ---------------------------------------------------------------------------
+//  Apply, Revert and Unpack. See PrefabRequest in EditorApp.h for why none of
+//  them happens where it was asked for.
+// ---------------------------------------------------------------------------
+void EditorApp::ApplyPrefabRequest() {
+    EditorState& state = EditorState::Get();
+
+    // TAKEN AND CLEARED FIRST, so that an early return below cannot leave a
+    // request that tries again on every frame for the rest of the session.
+    // Same reason InspectorPanel::ApplyPendingRemoval does it.
+    const PrefabRequest request = state.prefabRequest;
+    state.prefabRequest         = PrefabRequest{};
+
+    if (request.action == PrefabAction::None) {
+        return;
+    }
+
+    eng::Engine& engine = eng::Engine::Get();
+    eng::Scene&  scene  = engine.GetScene();
+
+    // ======================================================================
+    //  NOT WHILE THE GAME IS RUNNING, and Apply is the reason.
+    //
+    //  During play the scene is a throwaway copy that Stop is about to replace
+    //  - see Engine::EnterPlayMode. Applying from it would write a play
+    //  session into the asset: an enemy saved at wherever it had walked to,
+    //  with whatever health it had left, pushed out to every scene in the
+    //  project. Reverting is only wrong rather than destructive, and is
+    //  refused with it so that the rule is one rule.
+    // ======================================================================
+    if (engine.IsInPlayMode()) {
+        std::snprintf(m_status, sizeof(m_status),
+                      "prefabs cannot be changed while the game is running - press Stop");
+        return;
+    }
+
+    // ---- making a new one is the one request with no instance yet ---------
+    if (request.action == PrefabAction::Create) {
+        eng::EntityId made;
+        std::string   error;
+        if (!eng::CreatePrefabFromEntity(scene, request.member, request.path, made,
+                                         error)) {
+            std::snprintf(m_status, sizeof(m_status), "%s", error.c_str());
+            ENGINE_LOG_WARN(eng::Channels::kEditor, "{}", error);
+            return;
+        }
+        state.SelectOnly(made);
+        state.MarkDirty();
+
+        // Shown in the Assets panel, which is also how you find out where it
+        // went - the folder is decided for you, so being told is the point.
+        state.revealAsset = request.path;
+        std::snprintf(m_status, sizeof(m_status), "created %s", request.path.c_str());
+        return;
+    }
+
+    eng::PrefabInstance* instance = scene.PrefabInstanceOf(request.member);
+    if (instance == nullptr) {
+        // The entity was destroyed, or unpacked, between the click and here.
+        std::snprintf(m_status, sizeof(m_status),
+                      "that entity is no longer part of a prefab instance");
+        return;
+    }
+
+    // ======================================================================
+    //  NOTED BEFORE ANYTHING HAPPENS: WHICH MEMBER, NOT WHICH ENTITY.
+    //
+    //  Every operation below except Unpack rebuilds the instance, so
+    //  request.member is a dead id by the time there is a selection to put
+    //  back. The instance RECORD survives, and a local id means the same
+    //  member of it before and after - which is the whole point of local ids;
+    //  see scene/Prefab.h.
+    // ======================================================================
+    const int         localId = scene.PrefabLocalIdOf(request.member);
+    const std::string path    = instance->prefabPath;
+
+    std::string error;
+    bool        ok    = false;
+    const char* verb  = "";
+    bool        kept  = true;   // false once `instance` must not be touched again
+
+    switch (request.action) {
+        case PrefabAction::ApplyAll:
+            ok   = eng::ApplyPrefabInstance(scene, request.member, error);
+            verb = "applied to";
+            break;
+        case PrefabAction::RevertAll:
+            ok   = eng::RevertPrefabInstance(scene, request.member, error);
+            verb = "reverted to";
+            break;
+        case PrefabAction::ApplyItem:
+            ok   = eng::ApplyPrefabItem(scene, request.member, request.item, error);
+            verb = "applied to";
+            break;
+        case PrefabAction::RevertItem:
+            ok   = eng::RevertPrefabItem(scene, request.member, request.item, error);
+            verb = "reverted to";
+            break;
+        case PrefabAction::Unpack:
+            // UNPACK DESTROYS THE RECORD, so `instance` is dangling from here
+            // on and nothing below may dereference it.
+            ok   = scene.UnpackPrefabInstance(request.member);
+            verb = "unpacked from";
+            kept = false;
+            if (!ok) {
+                error = "that entity is not part of a prefab instance";
+            }
+            break;
+        case PrefabAction::Create:
+        case PrefabAction::None:
+            return;   // Create returned above; None cannot reach here
+    }
+
+    if (!ok) {
+        std::snprintf(m_status, sizeof(m_status), "%s", error.c_str());
+        ENGINE_LOG_WARN(eng::Channels::kEditor, "{}", error);
+        return;
+    }
+
+    state.MarkDirty();
+
+    // ---- and put the selection back ---------------------------------------
+    //
+    // Unpack left every entity alone, so its ids are still good. The other
+    // four rebuilt them, and without this the selection would simply vanish
+    // on the next prune - which looks like the editor forgetting what you
+    // were working on. See EditorState::PruneSelection.
+    if (kept) {
+        const eng::EntityId again = scene.PrefabMember(*instance, localId);
+        if (!again.IsNull()) {
+            state.SelectOnly(again);
+        }
+    }
+
+    const std::string detail = request.item.description.empty()
+                                   ? std::string{}
+                                   : " (" + request.item.description + ")";
+    std::snprintf(m_status, sizeof(m_status), "%s %s%s", verb, path.c_str(),
+                  detail.c_str());
+}
+void EditorApp::ReloadChangedPrefabs() {
+    // The write time each loaded prefab had when it was last looked at.
+    //
+    // A function-local static rather than a member, so that <filesystem> stays
+    // out of EditorApp.h - it is included by every panel in the editor.
+    static std::map<std::string, std::filesystem::file_time_type> seen;
+
+    eng::Scene& scene = eng::Engine::Get().GetScene();
+
+    std::vector<std::string> changed;
+    eng::PrefabLibrary::ForEachLoaded([&](const std::string& path) {
+        std::error_code ec;
+        const auto      when =
+            std::filesystem::last_write_time(eng::FileSystem::Resolve(path), ec);
+        if (ec) {
+            // Deleted or unreadable. Left alone rather than reported: the next
+            // thing that asks for it says so with a better message, and a
+            // prefab can legitimately be missing for a moment while somebody
+            // is moving files about.
+            return;
+        }
+
+        const auto it = seen.find(path);
+        if (it == seen.end()) {
+            // First sight of it. NOT treated as a change - everything would
+            // rebuild on the first alt-tab after opening a scene.
+            seen.emplace(path, when);
+            return;
+        }
+        if (it->second == when) {
+            return;
+        }
+        it->second = when;
+        changed.push_back(path);
+    });
+
+    for (const std::string& path : changed) {
+        // THE CAPTURE COMES FIRST, against the asset as the instances in this
+        // scene were built from it. Doing it the other way round would measure
+        // each instance against the NEW file and record its current values as
+        // deliberate overrides - pinning every instance to what it looked like
+        // before the edit, which is the exact opposite of the point. See
+        // Scene::RebuildPrefabInstances.
+        eng::CapturePrefabOverridesForAsset(scene, path);
+
+        std::string       error;
+        const std::size_t rebuilt = scene.RebuildPrefabInstances(path, error);
+        if (rebuilt == 0) {
+            if (!error.empty()) {
+                ENGINE_LOG_WARN(eng::Channels::kEditor, "'{}' changed, but: {}", path,
+                                error);
+            }
+            continue;
+        }
+
+        ENGINE_LOG_INFO(eng::Channels::kEditor,
+                        "'{}' changed on disk; {} instance(s) in this scene rebuilt",
+                        path, rebuilt);
+        std::snprintf(m_status, sizeof(m_status), "%s changed - %zu instance(s) updated",
+                      path.c_str(), rebuilt);
+
+        // ==================================================================
+        //  THE SCENE IS NOT MARKED DIRTY, AND UNDO IS RESET. Both halves are
+        //  deliberate and neither is obvious.
+        //
+        //  NOT DIRTY, because nothing about the SCENE changed - its instance
+        //  records are exactly what they were, and saving it now would write
+        //  the same file. The asterisk would be a lie.
+        //
+        //  UNDO RESET, because its baseline is a snapshot of the scene taken
+        //  BEFORE the rebuild, and that snapshot holds the prefab's old
+        //  contents. Stepping back to it would restore those contents into a
+        //  scene whose asset now says something else - and the next diff would
+        //  read every one of those stale values as a deliberate override,
+        //  quietly detaching the instance from the prefab for good.
+        //
+        //  Clearing the history is the same thing a scene change does, and an
+        //  outside edit to a prefab in the open scene is that kind of event.
+        // ==================================================================
+        Undo::Reset();
+    }
+}
+
 void EditorApp::RebuildScriptsIfChanged() {
+    // ======================================================================
+    //  ASKED BEFORE NeedsRebuild, AND THAT ORDER IS THE WHOLE FIX.
+    //
+    //  A build deletes the objects it is about to produce, so NeedsRebuild
+    //  answers "yes" for the entire time one is running. This function is
+    //  called on every focus regain - which includes a click back into the
+    //  window - so during a compile every such click reached the ExitPlayMode
+    //  below and stopped the play session. BeginAsync's own one-build guard is
+    //  too late to help: it sits AFTER the stop, so it correctly refused the
+    //  duplicate build while the play session had already gone.
+    //
+    //  Reported as "playtesting stops by itself"; it is this.
+    // ======================================================================
+    if (ScriptBuild::IsBuilding()) {
+        return;
+    }
     if (!ScriptBuild::NeedsRebuild()) {
         return;   // the usual case, and it costs only a few timestamp checks
     }
@@ -1205,6 +1635,35 @@ void EditorApp::Run(int frameLimit) {
         // ScriptBuild.h for why this is the natural trigger.
         if (engine.Events().FocusGainedThisFrame()) {
             RebuildScriptsIfChanged();
+            ReloadChangedPrefabs();
+
+            // And any .oimport edited while we were away. Third in the same
+            // list for the same reason as the other two: these are hand-
+            // editable text files, and the editor must not be the only way to
+            // change one. See ResourceManager::ReloadImportSettings.
+            eng::ResourceManager::ReloadImportSettings();
+
+            // AND ANY IMAGE ITSELF THAT WAS EDITED WHILE WE WERE AWAY, which
+            // is the gesture this whole list exists for: alt-tab to a paint
+            // program, save, alt-tab back, see it.
+            //
+            // HERE RATHER THAN IN A PANEL, and that is load-bearing: this runs
+            // before EditorGui::BeginFrame, so no interface has been built and
+            // no texture handle is in any draw list yet. Replacing a texture's
+            // contents anywhere further down the frame would free a handle the
+            // renderer still intends to use.
+            if (const std::size_t reread =
+                    eng::ResourceManager::ReloadChangedTextures();
+                reread > 0) {
+                // The Assets panel's rows are rebuilt so that a sheet whose
+                // slice changed with it shows the right parts.
+                EditorState::Get().assetsNeedRefresh = true;
+            }
+
+            // A sidecar edited outside can have SLICED a sheet, which changes
+            // what the Assets panel should SHOW and not merely how an image is
+            // scaled. See EditorState::assetsNeedRefresh.
+            EditorState::Get().assetsNeedRefresh = true;
         }
 
         // The folder picker from File -> Build Game... answers whenever the
@@ -1297,6 +1756,7 @@ void EditorApp::Run(int frameLimit) {
         DrawUnsavedProjectPopup();
 
         FocusGameViewIfRequested();
+        RevealAssetsPanelIfRequested();
         RevealTilePaletteIfRequested();
 
         // The title carries the project, the scene and whether there is
@@ -1305,10 +1765,19 @@ void EditorApp::Run(int frameLimit) {
         ProjectMenu::UpdateWindowTitle();
 
         // Step 4: the two views draw the world into their own pictures.
-        if (m_scenePanel != nullptr && m_scenePanel->IsOpen()) {
+        //
+        // VISIBLE, NOT MERELY OPEN. In the default layout the Scene and Game
+        // views are two tabs of one dock node, so one of them is always
+        // behind the other - and a whole world render per frame was going
+        // into a picture nobody could see. DrawPanels ran above, so these
+        // flags are this frame's; a view that has just come to the front
+        // renders on the same frame it appears. See Panel::IsVisible.
+        if (m_scenePanel != nullptr && m_scenePanel->IsOpen() &&
+            m_scenePanel->IsVisible()) {
             m_scenePanel->RenderView();
         }
-        if (m_gamePanel != nullptr && m_gamePanel->IsOpen()) {
+        if (m_gamePanel != nullptr && m_gamePanel->IsOpen() &&
+            m_gamePanel->IsVisible()) {
             m_gamePanel->RenderView();
         }
 
@@ -1333,6 +1802,10 @@ void EditorApp::Run(int frameLimit) {
         //  would put an editor concern in the game's settings file.
         // ==================================================================
         HandleShortcuts();
+
+        // Apply, Revert and Unpack, for the same reason and at the same point:
+        // they rebuild an instance's entities. See PrefabRequest.
+        ApplyPrefabRequest();
 
         // ==================================================================
         //  A SCENE SOMEBODY ASKED TO OPEN, APPLIED HERE - and the unsaved

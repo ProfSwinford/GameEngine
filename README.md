@@ -155,7 +155,7 @@ rather than going round the input layer.
 | `cmake/`       | Build system pieces.                                              |
 | `tools/`       | The fresh-clone check script.                                     |
 | `config/`      | `engine.json` is read at start-up; `engine.example.json` documents every setting. |
-| `docs/`        | The editor guide and the engine tour.                             |
+| `docs/`        | The scripting reference, the editor guide and the engine tour.     |
 | `.build/`      | Where the editor compiles your scripts to. Generated; not committed. |
 
 There is no `scripts/` folder, and that is deliberate. Your behaviour scripts
@@ -186,6 +186,24 @@ components:
   ]
 }
 ```
+
+**Prefabs** are entities you saved, in `assets/**/*.oprefab`. A scene does not
+store an instance's entities - it stores which prefab, where, and what you
+changed about that one copy:
+
+```json
+"prefabInstances": [
+  { "prefab": "prefabs/enemy.oprefab", "name": "Enemy_3",
+    "overrides": [
+      { "entity": 1, "component": "TransformComponent",
+        "field": "position", "value": [120, 40] }
+    ] }
+]
+```
+
+Because the entities are built from the prefab as the scene loads, fixing the
+prefab fixes every copy of it in every scene - except the parts you deliberately
+changed on one. See [the editor guide](docs/editor-guide.md#prefabs).
 
 A sprite's `texture` can be a **`.png`**, a `.bmp` or a `.jpg`. Use `.png` unless
 you have a reason not to: it is the only one of the three that stores
@@ -524,6 +542,11 @@ shapes are not here either — a cell is solid over its whole square or not at
 all.
 
 ## Where to start reading
+
+[docs/scripting-reference.md](docs/scripting-reference.md) is everything a
+script can call, arranged by what you are trying to do - spawning things,
+destroying them, finding other entities, reading input, physics queries - with a
+Unity-to-here mapping table and an honest list of what is not here yet.
 
 [docs/engine-tour.md](docs/engine-tour.md) is a map of the whole engine with a
 "if you want to understand X, open Y" table.

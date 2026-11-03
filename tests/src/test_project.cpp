@@ -29,6 +29,7 @@
 #include <doctest/doctest.h>
 
 #include <engine/core/Json.h>
+#include <engine/input/InputMap.h>
 #include <engine/project/Project.h>
 
 #include <filesystem>
@@ -385,6 +386,114 @@ TEST_CASE("a created project is a project, with the skeleton inside it") {
     CHECK(dir.Has("New Game/assets/textures"));
     CHECK(dir.Has("New Game/config/engine.json"));
     CHECK(dir.Has("New Game/.gitignore"));
+}
+
+TEST_CASE("a created project's gravity is in PIXELS, not metres") {
+    // ======================================================================
+    //  THE BUG THIS EXISTS TO STOP COMING BACK.
+    //
+    //  BootConfig::gravity defaults to Unity's -9.81, which is metres per
+    //  second squared, and this engine works in pixels - so a project with no
+    //  "physics" section accelerates everything at a HUNDREDTH of the
+    //  intended rate. Fall time goes as 1/sqrt(g), so everything falls and
+    //  jumps about ten times too slowly.
+    //
+    //  It was reported as "the game runs in slow motion", and it was not a
+    //  frame-rate problem at all: the simulation ran at full speed on numbers
+    //  that were wrong by two orders of magnitude. The engine's own
+    //  config/engine.json always set -981, which is exactly why the project
+    //  living in the engine's tree was the only one that behaved.
+    // ======================================================================
+    TempDir dir("create-gravity");
+
+    ProjectInfo info;
+    std::string error;
+    REQUIRE(Project::Create(dir.Str(), "Falls", info, error));
+
+    std::string parseError;
+    const Json  config = ParseJson(dir.ReadFile("Falls/config/engine.json"), parseError);
+    REQUIRE(parseError.empty());
+
+    REQUIRE(config.contains("physics"));
+    const Json& physics = config.at("physics");
+    REQUIRE(physics.contains("gravity"));
+    REQUIRE(physics.at("gravity").is_array());
+    REQUIRE(physics.at("gravity").size() == 2);
+
+    CHECK(physics.at("gravity")[0].get<double>() == doctest::Approx(0.0));
+    CHECK(physics.at("gravity")[1].get<double>() == doctest::Approx(-981.0));
+
+    // NOT the metric number, said as its own check so that a well-meaning
+    // change back to -9.81 fails here with the reason attached.
+    CHECK(physics.at("gravity")[1].get<double>() < -100.0);
+}
+
+TEST_CASE("a created project binds the keyboard") {
+    // ======================================================================
+    //  THE OTHER HALF OF THE SAME REPORT: "the scripts don't work".
+    //
+    //  They did work. They compiled, loaded and ran - and with no "input"
+    //  section nothing was bound, so every IsPressed and GetAxis2D answered
+    //  no, for ever. A game that does not respond to the keyboard is
+    //  indistinguishable from scripts that are not running, and the only
+    //  trace was one warning during start-up.
+    // ======================================================================
+    TempDir dir("create-input");
+
+    ProjectInfo info;
+    std::string error;
+    REQUIRE(Project::Create(dir.Str(), "Plays", info, error));
+
+    std::string parseError;
+    const Json  config = ParseJson(dir.ReadFile("Plays/config/engine.json"), parseError);
+    REQUIRE(parseError.empty());
+    REQUIRE(config.contains("input"));
+
+    // THROUGH THE REAL LOADER, not by reading keys. What matters is not that
+    // the section exists but that InputMap accepts it and ends up with
+    // something bound - which is the question the game asks.
+    InputMap::ClearBindings();
+    std::string warnings;
+    InputMap::LoadBindings(config.at("input"), warnings);
+
+    CHECK(warnings.empty());
+    CHECK(InputMap::HasBindings());
+
+    // The actions the template's own comment and the example scripts use. A
+    // context that loaded but bound nothing useful would pass the check above.
+    for (const char* action : {"MoveLeft", "MoveRight", "Jump", "Fire"}) {
+        InputMap::ClearContexts();
+        InputMap::PushContext("gameplay");
+        CHECK_FALSE(InputMap::IsDown(action));   // not pressed, but LOOKED UP
+    }
+    CHECK(InputMap::ActiveContext() == "gameplay");
+
+    InputMap::ClearContexts();
+    InputMap::ClearBindings();
+}
+
+TEST_CASE("nothing bound is reported, rather than looking like working controls") {
+    // The state every project created before the template wrote an "input"
+    // section is in. HasBindings is what the editor asks so it can say so
+    // over the Game view.
+    InputMap::ClearBindings();
+    CHECK_FALSE(InputMap::HasBindings());
+
+    std::string parseError;
+    const Json  empty = ParseJson(R"({ "contexts": {} })", parseError);
+    REQUIRE(parseError.empty());
+
+    std::string warnings;
+    InputMap::LoadBindings(empty, warnings);
+    CHECK_FALSE(InputMap::HasBindings());
+
+    const Json bound = ParseJson(
+        R"({ "contexts": { "gameplay": { "Jump": ["Key.Space"] } } })", parseError);
+    REQUIRE(parseError.empty());
+    InputMap::LoadBindings(bound, warnings);
+    CHECK(InputMap::HasBindings());
+
+    InputMap::ClearBindings();
 }
 
 TEST_CASE("a created project's config is valid JSON titled after the project") {

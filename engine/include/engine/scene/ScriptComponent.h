@@ -118,6 +118,10 @@
 // ============================================================================
 
 #include <engine/scene/Component.h>
+// Scene.h, because the templates on ScriptBehaviour below walk the scene and
+// the hierarchy, so Scene and Entity both have to be complete here rather
+// than merely named. Nothing Scene.h includes includes this file back.
+#include <engine/scene/Scene.h>
 #include <engine/scene/ScriptFields.h>
 #include <engine/scene/ScriptHooks.h>
 #include <engine/scene/SystemOrder.h>
@@ -153,6 +157,191 @@ public:
     EntityId     OwnerId() const;
     Scene*       GetScene() const;
     Transform2D* Transform() const;
+
+    // ======================================================================
+    //  THE VERBS. Everything below is a convenience, and every one of them
+    //  replaces a specific thing scripts in this project were actually
+    //  writing out by hand.
+    //
+    //  NONE OF THEM HOLD ANYTHING. Each one asks the scene afresh, so there is
+    //  no state here to go stale across a frame, across a script reload, or
+    //  across the entity being destroyed. Every one of them is safe to call on
+    //  a script whose entity has already gone - they answer null, or do
+    //  nothing - which is why there is no IsAlive() to check first.
+    // ======================================================================
+
+    // This entity's name, or "" once it has gone. Scripts write
+    //     Owner() != nullptr ? Owner()->Name() : "<none>"
+    // in every log line; this is that, and the empty string is the honest
+    // answer rather than a placeholder somebody has to recognise.
+    const std::string& Name() const;
+
+    bool HasTag(std::string_view tag) const;
+
+    // Unity's gameObject.SetActive / activeInHierarchy, for this entity. See
+    // Entity::IsActiveInHierarchy for what being switched off means and why
+    // every system in the engine honours it.
+    //
+    // A SCRIPT THAT SWITCHES ITS OWN ENTITY OFF STOPS RUNNING, from the next
+    // step onwards. It finishes the function it is in - nothing is torn down -
+    // and then is not ticked again until something else switches it back on.
+    // Which means a script cannot switch itself back on, and that is worth
+    // knowing before you write it rather than afterwards.
+    bool IsActive() const;
+    void SetActive(bool active) const;
+
+    // ---- a component on THIS entity --------------------------------------
+    //
+    // Unity's GetComponent<T>(). Named Find for the reason the house style
+    // gives: a lookup that can legitimately come back empty is Find, never
+    // Get - and it matches Entity::Find<T> and EntityRef::Find<T>, which
+    // already existed and do the same job from the other end.
+    //
+    //     auto* body = Find<eng::Rigidbody2DComponent>();
+    //
+    // replaces
+    //
+    //     eng::Entity* self = Owner();
+    //     if (self == nullptr) { return; }
+    //     auto* body = self->Find<eng::Rigidbody2DComponent>();
+    template <class T>
+    T* Find() const {
+        Entity* self = Owner();
+        return self != nullptr ? self->Find<T>() : nullptr;
+    }
+
+    // Unity's GetComponentInChildren / GetComponentInParent. Both include this
+    // entity itself, as Unity's do.
+    template <class T>
+    T* FindInChildren() const {
+        Entity* self = Owner();
+        return self != nullptr ? self->FindInChildren<T>() : nullptr;
+    }
+    template <class T>
+    T* FindInParents() const {
+        Entity* self = Owner();
+        return self != nullptr ? self->FindInParents<T>() : nullptr;
+    }
+
+    // Unity's AddComponent<T>(). Add always adds another; Require adds one
+    // only if there is not one already, which is what the comment "this script
+    // needs a rigidbody" usually means.
+    template <class T>
+    T* Add() const {
+        Entity* self = Owner();
+        return self != nullptr ? self->Add<T>() : nullptr;
+    }
+    template <class T>
+    T* Require() const {
+        Entity* self = Owner();
+        if (self == nullptr) {
+            return nullptr;
+        }
+        if (T* existing = self->Find<T>(); existing != nullptr) {
+            return existing;
+        }
+        return self->Add<T>();
+    }
+
+    // ---- another entity --------------------------------------------------
+    //
+    // THIS IS THE ONE THAT WAS MISSING MOST. Every collision and trigger hook
+    // hands over an EntityId, and Instantiate returns one, so almost every
+    // interesting script opened with four lines of the same ceremony:
+    //
+    //     eng::Scene* scene = GetScene();
+    //     if (scene == nullptr) { return; }
+    //     eng::Entity* partner = scene->Get(other);
+    //     if (partner == nullptr) { return; }
+    //
+    // DO NOT KEEP WHAT COMES BACK. The id is the thing that survives a frame;
+    // the pointer is good until the next time entities are destroyed, which is
+    // once per step. Ask again rather than remember - the same rule
+    // ScriptComponent::Behaviour states, and for the same reason.
+    Entity* FindEntity(EntityId id) const;
+    Entity* FindEntity(std::string_view name) const;
+
+    // Unity's FindWithTag. Null when nothing carries it. Skips anything
+    // already queued for destruction, so "find an enemy" does not hand back
+    // one that died this tick - see rule 1 in DeferredOps.h.
+    Entity* FindEntityWithTag(std::string_view tag) const;
+
+    // Unity's FindObjectOfType<T>: the first entity in the scene carrying a T,
+    // and the T itself.
+    //
+    // THESE DO NOT FIND SCRIPTS. Every script's component is called
+    // "ScriptComponent", so FindFirst<Chaser>() cannot work - use
+    // FindScriptIn<T> further down this file, which asks each behaviour what it
+    // really is.
+    template <class T>
+    Entity* FindFirstWith() const {
+        Scene* scene = GetScene();
+        return scene != nullptr ? scene->FindFirstWith<T>() : nullptr;
+    }
+    template <class T>
+    T* FindFirstComponent() const {
+        Scene* scene = GetScene();
+        return scene != nullptr ? scene->FindFirstComponent<T>() : nullptr;
+    }
+
+    // ---- making things ---------------------------------------------------
+    //
+    // Unity's Instantiate. Returns the root of the new instance, or a null id
+    // if the prefab could not be loaded - WHICH IS REPORTED HERE rather than
+    // handed back as a string for the caller to deal with, because a script
+    // has nowhere useful to put an error string and the Console is exactly
+    // where this belongs.
+    //
+    //     Instantiate("prefabs/bullet.oprefab",
+    //                 eng::SpawnOptions{}.At(Transform()->WorldPosition())
+    //                                    .Facing(Transform()->WorldRotation()));
+    //
+    // SPAWNING IS SAFE AT ANY TIME, including from inside an update or a
+    // collision hook. Creating only ever appends, so nothing a system is
+    // walking gets moved out from under it - see the note at the top of
+    // DeferredOps.h, which is explicit that destroying is the dangerous half
+    // and creating is not.
+    EntityId Instantiate(std::string_view prefabPath) const;
+    EntityId Instantiate(std::string_view prefabPath, const SpawnOptions& placement) const;
+
+    // The same, through an exposed PrefabRef variable - which is how a spawner
+    // should actually be written, because then the prefab is chosen by
+    // dragging it onto the script in the Inspector instead of typed into the
+    // code. See PrefabRef.h.
+    //
+    // A reference nobody has set does NOTHING AND SAYS SO ONCE. Not every
+    // frame: a spawner firing sixty times a second would otherwise bury the
+    // Console in the same line, which is how a real message becomes noise.
+    EntityId Instantiate(const PrefabRef& prefab) const;
+    EntityId Instantiate(const PrefabRef& prefab, const SpawnOptions& placement) const;
+
+    // An empty entity, named uniquely - Unity's `new GameObject("name")`.
+    // Goes through Scene::CreateEntityUniquelyNamed, so calling it fifty times
+    // with "Spark" gives fifty distinct names rather than fifty things all
+    // claiming to be the same one. See the note on Scene::CreateEntity.
+    EntityId CreateEntity(std::string_view baseName) const;
+    EntityId CreateEntity(std::string_view baseName, const SpawnOptions& placement) const;
+
+    // ---- unmaking them ---------------------------------------------------
+    //
+    // Unity's Destroy. Queued, not immediate: it happens at stage 600 once
+    // every system has finished. DESTROYING TWICE IS HARMLESS, so there is no
+    // need to check first - two bullets hitting one enemy on one tick is
+    // ordinary game code and rule 3 exists for it.
+    //
+    // DestroySelf is the common case and it is spelled separately rather than
+    // as a default argument, because `Destroy()` meaning "destroy me" is the
+    // kind of thing that reads as a mistake at a call site.
+    void DestroySelf() const;
+    void Destroy(EntityId id) const;
+    void Destroy(Entity& entity) const;
+
+    // Unity's Destroy(obj, t). The delay is GAME time, so it stops while the
+    // game is paused, and the thing behaves completely normally until it
+    // fires - see QueueDestroyAfter in DeferredOps.h for why that sentence
+    // needed a separate list to be true.
+    void DestroySelfAfter(float delaySeconds) const;
+    void DestroyAfter(EntityId id, float delaySeconds) const;
 
 private:
     friend class ScriptComponent;
@@ -413,6 +602,15 @@ private:
     // this script, so the message appears once rather than sixty times a
     // second for as long as the two things overlap.
     bool                             m_warnedAboutTriggerMismatch = false;
+
+    // The same idea for a spawner whose prefab variable nobody has set. See
+    // ScriptBehaviour::Instantiate(const PrefabRef&).
+    bool                             m_warnedAboutUnsetPrefab = false;
+
+    // ScriptBehaviour sets the flag above, which is the only member of this
+    // class it touches - the rest of its accessors go through the public
+    // interface.
+    friend class ScriptBehaviour;
 };
 
 // ---------------------------------------------------------------------------
@@ -485,6 +683,62 @@ T* FindScriptOn(const EntityRef& ref) {
 // uses to check a reference's constraint, and what a script can use when it
 // only needs to know whether something is there.
 ScriptComponent* FindScriptNamedOn(Entity& entity, std::string_view scriptName);
+
+// ---------------------------------------------------------------------------
+//  THE SAME QUESTIONS, ACROSS A WHOLE SCENE - "where is the game-rules
+//  script?"
+//
+//  This is the one lookup that had no spelling at all, and it is needed by the
+//  most ordinary task in any game: something happens, and the object keeping
+//  score has to be told. Scene::FindFirstWith<T> cannot answer it, because
+//  every script's component reports its type name as "ScriptComponent" - so
+//  asking for a Score finds nothing and asking for a ScriptComponent finds an
+//  arbitrary one.
+//
+//  WHAT TO USE WHEN:
+//
+//    FindScriptNamedIn  needs no headers at all. It finds the component by the
+//                       name the registry knows it under and hands back a
+//                       ScriptComponent*, which is enough to know a thing
+//                       exists - and enough to send it a message.
+//
+//    FindScriptIn<T>    hands back the script OBJECT, so its own members and
+//                       methods can be called. It needs T to be NAMEABLE from
+//                       the calling file, and most scripts are not: every
+//                       script in assets/scripts sits in an `namespace { }`,
+//                       which is the right default and is what stops two
+//                       scripts colliding. To point at one's members from
+//                       elsewhere, move that class into a header both files
+//                       include. The registry already supports it - see
+//                       Entry::sourceFile.
+//
+//  BOTH SKIP ANYTHING QUEUED FOR DESTRUCTION, because a scorekeeper that died
+//  this tick is not the scorekeeper.
+//
+//  NEITHER CACHES. Finding one costs a walk of the scene, so a script that
+//  needs it every frame should ask once in OnStart and keep the ENTITY ID -
+//  never the pointer, which is replaced wholesale every time scripts are
+//  rebuilt. An EntityRef variable is better still: it survives a reload, it
+//  survives a save and load, and the Inspector lets somebody point it at a
+//  different object without touching the code. See EntityRef.h.
+// ---------------------------------------------------------------------------
+ScriptComponent* FindScriptNamedIn(Scene& scene, std::string_view scriptName);
+
+template <class T>
+T* FindScriptIn(Scene& scene) {
+    T* found = nullptr;
+    scene.ForEachUntil([&](Entity& entity) {
+        if (DeferredOps::IsPendingDestroy(entity.Id())) {
+            return true;
+        }
+        if (T* script = FindScriptOn<T>(entity); script != nullptr) {
+            found = script;
+            return false;
+        }
+        return true;
+    });
+    return found;
+}
 
 // ---------------------------------------------------------------------------
 //  The system that runs them, and it runs them at TWO different rates.

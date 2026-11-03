@@ -58,6 +58,7 @@
 #include <engine/platform/FolderDialog.h>
 #include <engine/platform/Window.h>
 #include <engine/project/EngineBuild.h>
+#include <engine/project/ScriptAbi.h>     // CheckAgainst, for the row
 #include <engine/project/Project.h>
 #include <engine/render/Renderer.h>
 
@@ -114,6 +115,21 @@ struct ProjectRow {
     // to an editor that fails to start.
     bool        missing = false;
     std::string engineVersion;
+
+    // ======================================================================
+    //  WHAT ACTUALLY BUILT THE SCRIPTS, which is not engineVersion above.
+    //
+    //  engineVersion comes from project.oproj and records the engine that
+    //  CREATED the project - a different fact, and the one that was on
+    //  screen. The stamp in .build/buildconfig.txt is what ScriptAbi compares
+    //  at start-up, so it is the only record that decides whether the scripts
+    //  will load.
+    //
+    //  READ WITH THE LIST, not per frame: it is a file, and the row is drawn
+    //  sixty times a second. Empty for a project nothing has built yet, which
+    //  is a perfectly ordinary state and says nothing.
+    // ======================================================================
+    std::string scriptStamp;
 };
 
 struct EngineRow {
@@ -197,6 +213,9 @@ std::vector<ProjectRow> LoadProjects() {
                 row.name = info.name;   // the manifest is the authority
             }
             row.engineVersion = info.engineVersion;
+            row.scriptStamp   = ReadWholeFile(
+                (fs::path(row.root) / eng::ScriptAbi::StampVirtualPath())
+                    .generic_string());
         } else {
             row.missing = true;
         }
@@ -396,6 +415,8 @@ std::optional<ProjectRow> ProjectBesideTheEngine() {
     row.root          = info.realRoot;
     row.name          = info.name;
     row.engineVersion = info.engineVersion;
+    row.scriptStamp   = ReadWholeFile(
+        (fs::path(row.root) / eng::ScriptAbi::StampVirtualPath()).generic_string());
     return row;
 }
 
@@ -617,6 +638,50 @@ void DrawProjectsTab(Hub& hub) {
                 if (!row.engineVersion.empty()) {
                     ImGui::SameLine();
                     ImGui::TextDisabled("(%s)", row.engineVersion.c_str());
+                }
+
+                // ==========================================================
+                //  WILL THESE SCRIPTS LOAD IN THE ENGINE CHOSEN BELOW?
+                //
+                //  The hub is the one place where a project and an engine are
+                //  picked independently, and it never compared them. Start the
+                //  Release editor on a project whose scripts were built by the
+                //  Debug one and the ABI gate refuses the lot - correctly,
+                //  loading them would corrupt the heap - so every script in
+                //  every scene reads NOT FOUND. One Console line says why,
+                //  behind whatever panel is in front.
+                //
+                //  SAID HERE, BEFORE THE CLICK, because this is where the pair
+                //  is chosen. The hub closes the instant it starts an editor,
+                //  so there is no "after" to say it in.
+                //
+                //  AND SAID AS A WAIT, NOT AN ERROR. This is the ORDINARY
+                //  state the first time a project moves between engines, and
+                //  the editor fixes it by rebuilding. Worded as a problem it
+                //  would fire on every legitimate first open and be learned
+                //  away inside a day; worded as "this will take a moment" it
+                //  is the truth and it stays useful.
+                // ==========================================================
+                if (!row.scriptStamp.empty() && !hub.engines.empty()) {
+                    const int index = std::clamp(
+                        hub.chosenEngine, 0,
+                        static_cast<int>(hub.engines.size()) - 1);
+                    const EngineRow& chosen =
+                        hub.engines[static_cast<std::size_t>(index)];
+
+                    if (eng::ScriptAbi::CheckAgainst(row.scriptStamp, chosen.build)
+                            .verdict == eng::ScriptAbiCheck::Verdict::Mismatch) {
+                        const std::string built =
+                            eng::ScriptAbi::RecordedEngine(row.scriptStamp);
+                        ImGui::TextColored(
+                            ImVec4(0.95f, 0.78f, 0.30f, 0.95f),
+                            "scripts were built by %s - the editor will rebuild "
+                            "them for %s on opening (a few seconds; they do not "
+                            "run until it finishes)",
+                            built.empty() ? "another engine" : built.c_str(),
+                            chosen.build.known ? chosen.build.id.c_str()
+                                               : "this engine");
+                    }
                 }
             }
 

@@ -401,6 +401,68 @@ bool Project::Create(std::string_view realParentDirectory, std::string_view name
            << "    \"_note\": \"Which scene opens with the project. Empty means no "
               "scene - use Scene -> New Scene in the editor to make the first one.\",\n"
            << "    \"scene\": \"\"\n"
+           << "  },\n"
+           << "\n"
+           // ==================================================================
+           //  PHYSICS AND INPUT ARE WRITTEN OUT, and leaving them out was a
+           //  bug with two faces that looked like three different ones.
+           //
+           //  GRAVITY. The engine's built-in default is Unity's -9.81, which
+           //  is METRES per second squared, and this engine works in PIXELS -
+           //  see the comment on BootConfig::gravity. At about a hundred
+           //  pixels to the metre that default is a barely visible drift, so a
+           //  project with no "physics" section accelerates everything at a
+           //  HUNDREDTH of the intended rate. Fall time goes as 1/sqrt(g), so
+           //  everything falls, jumps and arcs about ten times too slowly -
+           //  which is reported, reasonably, as "the game runs in slow
+           //  motion". Nothing is dropping frames; the numbers are wrong.
+           //
+           //  INPUT. With no "input" section nothing is bound, so every
+           //  IsPressed and GetAxis2D answers no, for ever. The scripts
+           //  compile, load and run - the Console says so - and the game does
+           //  not respond to the keyboard, which is indistinguishable from
+           //  "my scripts do not work".
+           //
+           //  THE ENGINE'S OWN PROJECT SET BOTH, which is exactly why it was
+           //  the one project that behaved. A default that only one project on
+           //  the machine overrides is not a default, it is a trap.
+           //
+           //  Written with their notes, like everything else here: a new
+           //  project's settings file is the first thing somebody opens.
+           // ==================================================================
+           << "  \"physics\": {\n"
+           << "    \"_note\": \"gravity is in YOUR GAME'S UNITS, and this engine "
+              "works in pixels. Unity's -9.81 is metres per second squared; at "
+              "roughly 100 pixels to the metre, -981 is the same real-world "
+              "gravity. Use [0, 0] for a top-down game.\",\n"
+           << "    \"gravity\": [0.0, -981.0],\n"
+           << "    \"solverIterations\": 4\n"
+           << "  },\n"
+           << "\n"
+           << "  \"input\": {\n"
+           << "    \"_note\": \"A binding is Device.Name. Key. followed by any key "
+              "name, or Mouse. followed by Left, Right or Middle. An action can "
+              "have several, which is how WASD and the arrow keys both work. "
+              "Rename these, or add your own - the names are yours.\",\n"
+           << "    \"contexts\": {\n"
+           << "      \"gameplay\": {\n"
+           << "        \"MoveLeft\":  [\"Key.A\", \"Key.Left\"],\n"
+           << "        \"MoveRight\": [\"Key.D\", \"Key.Right\"],\n"
+           << "        \"MoveUp\":    [\"Key.W\", \"Key.Up\"],\n"
+           << "        \"MoveDown\":  [\"Key.S\", \"Key.Down\"],\n"
+           << "        \"Jump\":      [\"Key.Space\"],\n"
+           << "        \"Fire\":      [\"Mouse.Left\", \"Key.Return\"],\n"
+           << "        \"Interact\":  [\"Key.E\", \"Mouse.Left\"],\n"
+           << "        \"Pause\":     [\"Key.Escape\"],\n"
+           << "        \"Quit\":      [\"Key.Q\"]\n"
+           << "      },\n"
+           << "      \"menu\": {\n"
+           << "        \"NavigateUp\":   [\"Key.W\", \"Key.Up\"],\n"
+           << "        \"NavigateDown\": [\"Key.S\", \"Key.Down\"],\n"
+           << "        \"Confirm\":      [\"Key.Space\", \"Key.Return\"],\n"
+           << "        \"Back\":         [\"Key.Escape\"]\n"
+           << "      }\n"
+           << "    }\n"
            << "  }\n"
            << "}\n";
     if (!WriteWholeFile(root / "config" / "engine.json", config.str(), outError)) {

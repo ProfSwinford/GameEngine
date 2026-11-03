@@ -116,6 +116,16 @@ public:
                                 const QueryFilter& filter = {});
 
     // Every hit along the ray, nearest first. Returns how many were written.
+    // AS MANY HITS AS FIT IN `out`, NEAREST FIRST - and that is the contract,
+    // not "the nearest maxOut of them". The colliders are visited in
+    // registration order and the ones that do not fit are dropped before the
+    // sort, so a buffer smaller than the number of things the ray crosses
+    // loses arbitrary hits rather than the furthest ones.
+    //
+    // THAT IS WHY Raycast ABOVE DOES NOT CALL THIS. It keeps a running
+    // minimum instead, which has no buffer and therefore no limit; building it
+    // on this function is what made it occasionally report the wrong hit. If
+    // you want "the nearest", use Raycast.
     static int RaycastAll(Vec2 origin, Vec2 direction, float distance,
                           RaycastHit2D* out, int maxOut,
                           const QueryFilter& filter = {});
