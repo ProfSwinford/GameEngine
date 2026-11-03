@@ -172,37 +172,24 @@ public:
         if (m_body == nullptr) {
             return;
         }
+        Vector2 movement = Input::GetAxis2D("MoveLeft", "MoveRight", "MoveDown", "MoveUp");
 
-        // ---- moving ------------------------------------------------------
-        //
-        // TWO SEPARATE AXES AND NOT GetAxis2D, which would be the obvious
-        // thing and would change how this moves. GetAxis2D normalises the
-        // pair, so holding right and up at once would give 0.7 of the walking
-        // speed sideways - a change to the feel of the controller, made by
-        // accident, while adding an animation.
-        const float horizontal =
-            Input::GetAxis("MoveRight") - Input::GetAxis("MoveLeft");
-        const float vertical = Input::GetAxis("MoveUp") - Input::GetAxis("MoveDown");
+        //movement.x =
+            //Input::GetAxis("MoveRight") - Input::GetAxis("MoveLeft");
+
 
         const Vector2 velocity = m_body->Velocity();
-        m_body->SetVelocity(Vector2{horizontal * walkSpeed, velocity.y});
+        //m_body->SetVelocity(Vector2{horizontal * walkSpeed, velocity.y});
 
-        m_grounded = IsOnGround();
+        m_body->SetVelocity(movement * walkSpeed);
 
-        if (m_grounded && Input::IsDown("Jump")) {
-            // An impulse and not a force: a jump is one kick, not a push
-            // spread over the step. See ForceMode in physics/Rigidbody.h.
-            m_body->AddForce(Vector2{0.0f, jumpImpulse}, eng::ForceMode::Impulse);
-        }
+        //m_grounded = IsOnGround();
 
-        // ---- and showing it ----------------------------------------------
-        //
-        // The VERTICAL axis is read for the animation even though it does not
-        // move this body: a platformer binds nothing to MoveUp, so up and down
-        // simply never come up, and the same script drives a top-down
-        // character whose art has four directions. Neither case needs a
-        // setting for which it is.
-        Show(FacingFor(horizontal, vertical));
+        //if (m_grounded && Input::IsDown("Jump")) {
+        //    // An impulse and not a force: a jump is one kick, not a push
+        //    // spread over the step. See ForceMode in physics/Rigidbody.h.
+        //    m_body->AddForce(Vector2{0.0f, jumpImpulse}, eng::ForceMode::Impulse);
+        //}
     }
 
 private:

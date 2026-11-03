@@ -83,3 +83,14 @@ perf.data*
 # failure is a scene that works on the author's machine and nowhere else,
 # because an image was never added to version control.
 !assets/**
+
+# ---- Ignore sprite files that shouldn't be publically redistributed --------
+# assets are obtainable at the top of our Blackboard site.
+assets/textures/*
+*.bmp
+*.png
+*.jpg
+*.zip
+
+
+

@@ -387,6 +387,7 @@ void Renderer::DrawSprite(const TextureRef& texture, Vec2 centre, Vec2 size,
     SDL_SetTextureColorMod(sdlTexture, tint.r, tint.g, tint.b);
     SDL_SetTextureAlphaMod(sdlTexture, tint.a);
     SDL_SetTextureBlendMode(sdlTexture, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(sdlTexture, SDL_SCALEMODE_PIXELART);
 
     // WHICH PART OF THE IMAGE. SDL reads nullptr as "all of it", so the two
     // cases are one pointer that is either set or left alone - no second
