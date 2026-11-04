@@ -94,7 +94,7 @@
 // =============================================================================
 
 #include <engine/Engine.h>
-
+using namespace eng;
 namespace {
 using namespace eng;
 
@@ -106,18 +106,15 @@ public:
     float msecondsAlive = 0.0f;
 
     void OnStart() {
-        ENGINE_LOG_INFO(eng::Channels::kGame, "PlayerMovement started on '{}'",
-                        Owner() != nullptr ? Owner()->Name() : "<none>");
+        ENGINE_LOG_INFO(eng::Channels::kGame, "PlayerMovement started on '{}'", name);
     }
 
     void OnUpdate()
     {
-        direction =
-            eng::InputMap::GetAxis2D("MoveLeft", "MoveRight", "MoveDown", "MoveUp");
+        direction = eng::InputMap::GetAxis2D();
     }
 
     void OnFixedUpdate() {
-        ::Transform transform = Transform();
         if (transform == nullptr) {
             return;
         }

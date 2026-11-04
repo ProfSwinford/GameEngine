@@ -179,7 +179,6 @@ private:
     }
 
     int CountPickups() const {
-        eng::Scene* scene = GetScene();
         if (scene == nullptr) {
             return 0;
         }

@@ -150,28 +150,83 @@ void ScriptFields::Add(std::string_view name, ScriptFieldType type, void* value,
     m_fields.push_back(std::move(field));
 }
 
+// ---------------------------------------------------------------------------
+//  THE ACCEPTED ASSET MARKERS, in the one place that decides them.
+//
+//  See the long note above AssetFieldKind in ScriptFields.h for why this is
+//  here rather than in the editor, which is where half of it used to be.
+// ---------------------------------------------------------------------------
+AssetFieldKind AssetFieldKindFor(std::string_view marker) {
+    // ASCII, FOLDED BY HAND. std::tolower takes an int and is undefined for a
+    // negative one, which is every byte of a non-ASCII name - and the four
+    // words below are English words written in a C++ comment, so there is
+    // nothing here that a locale could have an opinion about.
+    std::string folded;
+    folded.reserve(marker.size());
+    for (const char c : marker) {
+        folded += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    }
+
+    // IMAGE: a whole picture, or one frame cut out of a sliced sheet.
+    if (folded == "image" || folded == "texture" || folded == "sprite") {
+        return AssetFieldKind::Image;
+    }
+    // ANIMATION: a name INSIDE a sheet, which is not a picture - see
+    // SpriteAnimation.h. "clip" is what this engine's own comments call one.
+    if (folded == "animation" || folded == "anim" || folded == "clip") {
+        return AssetFieldKind::Animation;
+    }
+    return AssetFieldKind::None;
+}
+
+std::string_view AssetFieldKindName(AssetFieldKind kind) {
+    switch (kind) {
+        case AssetFieldKind::Image:
+            return "image";
+        case AssetFieldKind::Animation:
+            return "animation";
+        case AssetFieldKind::None:
+            break;
+    }
+    return {};
+}
+
+std::string_view AssetFieldKindNames() {
+    // EVERY SPELLING AssetFieldKindFor TAKES. A test walks this string
+    // looking for each of them, because a message that under-reports what the
+    // code accepts is worse than no message: it tells somebody their correct
+    // marker is wrong.
+    return "'image', 'texture', 'sprite', 'animation', 'anim' or 'clip', in "
+           "any case";
+}
+
 void ScriptFields::AddAsset(std::string_view name, std::string* value,
                             std::string_view kind, std::string_view tooltip) {
-    // THE KINDS THE INSPECTOR HAS A SLOT FOR. Anything else is almost
-    // certainly a tooltip written where the kind goes - the same mistake
-    // AddRef guards against, and worth the same sentence.
-    const bool known = (kind == "image") || (kind == "texture") ||
-                       (kind == "sprite") || (kind == "animation");
-    if (!known) {
+    // WHETHER THIS IS A KIND AT ALL is decided by AssetFieldKindFor and
+    // nowhere else. Anything it does not know is almost certainly a tooltip
+    // written where the kind goes - the same mistake AddRef guards against,
+    // and worth the same sentence.
+    const AssetFieldKind resolved = AssetFieldKindFor(kind);
+    if (resolved == AssetFieldKind::None) {
         ENGINE_LOG_WARN(Channels::kScene,
                         "the variable '{}' is marked [{}], which is not a kind of "
-                        "asset this engine can draw a slot for - it knows 'image' "
-                        "and 'animation'. It will be shown as ordinary text.",
-                        name, kind);
+                        "asset this engine can draw a slot for - it knows {}. It "
+                        "will be shown as ordinary text.",
+                        name, kind, AssetFieldKindNames());
     }
 
     Add(name, ScriptFieldType::String, value, tooltip, false, 0.0f, 0.0f);
 
+    // THE CANONICAL SPELLING AND NOT THE ONE THAT WAS TYPED, so that [Clip],
+    // [ANIM] and [animation] all leave the same word behind and nothing
+    // downstream has to fold a string a second time.
+    //
     // Written after the fact for the same reason as AddRef's: Add already
     // takes seven arguments, and a marker only two field types can carry does
     // not belong in the signature every other type pays for.
-    if (known && !m_fields.empty() && m_fields.back().name == name) {
-        m_fields.back().requiredType = std::string(kind);
+    if (resolved != AssetFieldKind::None && !m_fields.empty() &&
+        m_fields.back().name == name) {
+        m_fields.back().requiredType = std::string(AssetFieldKindName(resolved));
     }
 }
 

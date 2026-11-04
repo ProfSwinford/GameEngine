@@ -192,15 +192,33 @@ std::string DefaultScriptText(std::string_view scriptName) {
 //                         other's layer.
 //
 //  -----------------------------------------------------------------------------
-//  WHAT YOU CAN REACH from inside any of them:
+//  WHAT YOU CAN REACH from inside any of them, written as though they were
+//  local variables - which is how Unity's MonoBehaviour reads too:
 //
-//    Owner()       Entity*        this script's entity
-//    Transform()   Transform2D*   its position, rotation and scale
-//    GetScene()    Scene*         to find or create other entities
-//    OwnerId()     EntityId       this entity's id, for sending messages
+//    transform     where this entity is, how it is turned and how big it is
+//    gameObject    the entity itself, to reach its other components
+//    scene         the world, to find or create other entities
+//    name          this entity's name, as text
+//    tag           what KIND of thing it is - and this one can be assigned
 //
-//  All four work from OnStart onwards. Any of them can return null if the
-//  entity has been destroyed, so check before using one.
+//        transform->Translate(step);
+//        if (gameObject->HasTag("Player")) ...
+//        tag = "Enemy";
+//        ENGINE_LOG_INFO(Channels::kGame, "{0} is on '{{}}'", name);
+//
+//  Each one asks the entity afresh every time, so there is nothing to go stale
+//  and nothing to keep in step. Reached with `->` for that reason.
+//
+//  Owner(), Transform() and GetScene() are the same first three spelled as
+//  functions, and still work. OwnerId() gives this entity's id, which is what
+//  a message is addressed to and the one thing worth holding on to.
+//
+//  All of them work from OnStart onwards. Any of them answers null - or "" for
+//  name and tag - if the entity has been destroyed, so check before using one.
+//
+//  `name` cannot be assigned: a name is an identity here, and two entities
+//  sharing one is a bug. Rename("NewName") is the verb, and it answers false
+//  when something else already has that name.
 // =============================================================================
 
 #include <engine/Engine.h>
@@ -228,12 +246,12 @@ public:
     float speed = 100.0f;   // say here what this number is for
 
     void OnStart() {{
-        ENGINE_LOG_INFO(Channels::kGame, "{0} started on '{{}}'",
-                        Owner() != nullptr ? Owner()->Name() : "<none>");
+        ENGINE_LOG_INFO(Channels::kGame, "{0} started on '{{}}'", name);
     }}
 
     void OnFixedUpdate() {{
-        Transform2D* transform = Transform();
+        // `transform` is inherited, and asks this entity afresh every time -
+        // see the list above. It is null only once the entity has gone.
         if (transform == nullptr) {{
             return;
         }}
@@ -267,7 +285,6 @@ public:
     void OnCollisionEnter(EntityId other) {{
         // The other entity is looked up fresh rather than remembered, because
         // it may already have been destroyed this step.
-        Scene* scene = GetScene();
         if (scene == nullptr) {{
             return;
         }}

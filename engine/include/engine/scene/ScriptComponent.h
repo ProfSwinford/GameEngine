@@ -9,7 +9,7 @@
 //      class Bouncer : public eng::ScriptBehaviour {
 //      public:
 //          void OnFixedUpdate() {
-//              Transform()->Translate({0, Time::DeltaTime() * 50});
+//              transform->Translate({0, Time::DeltaTime() * 50});
 //          }
 //      };
 //      ENGINE_REGISTER_SCRIPT(Bouncer)      // without this it can never be found
@@ -126,6 +126,8 @@
 #include <engine/scene/ScriptHooks.h>
 #include <engine/scene/SystemOrder.h>
 
+#include <cstddef>
+#include <format>
 #include <functional>
 #include <memory>
 #include <string>
@@ -134,6 +136,193 @@
 namespace eng {
 
 class ScriptComponent;
+
+// ===========================================================================
+//  THE BARE NAMES - transform, gameObject, scene, name, tag.
+//
+//  Unity's MonoBehaviour reaches these as properties, written as though they
+//  were local variables, and that is what a script here writes too:
+//
+//      transform->Translate({0.0f, speed * Time::DeltaTime()});
+//      if (gameObject->HasTag("Player")) { ... }
+//      ENGINE_LOG_INFO(Channels::kGame, "{} was hit", name);
+//
+//  C++ has no properties, so each one is a DATA MEMBER of a tiny handle type
+//  that resolves through operator-> on every use. Two other designs were
+//  possible and both are worse:
+//
+//    A MACRO - #define transform Transform() - rewrites the token everywhere,
+//    including in the eight scripts in assets/scripts that USED `transform` as
+//    a local until this change removed them, and in any variable a game
+//    happens to name that.
+//
+//    A CACHED POINTER - Transform2D* transform, filled in at bind - is what
+//    Unity does and costs nothing, and it cannot be done here. A behaviour
+//    built by ScriptRegistry::Create has no component yet, which is how the
+//    tests build one, so at construction there is nothing to cache. And a
+//    cached pointer would turn the null answers this class promises into a
+//    dangling read, which is the one failure worse than no answer.
+//
+//  So: a handle holding nothing but the behaviour it belongs to, asking
+//  afresh every time. One extra pointer load, and it cannot go stale.
+//
+//  =========================================================================
+//  WHAT A HANDLE WILL AND WILL NOT DO
+//
+//      transform->WorldPosition()      the thing itself, asked for now
+//      Transform2D* p = transform;     converts, so it passes anywhere the
+//                                      pointer does
+//      if (transform) { ... }          false once there is no entity
+//
+//  A HANDLE IS NOT ASSIGNABLE FROM ANOTHER HANDLE. `transform = somethingElse`
+//  is a compile error rather than a quiet rebinding of what `transform` means
+//  for the rest of this object's life. `tag` is the single exception and it
+//  takes a STRING, because setting a tag is an ordinary thing to do.
+//
+//  transform->X() ON A DESTROYED ENTITY IS A NULL DEREFERENCE, exactly as
+//  Transform()->X() already was. A handle does not make that safe and does not
+//  pretend to - it answers null, and `if (transform)` is how a script that
+//  genuinely cannot know asks. In practice a script stops being ticked before
+//  its entity goes, so the checks that eight of the fourteen scripts in
+//  assets/scripts do write are belt-and-braces rather than load-bearing.
+//
+//  =========================================================================
+//  THE ONE THING THIS COSTS, WRITTEN DOWN BEFORE SOMEBODY MEETS IT
+//
+//  A member found by unqualified lookup hides namespace-scope names of the
+//  same spelling AND suppresses argument-dependent lookup. So inside a script
+//  `transform` is this handle, and an unqualified call to std::transform stops
+//  finding it:
+//
+//      transform(v.begin(), v.end(), out.begin(), fn);   // was std::transform
+//
+//  compiles today, and afterwards says "term does not evaluate to a function
+//  taking 4 arguments" - naming neither std::transform nor this member. WRITE
+//  std::transform, which is unaffected and is the better spelling anyway.
+//  None of the other four names has a standard-library counterpart, so that
+//  is the whole of it.
+//
+//  Case is what keeps the rest apart: every one of these is lowerCamelCase and
+//  every type in the engine is UpperCamelCase, so `transform` and Transform2D,
+//  `scene` and Scene, `gameObject` and GameObject all coexist. All 323 names
+//  that <engine/Engine.h> makes visible unqualified were checked against these
+//  five, and std::transform is the only collision in either direction.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+//  What every handle holds: one pointer, and no state about the world.
+//
+//  Copyable, so `auto t = transform;` works and means the same thing. NOT
+//  assignable, for the reason above.
+// ---------------------------------------------------------------------------
+class ScriptHandle {
+public:
+    explicit ScriptHandle(const ScriptBehaviour* self) : m_self(self) {}
+
+    ScriptHandle(const ScriptHandle&)            = default;
+    ScriptHandle& operator=(const ScriptHandle&) = delete;
+
+protected:
+    // Not public: a script has no business reaching back through a handle to
+    // the behaviour it already is.
+    const ScriptBehaviour* Script() const { return m_self; }
+
+private:
+    const ScriptBehaviour* m_self;
+};
+
+// `transform` - Unity's Component.transform.
+class TransformHandle : public ScriptHandle {
+public:
+    using ScriptHandle::ScriptHandle;
+
+    Transform2D* operator->() const;
+    operator Transform2D*() const;
+};
+
+// `gameObject` - Unity's Component.gameObject. The engine's word for the thing
+// is an Entity; `GameObject` is already a typedef for Entity* in Engine.h, and
+// this is that same translation one level down.
+class EntityHandle : public ScriptHandle {
+public:
+    using ScriptHandle::ScriptHandle;
+
+    Entity* operator->() const;
+    operator Entity*() const;
+};
+
+// `scene` - NOT a Unity name. Unity's nearest is gameObject.scene, which is a
+// different and smaller thing. It is here because GetScene() is the third most
+// written call in the engine's own scripts, almost always immediately followed
+// by a null check and one use.
+class SceneHandle : public ScriptHandle {
+public:
+    using ScriptHandle::ScriptHandle;
+
+    Scene* operator->() const;
+    operator Scene*() const;
+};
+
+// ---------------------------------------------------------------------------
+//  `name` and `tag` - Unity's Object.name and Component.tag.
+//
+//  The two differ in one way that matters, and it is not a difference Unity
+//  has:
+//
+//    A TAG IS A LABEL, and setting one is free - so `tag = "Enemy"` works.
+//
+//    A NAME IS AN IDENTITY here. Parents and entity references are recorded BY
+//    NAME, the scene keeps a name-to-entity table, and two entities called
+//    "Bullet" is a bug - which is why Scene::CreateEntityUniquelyNamed exists
+//    and why Scene::RenameEntity can REFUSE. So `name` reads and does not
+//    assign: Rename() is the verb, and it hands back whether it worked.
+//
+//  Both read "" once the entity has gone, which is the answer Name() already
+//  gives.
+//
+//  REACHED WITH ->, like every other handle: `name->size()`, `name->c_str()`,
+//  `tag->empty()`. Both convert to const std::string& as well, and both have a
+//  std::formatter at the bottom of this file so that ENGINE_LOG_*("{}", name)
+//  works.
+//
+//  THAT CONVERSION DOES NOT REACH A std::string_view PARAMETER, because an
+//  implicit conversion sequence may contain at most one user-defined step and
+//  handle -> const std::string& -> string_view is two. Every string-taking
+//  verb on this class takes string_view - HasTag, Rename, SetTag, FindEntity,
+//  FindEntityWithTag - so `HasTag(tag)` does not compile and `HasTag(Tag())`
+//  is the spelling. The surface is deliberately left at one conversion: a
+//  second would also make `tag = name` legal, which is not worth spelling.
+// ---------------------------------------------------------------------------
+class NameHandle : public ScriptHandle {
+public:
+    using ScriptHandle::ScriptHandle;
+
+    const std::string* operator->() const;
+    operator const std::string&() const;
+
+    // DELIBERATELY REFUSED rather than merely absent, so that `name = "x"`
+    // produces an error pointing at this line instead of "no operator matched
+    // these operands". A name is an identity - see above - and Rename() is the
+    // one that can report a collision.
+    void operator=(std::string_view) = delete;
+};
+
+class TagHandle : public ScriptHandle {
+public:
+    using ScriptHandle::ScriptHandle;
+
+    const std::string* operator->() const;
+    operator const std::string&() const;
+
+    // Unity's `tag = "Enemy"`. Does nothing once the entity has gone, like
+    // every other verb on this class.
+    //
+    // CONST, because it changes nothing of the handle's own: the back-pointer
+    // is a const ScriptBehaviour* and SetTag() is itself const, as every verb
+    // on that class is. Non-const would buy no protection and would make
+    // `tag = "x"` fail in exactly the places SetTag("x") succeeds.
+    const TagHandle& operator=(std::string_view newTag) const;
+};
 
 // ---------------------------------------------------------------------------
 //  The class you inherit from.
@@ -153,30 +342,98 @@ public:
     // only virtual function left, and the only one that needs to be.
     virtual ~ScriptBehaviour() = default;
 
+    // ======================================================================
+    //  NOT COPYABLE, AND THAT IS NEW.
+    //
+    //  Each handle below holds the address of THIS object. A copy would carry
+    //  handles still pointing at the original, so `transform` on the copy
+    //  would move the original's entity - silently, and only in code that
+    //  copied a script, which nothing does. Scripts are made once through
+    //  std::unique_ptr and never copied, so this shuts a door rather than one
+    //  that was in use.
+    //
+    //  The default constructor has to be written out because declaring any
+    //  other constructor - even a deleted one - suppresses it, and
+    //  ScriptRegistry::Create needs it.
+    // ======================================================================
+    ScriptBehaviour()                                  = default;
+    ScriptBehaviour(const ScriptBehaviour&)            = delete;
+    ScriptBehaviour& operator=(const ScriptBehaviour&) = delete;
+    ScriptBehaviour(ScriptBehaviour&&)                 = delete;
+    ScriptBehaviour& operator=(ScriptBehaviour&&)      = delete;
+
     Entity*      Owner() const;
     EntityId     OwnerId() const;
     Scene*       GetScene() const;
     Transform2D* Transform() const;
 
     // ======================================================================
+    //  THE SAME THINGS, SPELLED THE WAY UNITY SPELLS THEM.
+    //
+    //  transform, gameObject and scene are the three accessors just above;
+    //  name and tag are the two just below. They add no capability at all -
+    //  they are the spelling that lets a line read as the thing it does:
+    //
+    //      transform->Translate(step)   rather than  Transform()->Translate(step)
+    //
+    //  The long note above ScriptHandle has how they work, what they refuse to
+    //  do, and the one standard-library name `transform` hides.
+    // ======================================================================
+    TransformHandle transform{this};
+    EntityHandle    gameObject{this};
+    SceneHandle     scene{this};
+    NameHandle      name{this};
+    TagHandle       tag{this};
+
+    // ======================================================================
     //  THE VERBS. Everything below is a convenience, and every one of them
     //  replaces a specific thing scripts in this project were actually
     //  writing out by hand.
     //
-    //  NONE OF THEM HOLD ANYTHING. Each one asks the scene afresh, so there is
-    //  no state here to go stale across a frame, across a script reload, or
-    //  across the entity being destroyed. Every one of them is safe to call on
-    //  a script whose entity has already gone - they answer null, or do
-    //  nothing - which is why there is no IsAlive() to check first.
+    //  NONE OF THEM REMEMBER ANYTHING ABOUT THE WORLD. Each one asks the scene
+    //  afresh, so there is no state here to go stale across a frame, across a
+    //  script reload, or across the entity being destroyed. Every one of them
+    //  is safe to call on a script whose entity has already gone - they answer
+    //  null, or do nothing - which is why there is no IsAlive() to check
+    //  first.
+    //
+    //  The five handles above hold one pointer each, to this object, and that
+    //  is the only thing held anywhere in this class besides m_component. They
+    //  hold no scene, no entity and no transform, which is the property this
+    //  paragraph is really about: ASKING AFRESH is what makes the answers
+    //  trustworthy, and a handle asks on every use.
     // ======================================================================
 
-    // This entity's name, or "" once it has gone. Scripts write
+    // This entity's name, or "" once it has gone. Scripts used to write
     //     Owner() != nullptr ? Owner()->Name() : "<none>"
     // in every log line; this is that, and the empty string is the honest
-    // answer rather than a placeholder somebody has to recognise.
+    // answer rather than a placeholder somebody has to recognise. They write
+    // `name` now - see the std::formatter at the bottom of this file.
     const std::string& Name() const;
 
-    bool HasTag(std::string_view tag) const;
+    // ======================================================================
+    //  Unity's `name = "..."`, which cannot be an assignment here.
+    //
+    //  A name is an IDENTITY in this engine, not a label: parents and entity
+    //  references are recorded by name and the scene keeps a name-to-entity
+    //  table, so renaming goes through Scene::RenameEntity - which refuses
+    //  when something else already has that name, and which retargets every
+    //  reference when it does not.
+    //
+    //  FALSE MEANS NOTHING CHANGED, and the reason is in the Console. A
+    //  version of this that quietly made the name unique would hand back true
+    //  for an entity that is now called something else than the script asked
+    //  for, which is the worse half of both options.
+    // ======================================================================
+    bool Rename(std::string_view newName) const;
+
+    // Unity's Component.tag. "" when untagged AND "" once the entity has gone,
+    // the same two answers Name() gives - see Entity::Tag for why empty means
+    // untagged and why HasTag("") is therefore false.
+    const std::string& Tag() const;
+    void               SetTag(std::string_view newTag) const;
+
+    bool HasTag(std::string_view wantedTag) const;
 
     // Unity's gameObject.SetActive / activeInHierarchy, for this entity. See
     // Entity::IsActiveInHierarchy for what being switched off means and why
@@ -243,6 +500,47 @@ public:
         return self->Add<T>();
     }
 
+    // ---- EVERY T, not just the first --------------------------------------
+    //
+    // Unity's GetComponents / GetComponentsInChildren / GetComponentsInParent.
+    // Several scripts on one entity, or several colliders making one compound
+    // shape, are both ordinary - and before these the only spelling was to go
+    // through Owner() by hand, which is the four-line dance Find<T> exists to
+    // remove.
+    //
+    // SAME CONTRACT AS Entity::FindAll: `into` is CLEARED first and then
+    // filled, the caller owns it so a per-frame walk allocates once, and the
+    // return value is how many were written. A script with no entity gets an
+    // empty vector and 0 rather than an untouched one, because "cleared first"
+    // has to be true however the call turns out.
+    template <class T>
+    std::size_t FindAll(std::vector<T*>& into) const {
+        Entity* self = Owner();
+        if (self == nullptr) {
+            into.clear();
+            return 0;
+        }
+        return self->FindAll<T>(into);
+    }
+    template <class T>
+    std::size_t FindAllInChildren(std::vector<T*>& into) const {
+        Entity* self = Owner();
+        if (self == nullptr) {
+            into.clear();
+            return 0;
+        }
+        return self->FindAllInChildren<T>(into);
+    }
+    template <class T>
+    std::size_t FindAllInParents(std::vector<T*>& into) const {
+        Entity* self = Owner();
+        if (self == nullptr) {
+            into.clear();
+            return 0;
+        }
+        return self->FindAllInParents<T>(into);
+    }
+
     // ---- another entity --------------------------------------------------
     //
     // THIS IS THE ONE THAT WAS MISSING MOST. Every collision and trigger hook
@@ -259,12 +557,12 @@ public:
     // once per step. Ask again rather than remember - the same rule
     // ScriptComponent::Behaviour states, and for the same reason.
     Entity* FindEntity(EntityId id) const;
-    Entity* FindEntity(std::string_view name) const;
+    Entity* FindEntity(std::string_view entityName) const;
 
     // Unity's FindWithTag. Null when nothing carries it. Skips anything
     // already queued for destruction, so "find an enemy" does not hand back
     // one that died this tick - see rule 1 in DeferredOps.h.
-    Entity* FindEntityWithTag(std::string_view tag) const;
+    Entity* FindEntityWithTag(std::string_view wantedTag) const;
 
     // Unity's FindObjectOfType<T>: the first entity in the scene carrying a T,
     // and the T itself.
@@ -273,15 +571,19 @@ public:
     // "ScriptComponent", so FindFirst<Chaser>() cannot work - use
     // FindScriptIn<T> further down this file, which asks each behaviour what it
     // really is.
+    // `world` rather than `scene` for the local, here and in ScriptComponent.cpp,
+    // because `scene` is now a member of this class and a local of that name
+    // would hide it. The scripting reference already calls GetScene() "the
+    // world", so the rename costs nothing in readability.
     template <class T>
     Entity* FindFirstWith() const {
-        Scene* scene = GetScene();
-        return scene != nullptr ? scene->FindFirstWith<T>() : nullptr;
+        Scene* world = GetScene();
+        return world != nullptr ? world->FindFirstWith<T>() : nullptr;
     }
     template <class T>
     T* FindFirstComponent() const {
-        Scene* scene = GetScene();
-        return scene != nullptr ? scene->FindFirstComponent<T>() : nullptr;
+        Scene* world = GetScene();
+        return world != nullptr ? world->FindFirstComponent<T>() : nullptr;
     }
 
     // ---- making things ---------------------------------------------------
@@ -347,6 +649,75 @@ private:
     friend class ScriptComponent;
     ScriptComponent* m_component = nullptr;
 };
+
+// ---------------------------------------------------------------------------
+//  The handles' bodies.
+//
+//  Down here rather than in the classes because every one of them calls a
+//  member of ScriptBehaviour, and a function body written inside a class is
+//  compiled as though it sat just after that class - which is too early, since
+//  ScriptBehaviour is not declared yet at that point.
+//
+//  Each is one line, and each asks afresh. That is the whole implementation.
+// ---------------------------------------------------------------------------
+
+inline Transform2D* TransformHandle::operator->() const { return Script()->Transform(); }
+inline TransformHandle::operator Transform2D*() const { return Script()->Transform(); }
+
+inline Entity* EntityHandle::operator->() const { return Script()->Owner(); }
+inline EntityHandle::operator Entity*() const { return Script()->Owner(); }
+
+inline Scene* SceneHandle::operator->() const { return Script()->GetScene(); }
+inline SceneHandle::operator Scene*() const { return Script()->GetScene(); }
+
+inline const std::string* NameHandle::operator->() const { return &Script()->Name(); }
+inline NameHandle::operator const std::string&() const { return Script()->Name(); }
+
+inline const std::string* TagHandle::operator->() const { return &Script()->Tag(); }
+inline TagHandle::operator const std::string&() const { return Script()->Tag(); }
+
+inline const TagHandle& TagHandle::operator=(std::string_view newTag) const {
+    Script()->SetTag(newTag);
+    return *this;
+}
+
+// ---------------------------------------------------------------------------
+//  `if (tag == "Enemy")`, which does not work without these.
+//
+//  std::string's own operator== is a TEMPLATE, and template argument deduction
+//  does not consider a user-defined conversion - so the handle's conversion to
+//  const std::string& cannot reach it. Without these two, `name == "Player"`
+//  is a compile error whose message is sixty lines of unrelated candidates
+//  (std::monostate, std::pair, std::reverse_iterator and so on), which is a
+//  remarkably poor way to learn that a comparison is missing.
+//
+//  C++20 writes the other three for us: != comes from ==, and both get their
+//  reversed forms, so `"Enemy" == tag` works too.
+// ---------------------------------------------------------------------------
+inline bool operator==(const NameHandle& lhs, std::string_view rhs) {
+    return static_cast<const std::string&>(lhs) == rhs;
+}
+inline bool operator==(const TagHandle& lhs, std::string_view rhs) {
+    return static_cast<const std::string&>(lhs) == rhs;
+}
+
+// ---------------------------------------------------------------------------
+//  AND `name == nullptr` IS REFUSED rather than silently undefined.
+//
+//  std::string_view's const char* constructor is not explicit, so a null
+//  pointer constant reaches it in one user-defined conversion and the view is
+//  built by calling char_traits::length on nullptr. C++23 deleted that
+//  overload, which is why the engine's own translation units cannot get there
+//  - but the editor compiles a project's scripts at /std:c++20, where they
+//  can. `Name() == nullptr` has always been an error; these keep the bare
+//  spelling an error too, pointing at this line.
+//
+//  THIS CLOSES THE HANDLE SPELLING ONLY. HasTag(nullptr), FindEntity(nullptr),
+//  SetTag(nullptr) and Rename(nullptr) are the same hazard on every
+//  string_view parameter in the engine, and are not this file's to answer.
+// ---------------------------------------------------------------------------
+inline bool operator==(const NameHandle&, std::nullptr_t) = delete;
+inline bool operator==(const TagHandle&, std::nullptr_t) = delete;
 
 // ---------------------------------------------------------------------------
 //  The table of script names. Same idea as ComponentFactory: something has to
@@ -828,3 +1199,34 @@ public:
 };
 
 } // namespace eng
+
+// ---------------------------------------------------------------------------
+//  So that ENGINE_LOG_*("{}", name) works.
+//
+//  Six scripts in assets/scripts wrote
+//
+//      Owner() != nullptr ? Owner()->Name() : "<none>"
+//
+//  in a log line, because that was the shortest correct spelling. These two
+//  specializations are what let that be `name` instead, and they are the
+//  reason <format> is included at the top of this file.
+//
+//  Both inherit from std::formatter<std::string>, so they inherit its parse()
+//  too and format specifications work: "{:>12}" pads an entity's name the way
+//  it pads any other string. Verified against /std:c++20, which is what the
+//  editor compiles a project's scripts with - the engine itself is C++23, and
+//  that gap is exactly where a formatter would have broken.
+// ---------------------------------------------------------------------------
+template <>
+struct std::formatter<eng::NameHandle> : std::formatter<std::string> {
+    auto format(const eng::NameHandle& handle, std::format_context& context) const {
+        return std::formatter<std::string>::format(handle, context);
+    }
+};
+
+template <>
+struct std::formatter<eng::TagHandle> : std::formatter<std::string> {
+    auto format(const eng::TagHandle& handle, std::format_context& context) const {
+        return std::formatter<std::string>::format(handle, context);
+    }
+};

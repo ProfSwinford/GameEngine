@@ -111,12 +111,10 @@ namespace {
 class Sprite_Animator final : public ScriptBehaviour {
 public:
     void OnStart() {
-        ENGINE_LOG_INFO(Channels::kGame, "Sprite_Animator started on '{}'",
-                        Owner() != nullptr ? Owner()->Name() : "<none>");
+        ENGINE_LOG_INFO(Channels::kGame, "Sprite_Animator started on '{}'", name);
     }
 
     void OnFixedUpdate() {
-        Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;
         }
@@ -136,7 +134,6 @@ public:
     void OnCollisionEnter(EntityId other) {
         // The other entity is looked up fresh rather than remembered, because
         // it may already have been destroyed this step.
-        Scene* scene = GetScene();
         if (scene == nullptr) {
             return;
         }

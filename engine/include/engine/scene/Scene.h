@@ -823,4 +823,33 @@ std::size_t Entity::FindAllInChildren(std::vector<T*>& into, bool includeSelf) {
     return into.size();
 }
 
+template <typename T>
+std::size_t Entity::FindAllInParents(std::vector<T*>& into, bool includeSelf) {
+    into.clear();
+
+    std::vector<T*> onThisEntity;
+    if (includeSelf) {
+        FindAll<T>(onThisEntity);
+        into.insert(into.end(), onThisEntity.begin(), onThisEntity.end());
+    }
+
+    Scene* scene = GetScene();
+    if (scene == nullptr) {
+        return into.size();
+    }
+
+    // No stack and no copy needed, unlike the two above: a parent chain is a
+    // single line with no branching, and walking UP cannot reach the same node
+    // twice - Transform2D::SetParent refuses to make anything its own
+    // ancestor, which is what makes that true rather than merely likely.
+    for (const Transform2D* node = Transform().Parent(); node != nullptr;
+         node                    = node->Parent()) {
+        if (Entity* owner = scene->EntityOf(*node); owner != nullptr) {
+            owner->FindAll<T>(onThisEntity);
+            into.insert(into.end(), onThisEntity.begin(), onThisEntity.end());
+        }
+    }
+    return into.size();
+}
+
 } // namespace eng

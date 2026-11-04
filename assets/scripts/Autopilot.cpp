@@ -52,14 +52,12 @@ public:
         ENGINE_LOG_INFO(eng::Channels::kGame,
                         "Autopilot is driving '{}' - detach this script to take the "
                         "controls back",
-                        Owner() != nullptr ? Owner()->Name() : "<none>");
+                        name);
     }
 
     void OnFixedUpdate() {
         // Steering is a direction, not a distance, so this one needs no delta.
 
-        eng::Scene*       scene     = GetScene();
-        eng::Transform2D* transform = Transform();
         if (scene == nullptr || transform == nullptr) {
             Stop();
             return;

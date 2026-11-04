@@ -27,10 +27,15 @@
 //  ==========================================================================
 //  WHAT CANNOT BE TESTED HERE, so that nobody reads a gap as coverage
 //
-//  No compiled script runs in these tests. ScriptBehaviour's own methods need
-//  a bound behaviour, which needs a script DLL, which needs the editor's
-//  compiler - so this file tests what those methods FORWARD TO, through the
-//  same Scene and Entity calls, and the forwarding itself is one line each.
+//  NO SCRIPT IS COMPILED BY THE EDITOR here, and that is the only part of the
+//  scripting story missing: the build step, the per-script DLL and the reload.
+//
+//  Real behaviours DO run. ScriptRegistry::Register is public and
+//  ENGINE_REGISTER_SCRIPT works in an ordinary translation unit, so the
+//  classes further down this file are registered at start-up and bind to a
+//  ScriptComponent exactly as a project's own scripts do. That matters most
+//  for Part 4: what a handle answers depends on WHEN it is asked, and a
+//  forwarding call cannot be asked that question.
 //
 //  ==========================================================================
 //  TWO ACTIVE GATES ARE NOT COVERED HERE, AND IT IS WORTH NAMING THEM
@@ -78,9 +83,11 @@
 #include <engine/render/Camera.h>
 
 #include <cstdlib>
+#include <format>
 #include <memory>
 #include <filesystem>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -1698,4 +1705,430 @@ TEST_CASE("the pointer reads back what the view gave it") {
     UISystem::SetPointer(Vec2{100.0f, 70.0f}, viewport, /*down=*/false, /*active=*/false);
     CHECK_FALSE(Pointer::IsOverView());
     CHECK_FALSE(Pointer::IsDown());
+}
+
+// ===========================================================================
+//  PART 4 - THE BARE NAMES
+//
+//  transform, gameObject, scene, name and tag. These run a REAL bound script,
+//  because the whole question about a handle is what it answers at a given
+//  moment in the lifecycle, and that cannot be asked of a forwarding call.
+// ===========================================================================
+
+namespace {
+
+// Written by Handles::OnDestroy, which cannot report into itself: the object
+// is on its way out and a test reading its members afterwards would be reading
+// freed memory. Reset by the case that looks at it.
+struct DestroyReport {
+    bool        hadTransform  = false;
+    bool        hadGameObject = false;
+    std::string name;
+};
+
+DestroyReport g_destroyReport;
+
+// Asks each handle at every point in the lifecycle a test might care about,
+// and offers the same questions as ordinary methods so that a case can ask
+// them from outside a hook too.
+class Handles final : public ScriptBehaviour {
+public:
+    bool        sawTransform  = false;
+    bool        sawGameObject = false;
+    bool        sawScene      = false;
+    std::string nameAtStart;
+    std::string tagAtStart;
+    Vec2        whereAtStart{};
+
+    void OnStart() {
+        sawTransform  = transform != nullptr;
+        sawGameObject = gameObject != nullptr;
+        sawScene      = scene != nullptr;
+        nameAtStart   = name;
+        tagAtStart    = tag;
+        if (transform != nullptr) {
+            whereAtStart = transform->WorldPosition();
+        }
+    }
+
+    void OnDestroy() {
+        g_destroyReport.hadTransform  = transform != nullptr;
+        g_destroyReport.hadGameObject = gameObject != nullptr;
+        g_destroyReport.name          = name;
+    }
+
+    // ---- the handles, asked on demand -------------------------------------
+    Transform2D* AskTransform() const { return transform; }
+    Entity*      AskGameObject() const { return gameObject; }
+    Scene*       AskScene() const { return scene; }
+    std::string  AskName() const { return name; }
+    std::string  AskTag() const { return tag; }
+    Vec2         AskWhere() const {
+        return transform != nullptr ? transform->WorldPosition() : Vec2{};
+    }
+
+    // Non-const, because assigning through the tag handle is a write.
+    void SetTagTo(std::string_view value) { tag = value; }
+
+    // The comparison operators and the formatter, exercised from inside a
+    // script exactly as a game would write them.
+    bool NameIs(std::string_view wanted) const { return name == wanted; }
+    bool TagIs(std::string_view wanted) const { return tag == wanted; }
+    bool NameIsNot(std::string_view wanted) const { return name != wanted; }
+    bool WantedIsName(std::string_view wanted) const { return wanted == name; }
+    std::string Describe() const { return std::format("{}/{}", name, tag); }
+    std::string Padded() const { return std::format("[{:>8}]", name); }
+
+    // The FindAll family, which had no spelling on this class before.
+    std::size_t CountHere() const {
+        std::vector<BoxColliderComponent*> found;
+        return FindAll<BoxColliderComponent>(found);
+    }
+    std::size_t CountBelow() const {
+        std::vector<SpinComponent*> found;
+        return FindAllInChildren<SpinComponent>(found);
+    }
+    std::vector<SpinComponent*> SpinsAbove() const {
+        std::vector<SpinComponent*> found;
+        FindAllInParents<SpinComponent>(found);
+        return found;
+    }
+};
+
+} // namespace
+
+ENGINE_REGISTER_SCRIPT(Handles)
+
+namespace {
+
+// ---------------------------------------------------------------------------
+//  What the compiler enforces, checked where somebody reading the tests will
+//  see it. Each of these is a design decision in ScriptComponent.h that would
+//  otherwise only be a comment.
+// ---------------------------------------------------------------------------
+
+// `tag = "Enemy"` works; `name = "Enemy"` is refused, because a name is an
+// identity here and Rename() is the verb that can report a collision.
+static_assert(std::is_assignable_v<TagHandle&, std::string_view>,
+              "tag must be assignable - Unity's `tag = \"Enemy\"`");
+static_assert(!std::is_assignable_v<NameHandle&, std::string_view>,
+              "name must NOT be assignable - see ScriptBehaviour::Rename");
+
+// No handle may be rebound to point at a different behaviour.
+static_assert(!std::is_copy_assignable_v<TransformHandle>);
+static_assert(!std::is_copy_assignable_v<EntityHandle>);
+static_assert(!std::is_copy_assignable_v<SceneHandle>);
+static_assert(!std::is_copy_assignable_v<NameHandle>);
+static_assert(!std::is_copy_assignable_v<TagHandle>);
+
+// But `auto t = transform;` is fine and means the same thing.
+static_assert(std::is_copy_constructible_v<TransformHandle>);
+
+// And a behaviour itself cannot be copied, because every handle in it holds
+// this object's own address - a copy would drive the original's entity.
+static_assert(!std::is_copy_constructible_v<ScriptBehaviour>);
+static_assert(!std::is_copy_assignable_v<ScriptBehaviour>);
+static_assert(!std::is_move_constructible_v<ScriptBehaviour>);
+static_assert(std::is_default_constructible_v<ScriptBehaviour>,
+              "ScriptRegistry::Create needs this, and declaring the deleted "
+              "copy constructor suppresses it unless it is written out");
+
+} // namespace
+
+TEST_CASE("the bare names reach exactly what the accessors reach") {
+    Fixture world("handles-same");
+
+    const EntityId id     = world.scene.CreateEntity("Walker");
+    Entity*        entity = world.scene.Get(id);
+    REQUIRE(entity != nullptr);
+    entity->SetTag("Player");
+    entity->Transform().SetLocalPosition(Vec2{12.0f, -3.0f});
+
+    Handles* script = AttachScript<Handles>(world.scene, id, "Handles");
+    REQUIRE(script != nullptr);
+
+    // THE SAME OBJECTS, not copies of them. A cached pointer would match here
+    // too - it is the next case that separates a name or tag kept as a string
+    // COPY - but a mismatch here would mean the handle is reading something
+    // else entirely.
+    CHECK(script->AskTransform() == &entity->Transform());
+    CHECK(script->AskTransform() == script->Transform());
+    CHECK(script->AskGameObject() == entity);
+    CHECK(script->AskGameObject() == script->Owner());
+    CHECK(script->AskScene() == script->GetScene());
+    CHECK(script->AskScene() == &world.scene);
+
+    CHECK(script->AskName() == "Walker");
+    CHECK(script->AskName() == script->Name());
+    CHECK(script->AskTag() == "Player");
+    CHECK(script->AskTag() == script->Tag());
+    CHECK(script->AskWhere().x == doctest::Approx(12.0f));
+    CHECK(script->AskWhere().y == doctest::Approx(-3.0f));
+}
+
+TEST_CASE("a handle asks afresh rather than remembering") {
+    // ======================================================================
+    //  THE PROPERTY THE WHOLE DESIGN EXISTS FOR, and the case that fails for a
+    //  name or tag kept as a string COPY.
+    //
+    //  Each of these three changes happens AFTER the script was bound, so a
+    //  member filled in with the VALUE at bind would answer with whatever was
+    //  true then: the old name, no tag.
+    //
+    //  A CACHED POINTER PASSES THIS CASE, and no case in the suite separates
+    //  one. That is honest rather than a gap: Transform2D*, Entity*, Scene*
+    //  and even a const std::string* into the entity's own m_name all stay
+    //  valid, because entities are held by unique_ptr and SetName/SetTag
+    //  assign in place. The reason to ask afresh anyway is that there is no
+    //  moment at which a pointer COULD be cached - ScriptComponent::Bind sets
+    //  m_component before any hook runs, and a behaviour from
+    //  ScriptRegistry::Create has no component at all, which is the state the
+    //  unbound case below exercises.
+    // ======================================================================
+    Fixture world("handles-live");
+
+    const EntityId id     = world.scene.CreateEntity("Walker");
+    Entity*        entity = world.scene.Get(id);
+    REQUIRE(entity != nullptr);
+
+    Handles* script = AttachScript<Handles>(world.scene, id, "Handles");
+    REQUIRE(script != nullptr);
+    REQUIRE(script->AskName() == "Walker");
+    REQUIRE(script->AskTag().empty());
+
+    entity->Transform().SetLocalPosition(Vec2{100.0f, 25.0f});
+    CHECK(script->AskWhere().x == doctest::Approx(100.0f));
+    CHECK(script->AskWhere().y == doctest::Approx(25.0f));
+
+    REQUIRE(world.scene.RenameEntity(id, "Runner"));
+    CHECK(script->AskName() == "Runner");
+
+    entity->SetTag("Enemy");
+    CHECK(script->AskTag() == "Enemy");
+
+    // And through the handle rather than through the entity, which is the
+    // spelling a script actually writes.
+    script->SetTagTo("Boss");
+    CHECK(entity->Tag() == "Boss");
+    CHECK(entity->HasTag("Boss"));
+}
+
+TEST_CASE("every handle answers null on a behaviour with no component") {
+    // ======================================================================
+    //  THIS IS WHY THE HANDLES ARE NOT CACHED POINTERS.
+    //
+    //  ScriptRegistry::Create hands back a behaviour attached to nothing -
+    //  there is no component, no entity, no transform and no scene. A design
+    //  that filled raw pointer members in at construction has nothing to fill
+    //  them with at that moment, and a member left uninitialised reads as
+    //  whatever was in the allocation.
+    //
+    //  Nothing in the engine has to ask for an unbound behaviour on purpose
+    //  for this to matter: it is the state every script is in between being
+    //  created and being bound.
+    // ======================================================================
+    std::unique_ptr<ScriptBehaviour> loose = ScriptRegistry::Create("Handles");
+    REQUIRE(loose != nullptr);
+    auto* script = static_cast<Handles*>(loose.get());
+
+    CHECK(script->AskTransform() == nullptr);
+    CHECK(script->AskGameObject() == nullptr);
+    CHECK(script->AskScene() == nullptr);
+    CHECK(script->AskName().empty());
+    CHECK(script->AskTag().empty());
+
+    // The accessors they forward to agree, which is the point: a handle is a
+    // spelling and not a second answer.
+    CHECK(script->Transform() == nullptr);
+    CHECK(script->Owner() == nullptr);
+    CHECK(script->GetScene() == nullptr);
+
+    // And the verbs do nothing rather than crashing, the same contract every
+    // other verb on this class has.
+    CHECK_FALSE(script->Rename("Anything"));
+    script->SetTagTo("Enemy");
+    CHECK(script->AskTag().empty());
+
+    // A comparison against the empty answer is still a legal question.
+    CHECK(script->NameIs(""));
+    CHECK_FALSE(script->NameIs("Walker"));
+}
+
+TEST_CASE("the handles still answer during OnDestroy") {
+    // ======================================================================
+    //  Entity.h's step 1: OnDetach runs on every component while the entity is
+    //  STILL VALID, and that ordering is the entire reason OnDestroy is worth
+    //  having. A handle that answered null there would make the hook useless -
+    //  "tell the scorekeeper where I died" is the ordinary thing to write in
+    //  it.
+    // ======================================================================
+    Fixture world("handles-destroy");
+    g_destroyReport = DestroyReport{};
+
+    const EntityId id = world.scene.CreateEntity("Doomed");
+    Handles* script   = AttachScript<Handles>(world.scene, id, "Handles");
+    REQUIRE(script != nullptr);
+
+    // OnDestroy only fires for a script that has STARTED - see
+    // ScriptComponent::OnDetach - so give it its first tick.
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    REQUIRE(script->sawTransform);
+    REQUIRE(script->nameAtStart == "Doomed");
+
+    world.scene.DestroyEntityImmediate(id);
+
+    CHECK(g_destroyReport.hadTransform);
+    CHECK(g_destroyReport.hadGameObject);
+    CHECK(g_destroyReport.name == "Doomed");
+}
+
+TEST_CASE("name and tag compare against strings, and format") {
+    // ======================================================================
+    //  WHY THE COMPARISONS ARE WRITTEN OUT IN ScriptComponent.h.
+    //
+    //  std::string's own operator== is a template, and template argument
+    //  deduction does not consider a user-defined conversion - so the handle's
+    //  conversion to const std::string& cannot reach it. Without the two
+    //  operators next to the handles, every line in this case is a compile
+    //  error whose message lists std::monostate and std::reverse_iterator.
+    // ======================================================================
+    Fixture world("handles-compare");
+
+    const EntityId id     = world.scene.CreateEntity("Walker");
+    Entity*        entity = world.scene.Get(id);
+    REQUIRE(entity != nullptr);
+    entity->SetTag("Player");
+
+    Handles* script = AttachScript<Handles>(world.scene, id, "Handles");
+    REQUIRE(script != nullptr);
+
+    CHECK(script->NameIs("Walker"));
+    CHECK_FALSE(script->NameIs("Runner"));
+    CHECK(script->NameIsNot("Runner"));        // C++20 synthesises != from ==
+    CHECK(script->WantedIsName("Walker"));     // and the reversed form
+    CHECK(script->TagIs("Player"));
+
+    // The formatter, which is what lets ENGINE_LOG_*("{}", name) replace
+    // `Owner() != nullptr ? Owner()->Name() : "<none>"`.
+    CHECK(script->Describe() == "Walker/Player");
+
+    // Inherited parse(), so a format specification works like any string's.
+    CHECK(script->Padded() == "[  Walker]");
+}
+
+TEST_CASE("Rename goes through the scene, and refuses a name already taken") {
+    // ======================================================================
+    //  A NAME IS AN IDENTITY HERE, which is the one place this API cannot
+    //  match Unity. Scene::RenameEntity keeps the name-to-entity table in step
+    //  and retargets references; Entity::SetName behind its back would leave
+    //  the table pointing at the old name.
+    // ======================================================================
+    Fixture world("handles-rename");
+
+    const EntityId id    = world.scene.CreateEntity("Walker");
+    const EntityId other = world.scene.CreateEntity("Taken");
+
+    Handles* script = AttachScript<Handles>(world.scene, id, "Handles");
+    REQUIRE(script != nullptr);
+
+    // ---- a free name is taken, and the scene's table follows -------------
+    CHECK(script->Rename("Runner"));
+    CHECK(script->AskName() == "Runner");
+    CHECK(world.scene.FindEntity("Runner") == world.scene.Get(id));
+    CHECK(world.scene.FindEntity("Walker") == nullptr);
+
+    // ---- a name something else holds is REFUSED, and nothing changes -----
+    CHECK_FALSE(script->Rename("Taken"));
+    CHECK(script->AskName() == "Runner");
+    CHECK(world.scene.FindEntity("Taken") == world.scene.Get(other));
+
+    // ---- THE OTHER REFUSAL, which has a different cause ------------------
+    //  Scene::RenameEntity answers false for an empty name and logs nothing,
+    //  so ScriptBehaviour::Rename has to recognise it rather than reporting a
+    //  collision over a name that nothing can be holding.
+    CHECK_FALSE(script->Rename(""));
+    CHECK(script->AskName() == "Runner");
+
+    // ---- and renaming to the name it already has SUCCEEDS ----------------
+    CHECK(script->Rename("Runner"));
+    CHECK(script->AskName() == "Runner");
+    CHECK(world.scene.FindEntity("Runner") == world.scene.Get(id));
+}
+
+TEST_CASE("a script can ask for every component, not just the first") {
+    // ======================================================================
+    //  Unity's GetComponents / GetComponentsInChildren / GetComponentsInParent.
+    //  Before these the only spelling went through Owner() by hand, which is
+    //  the dance Find<T> exists to remove - and FindAllInParents had no
+    //  spelling anywhere, not even on Entity.
+    // ======================================================================
+    Fixture world("handles-findall");
+
+    const EntityId root   = world.scene.CreateEntity("Ship");
+    const EntityId middle = world.scene.CreateEntity("Wing");
+    const EntityId leaf   = world.scene.CreateEntity("Engine");
+
+    world.scene.Get(middle)->Transform().SetParent(&world.scene.Get(root)->Transform());
+    world.scene.Get(leaf)->Transform().SetParent(&world.scene.Get(middle)->Transform());
+
+    // TWO colliders on one entity - a compound shape, which Entity.h calls out
+    // as ordinary and which is exactly what Find<T> cannot report.
+    REQUIRE(world.scene.Get(leaf)->Add<BoxColliderComponent>() != nullptr);
+    REQUIRE(world.scene.Get(leaf)->Add<BoxColliderComponent>() != nullptr);
+
+    REQUIRE(world.scene.Get(root)->Add<SpinComponent>() != nullptr);
+    REQUIRE(world.scene.Get(middle)->Add<SpinComponent>() != nullptr);
+    REQUIRE(world.scene.Get(leaf)->Add<SpinComponent>() != nullptr);
+
+    Handles* script = AttachScript<Handles>(world.scene, leaf, "Handles");
+    REQUIRE(script != nullptr);
+
+    CHECK(script->CountHere() == 2);
+
+    // Down the tree from a leaf is just itself.
+    CHECK(script->CountBelow() == 1);
+
+    // ---- UP THE CHAIN, NEAREST FIRST ------------------------------------
+    const std::vector<SpinComponent*> above = script->SpinsAbove();
+    REQUIRE(above.size() == 3);
+    CHECK(above[0] == world.scene.Get(leaf)->Find<SpinComponent>());
+    CHECK(above[1] == world.scene.Get(middle)->Find<SpinComponent>());
+    CHECK(above[2] == world.scene.Get(root)->Find<SpinComponent>());
+}
+
+TEST_CASE("FindAllInParents can leave this entity out, and clears what it is given") {
+    Fixture world("findall-parents");
+
+    const EntityId root = world.scene.CreateEntity("Ship");
+    const EntityId leaf = world.scene.CreateEntity("Engine");
+    world.scene.Get(leaf)->Transform().SetParent(&world.scene.Get(root)->Transform());
+
+    REQUIRE(world.scene.Get(root)->Add<SpinComponent>() != nullptr);
+    REQUIRE(world.scene.Get(leaf)->Add<SpinComponent>() != nullptr);
+
+    std::vector<SpinComponent*> found;
+    CHECK(world.scene.Get(leaf)->FindAllInParents<SpinComponent>(found) == 2);
+    CHECK(world.scene.Get(leaf)->FindAllInParents<SpinComponent>(found, false) == 1);
+    CHECK(found[0] == world.scene.Get(root)->Find<SpinComponent>());
+
+    // CLEARED FIRST, however the call turns out. A vector handed to a lookup
+    // that found nothing must come back empty rather than holding the previous
+    // answer - the same contract Entity::FindAll states.
+    CHECK(world.scene.Get(root)->FindAllInParents<SpinComponent>(found, false) == 0);
+    CHECK(found.empty());
+
+    // And a script with no entity at all honours it too, which is the one path
+    // that cannot delegate to Entity.
+    std::unique_ptr<ScriptBehaviour> loose = ScriptRegistry::Create("Handles");
+    REQUIRE(loose != nullptr);
+    found.push_back(nullptr);
+    CHECK(loose->FindAllInParents<SpinComponent>(found) == 0);
+    CHECK(found.empty());
+    found.push_back(nullptr);
+    CHECK(loose->FindAll<SpinComponent>(found) == 0);
+    CHECK(found.empty());
+    found.push_back(nullptr);
+    CHECK(loose->FindAllInChildren<SpinComponent>(found) == 0);
+    CHECK(found.empty());
 }

@@ -107,9 +107,72 @@ const std::string& ScriptBehaviour::Name() const {
     return self != nullptr ? self->Name() : kNone;
 }
 
-bool ScriptBehaviour::HasTag(std::string_view tag) const {
+bool ScriptBehaviour::Rename(std::string_view newName) const {
+    Scene*  world = GetScene();
+    Entity* self  = Owner();
+    if (world == nullptr || self == nullptr) {
+        return false;
+    }
+    // ======================================================================
+    //  AN EMPTY NAME IS RECOGNISED HERE, because it is the one refusal
+    //  Scene::RenameEntity does not report itself.
+    //
+    //  It answers false two ways: an empty name, silently, and a name
+    //  something else holds, with its own warning. Reporting both from below
+    //  as a collision told the script that something already held "", which
+    //  nothing can - the message named a cause that cannot exist.
+    // ======================================================================
+    const std::string who =
+        m_component != nullptr ? m_component->ScriptName() : std::string();
+
+    if (newName.empty()) {
+        ENGINE_LOG_WARN(Channels::kScene,
+                        "the script '{}' could not rename '{}': a name cannot be "
+                        "empty - it is what parents and entity references are "
+                        "recorded by. Nothing has changed",
+                        who, self->Name());
+        return false;
+    }
+
+    if (world->RenameEntity(self->Id(), newName)) {
+        return true;
+    }
+
+    // ======================================================================
+    //  WHAT IS LEFT IS A COLLISION, with the empty name handled above and the
+    //  entity known to exist. Scene::RenameEntity has warned about it too;
+    //  this line adds WHICH SCRIPT asked, which is the part it cannot know.
+    //
+    //  Making the name unique instead and answering true would leave the
+    //  script believing an entity is called what it asked for when it is
+    //  called something else - and a name is an identity here, so every
+    //  reference recorded against the name it chose would be wrong.
+    // ======================================================================
+    ENGINE_LOG_WARN(Channels::kScene,
+                    "the script '{}' could not rename '{}' to '{}': something else in "
+                    "the scene already has that name, and a name is an identity here. "
+                    "Nothing has changed",
+                    who, self->Name(), newName);
+    return false;
+}
+
+const std::string& ScriptBehaviour::Tag() const {
+    // A function-local static for the same reason Name() uses one: the
+    // reference handed back for a dead entity has to outlive the call.
+    static const std::string kNone;
+    Entity*                  self = Owner();
+    return self != nullptr ? self->Tag() : kNone;
+}
+
+void ScriptBehaviour::SetTag(std::string_view newTag) const {
+    if (Entity* self = Owner(); self != nullptr) {
+        self->SetTag(newTag);
+    }
+}
+
+bool ScriptBehaviour::HasTag(std::string_view wantedTag) const {
     Entity* self = Owner();
-    return self != nullptr && self->HasTag(tag);
+    return self != nullptr && self->HasTag(wantedTag);
 }
 
 bool ScriptBehaviour::IsActive() const {
@@ -123,19 +186,27 @@ void ScriptBehaviour::SetActive(bool active) const {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  `world` rather than `scene` for the local, from here to the end of this
+//  block, because `scene` is one of the bare-name handles on this class now
+//  and a local of that name would hide it. Silently, as it happens - C4458 is
+//  a /W4 warning and a project's scripts compile at /W3 - so inside the engine
+//  the rename is the honest fix rather than a suppression.
+// ---------------------------------------------------------------------------
+
 Entity* ScriptBehaviour::FindEntity(EntityId id) const {
-    Scene* scene = GetScene();
-    return scene != nullptr ? scene->Get(id) : nullptr;
+    Scene* world = GetScene();
+    return world != nullptr ? world->Get(id) : nullptr;
 }
 
-Entity* ScriptBehaviour::FindEntity(std::string_view name) const {
-    Scene* scene = GetScene();
-    return scene != nullptr ? scene->FindEntity(name) : nullptr;
+Entity* ScriptBehaviour::FindEntity(std::string_view entityName) const {
+    Scene* world = GetScene();
+    return world != nullptr ? world->FindEntity(entityName) : nullptr;
 }
 
-Entity* ScriptBehaviour::FindEntityWithTag(std::string_view tag) const {
-    Scene* scene = GetScene();
-    return scene != nullptr ? scene->FindByTag(tag) : nullptr;
+Entity* ScriptBehaviour::FindEntityWithTag(std::string_view wantedTag) const {
+    Scene* world = GetScene();
+    return world != nullptr ? world->FindByTag(wantedTag) : nullptr;
 }
 
 EntityId ScriptBehaviour::Instantiate(std::string_view prefabPath) const {
@@ -144,8 +215,8 @@ EntityId ScriptBehaviour::Instantiate(std::string_view prefabPath) const {
 
 EntityId ScriptBehaviour::Instantiate(std::string_view     prefabPath,
                                       const SpawnOptions& placement) const {
-    Scene* scene = GetScene();
-    if (scene == nullptr) {
+    Scene* world = GetScene();
+    if (world == nullptr) {
         return EntityId{};
     }
 
@@ -162,7 +233,7 @@ EntityId ScriptBehaviour::Instantiate(std::string_view     prefabPath,
     //  prefabs/bullet.oprefab" does not say which of forty scripts asked.
     // ======================================================================
     std::string    error;
-    const EntityId spawned = scene->InstantiatePrefab(prefabPath, placement, error);
+    const EntityId spawned = world->InstantiatePrefab(prefabPath, placement, error);
     if (spawned.IsNull()) {
         const std::string& who =
             m_component != nullptr ? m_component->ScriptName() : std::string();
@@ -207,14 +278,14 @@ EntityId ScriptBehaviour::Instantiate(const PrefabRef&    prefab,
 }
 
 EntityId ScriptBehaviour::CreateEntity(std::string_view baseName) const {
-    Scene* scene = GetScene();
-    return scene != nullptr ? scene->CreateEntityUniquelyNamed(baseName) : EntityId{};
+    Scene* world = GetScene();
+    return world != nullptr ? world->CreateEntityUniquelyNamed(baseName) : EntityId{};
 }
 
 EntityId ScriptBehaviour::CreateEntity(std::string_view     baseName,
                                        const SpawnOptions& placement) const {
-    Scene* scene = GetScene();
-    return scene != nullptr ? scene->CreateEntityUniquelyNamed(baseName, placement)
+    Scene* world = GetScene();
+    return world != nullptr ? world->CreateEntityUniquelyNamed(baseName, placement)
                             : EntityId{};
 }
 

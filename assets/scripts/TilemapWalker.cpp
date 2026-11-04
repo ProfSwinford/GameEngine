@@ -56,6 +56,27 @@
 //  Nothing is filled in by default, because a default would be a guess about
 //  somebody else's spritesheet. Until the boxes are filled in, this behaves
 //  exactly as it did before.
+//
+//  ==========================================================================
+//  AND IT READS INPUT ONCE A FRAME, NOT ONCE A STEP
+//
+//  Every input call in this file is in OnUpdate. OnFixedUpdate acts on what
+//  was stored and asks the input layer nothing - one place where input enters
+//  the script, which is the shape assets/scripts/PlayerMovement.cpp uses too.
+//
+//  THE COST IS ONE FRAME, and it is better known than discovered. A frame
+//  latches new input, then runs between ZERO and five fixed steps, then runs
+//  OnUpdate. OnUpdate is LAST, so what it stores is what the NEXT frame's
+//  steps act on - about 17ms later at 60fps.
+//
+//  FOR THE MOVEMENT AXIS THAT IS THE WHOLE OF THE DIFFERENCE. A held key reads
+//  the same from either hook, because the input layer updates once a frame and
+//  every step of that frame sees the same answer - so reading it from
+//  OnFixedUpdate was never stale and never missed anything. This split buys
+//  tidiness there, not correctness.
+//
+//  FOR A PRESS IT IS THE DIFFERENCE BETWEEN WORKING AND NOT, and that is the
+//  reason to do it at all. See OnUpdate.
 // =============================================================================
 
 #include <engine/Engine.h>
@@ -148,17 +169,57 @@ public:
     //  A BLANK BOX MEANS "nothing for that direction", which is left alone
     //  rather than treated as a mistake: a side-on character has no up or
     //  down, and walking up should then keep whatever was already playing.
+    //
+    //  ----------------------------------------------------------------------
+    //  WHAT MAKES THEM PICKERS AND NOT TEXT BOXES IS THE `[animation]` AT THE
+    //  END OF THE DECLARATION BELOW.
+    //
+    //  Worth saying here, because it is the one thing about these four boxes
+    //  that the rest of this comment block does not mention - and it was read
+    //  as hand-wiring, which is a fair conclusion to reach when the marker
+    //  sits at the far right of a line thirty lines below where the
+    //  explanation starts.
+    //
+    //  IT IS A GENERAL MARKER AND HAS NOTHING TO DO WITH THIS SCRIPT.
+    //  `// [animation]` on any public std::string - or on any fixed-size
+    //  array of them, in any script - gets the slot: the clip's name, a drop
+    //  target and a picker. `[image]` does the same for a picture. Case does
+    //  not matter, `[anim]` and `[clip]` also mean an animation, and the
+    //  marker may sit on the comment line DIRECTLY ABOVE the declaration
+    //  instead - which is where a variable with this much to explain wants
+    //  it. See eng::AssetFieldKind in engine/scene/ScriptFields.h.
+    //
+    //  WITHOUT IT A STRING IS JUST A STRING and you get a box to type a path
+    //  into. That is not a lesser version of this - a label's text is not a
+    //  file, and a file picker on it would be wrong - but it is what a second
+    //  array of animation names added without the marker comes out as.
+    //  ----------------------------------------------------------------------
     // ======================================================================
     std::string walkAnimations[kFacingCount];   // [animation] right, left, up, down
 
+    // ======================================================================
+    //  AND THE SAME THING AGAIN, WHICH IS THE POINT OF IT BEING HERE.
+    //
+    //  THE MARKER IS ON THE LINE ABOVE THE DECLARATION this time rather than
+    //  at the end of it. That is the other place it is allowed, and the
+    //  reason that form exists: a variable with a comment block over it has
+    //  nowhere good to put a trailing marker. Neither of these two arrays is
+    //  known to the engine or to the editor by name.
+    //
+    //  NOTHING READS THESE YET. There is no attack in this script, so the
+    //  four rows they add to the Inspector drive nothing - they are here
+    //  because "can I add another one the same way?" was worth answering in
+    //  the file that asked it. Delete them once it stops being useful.
+    // ======================================================================
+    std::string attackAnimations[4]; // [animation] one per direction, as above
+
     void OnStart() {
-        m_body = Owner() != nullptr ? Owner()->Find<eng::Rigidbody2DComponent>()
-                                    : nullptr;
+        m_body = Find<eng::Rigidbody2DComponent>();
         if (m_body == nullptr) {
             ENGINE_LOG_ERROR(eng::Channels::kGame,
                              "TilemapWalker on '{}' needs a Rigidbody2DComponent "
                              "beside it, and there is none - it will not move",
-                             Owner() != nullptr ? Owner()->Name() : "<none>");
+                             name);
             return;
         }
 
@@ -168,27 +229,81 @@ public:
         m_body->SetFreezeRotation(true);
     }
 
+    // ======================================================================
+    //  WHERE INPUT IS READ, and the only place in this file that asks the
+    //  input layer anything.
+    //
+    //  PUBLIC, AND THAT IS NOT INCIDENTAL. A hook is found by asking whether
+    //  the class has one that can be CALLED, so a PRIVATE OnUpdate is not
+    //  found and the script simply never updates. Nothing warns: the check
+    //  that catches a misspelled hook is already satisfied by the public
+    //  OnStart and OnFixedUpdate above, so it has nothing to complain about.
+    // ======================================================================
+    void OnUpdate() {
+        // ALREADY UNIT LENGTH OR ZERO, because GetAxis2D normalises - so a
+        // diagonal is the same speed as a cardinal and there is nothing here
+        // that should be rescaling it.
+        m_movement = Input::GetAxis2D("MoveLeft", "MoveRight", "MoveDown", "MoveUp");
+
+        // ==================================================================
+        //  THE JUMP, FOR WHEN IT COMES BACK - AND WHY IT IS LATCHED HERE.
+        //
+        //  A PRESS EXISTS FOR ONE FRAME. IsPressed is true on the frame the
+        //  key went down and false ever after, and a frame runs between ZERO
+        //  and five fixed steps: zero at any frame rate above 60, five when
+        //  the frame rate collapses. Asked from OnFixedUpdate a press is
+        //  therefore DROPPED on a fast frame and handled FIVE TIMES on a slow
+        //  one. This hook runs on every frame, so latching it here is the only
+        //  way to see each press exactly once.
+        //
+        //  `||` AND NOT `=`, because this hook also runs on frames that no
+        //  step follows. Assigning would clear a press nothing had acted on
+        //  yet; or-ing keeps it until a step consumes it.
+        //
+        //  NOT IsDown, which is what this line used to say. IsDown is
+        //  "pressed OR held" - true for as long as the key is down - so it
+        //  applied an impulse on every step while the key was held, which is a
+        //  rocket rather than a jump. A latch fed from IsDown would not have
+        //  fixed that: the query itself was the bug.
+        // ==================================================================
+        //m_jumpQueued = m_jumpQueued || Input::IsPressed("Jump");
+    }
+
     void OnFixedUpdate() {
         if (m_body == nullptr) {
             return;
         }
-        Vector2 movement = Input::GetAxis2D("MoveLeft", "MoveRight", "MoveDown", "MoveUp");
 
-        //movement.x =
-            //Input::GetAxis("MoveRight") - Input::GetAxis("MoveLeft");
+        // WHAT OnUpdate SAW, and nothing is asked of the input layer here.
+        // See the header for the one frame that costs.
+        //
+        // THE PLATFORMER VERSION IS THE COMMENTED PAIR BELOW, and it is what
+        // the top of this file still describes: horizontal set outright,
+        // vertical LEFT ALONE so gravity keeps working. The live line sets
+        // both, which is what a top-down character wants and is what this is
+        // currently doing.
+        //const Vector2 velocity = m_body->Velocity();
+        //m_body->SetVelocity(Vector2{m_movement.x * walkSpeed, velocity.y});
 
-
-        const Vector2 velocity = m_body->Velocity();
-        //m_body->SetVelocity(Vector2{horizontal * walkSpeed, velocity.y});
-
-        m_body->SetVelocity(movement * walkSpeed);
+        m_body->SetVelocity(m_movement * walkSpeed);
 
         //m_grounded = IsOnGround();
-
-        //if (m_grounded && Input::IsDown("Jump")) {
-        //    // An impulse and not a force: a jump is one kick, not a push
-        //    // spread over the step. See ForceMode in physics/Rigidbody.h.
-        //    m_body->AddForce(Vector2{0.0f, jumpImpulse}, eng::ForceMode::Impulse);
+        //
+        //if (m_jumpQueued) {
+        //    // CLEARED BY THE FIRST STEP THAT SEES IT, which is what makes
+        //    // one press worth one jump however many steps this frame runs.
+        //    //
+        //    // Cleared HERE rather than inside the grounded test, so a press
+        //    // made in mid-air is SPENT rather than saved. Moving this line
+        //    // inside the test would buffer it until landing instead, which
+        //    // is a question about feel and not about correctness.
+        //    m_jumpQueued = false;
+        //
+        //    if (m_grounded) {
+        //        // An impulse and not a force: a jump is one kick, not a push
+        //        // spread over the step. See ForceMode in physics/Rigidbody.h.
+        //        m_body->AddForce(Vector2{0.0f, jumpImpulse}, eng::ForceMode::Impulse);
+        //    }
         //}
     }
 
@@ -242,9 +357,7 @@ private:
         // could dangle. This runs only when the direction changes, so it is a
         // string compare over the two or three components an entity has, a few
         // times a second at most. See docs/scripting-reference.md.
-        auto* animation = Owner() != nullptr
-                              ? Owner()->Find<eng::SpriteAnimationComponent>()
-                              : nullptr;
+        auto* animation = Find<eng::SpriteAnimationComponent>();
         if (animation == nullptr) {
             return;   // no animation on this entity; the movement still works
         }
@@ -332,11 +445,9 @@ private:
     // actually asking - and it keeps answering while standing still, when
     // there is no new contact at all.
     bool IsOnGround() const {
-        // `::Transform` and not `Transform`. Inside a ScriptBehaviour, the
-        // unqualified name finds the inherited FUNCTION Transform() - a member
-        // hides anything at global scope - so the typedef in Engine.h is only
-        // reachable from here with the `::` in front of it.
-        const ::Transform transform = Transform();
+        // `transform` is the inherited handle, not a local - see the note above
+        // ScriptHandle in engine/scene/ScriptComponent.h. It asks the entity
+        // afresh on every use, so there is nothing here to go stale.
         if (transform == nullptr) {
             return false;
         }
@@ -360,9 +471,30 @@ private:
     // to put in a box for an address. PRIVATE rather than public-with-an-m_
     // prefix: `private:` is the language's own way of saying "not part of the
     // interface", and the exposer no longer reads anything into a name.
-    Ridigbody2D                m_body = nullptr;
+    // SPELLED Rigidbody2D, which it was not until recently: this line read
+    // `Ridigbody2D` - the misspelled compatibility alias - and that alias has
+    // since been removed from Engine.h, which left this file unable to compile
+    // at all. A project's scripts are built by the EDITOR and not by the
+    // engine's own build, so nothing reported it.
+    Rigidbody2D                m_body = nullptr;
 
     bool                       m_grounded = false;
+
+    // WHAT OnUpdate SAW AND OnFixedUpdate ACTS ON.
+    //
+    // Written once a frame in OnUpdate, read by every fixed step of the
+    // FOLLOWING frame - OnUpdate runs after the step loop, so there is one
+    // frame between the two. Zero until the first OnUpdate has run, which is
+    // the right answer for a character nobody has told to move yet.
+    //
+    // Unit length or zero and never longer, because GetAxis2D normalises - so
+    // `m_movement * walkSpeed` is the same speed in all eight directions.
+    Vector2                    m_movement{};
+
+    // THE JUMP'S LATCH, for when the jump in OnUpdate comes back. A bool and
+    // not a count: two presses inside one frame are one jump, which is what
+    // somebody who mashed the key meant by it.
+    //bool                     m_jumpQueued = false;
 
     // What Show() last asked for, so it can tell a change from a repeat.
     int                        m_showing = kNothingApplied;

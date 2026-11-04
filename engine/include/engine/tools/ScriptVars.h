@@ -59,7 +59,12 @@
 //    * The generated code wraps every variable in `if constexpr (requires
 //      ...)`, so a variable this parser thought it saw and got wrong COMPILES
 //      AWAY instead of failing the build. Generated code can never stop a
-//      script from compiling.
+//      script from compiling. That guard has to ask about the variable's TYPE
+//      as well as the call, as a nested requirement rather than an `&&`, and
+//      GenerateExposerUnit says at length why both of those matter.
+//    * The five names ScriptBehaviour itself defines - transform, gameObject,
+//      scene, name and tag - are never exposed, because a member of the
+//      script's own by one of those names hides the inherited one.
 //    * What it skipped is reported, with the reason - see `skipped` below.
 //      "My variable did not appear" is a question the Console answers.
 //
@@ -99,8 +104,19 @@ struct ScriptVarDecl {
     float min    = 0.0f;
     float max    = 0.0f;
 
-    // [Rigidbody2DComponent] on an EntityRef - the picker narrows to entities
-    // carrying one. See ScriptFields::Ref.
+    // THE MARKER'S NAME, which means one of two things depending on the type
+    // it lands on: [Rigidbody2DComponent] on an EntityRef narrows the picker
+    // to entities carrying one, and [animation] or [image] on a std::string
+    // says the text is an asset's path and gets it a slot instead of a box.
+    //
+    // Dropped for every other type - a marker on a float means nothing and
+    // carrying it would leave something downstream to wonder about.
+    //
+    // THE MARKER MAY BE ON THE DECLARATION OR ON THE COMMENT LINE DIRECTLY
+    // ABOVE IT. See ReadComment in ScriptVars.cpp for why both, and why not
+    // any further above than that.
+    //
+    // See ScriptFields::Ref and ScriptFields::Asset.
     std::string requiredType;
 
     // ======================================================================
@@ -118,6 +134,13 @@ struct ScriptVarDecl {
     //  nothing to teach any of those five things about lists. The exposer
     //  writes a loop over std::size(), so the LENGTH never has to be parsed
     //  out of the declaration and may be a named constant.
+    //
+    //  A MARKER APPLIES TO EVERY ELEMENT, and that is what makes an array of
+    //  asset names worth having. `// [animation]` on the declaration gives all
+    //  four elements the animation slot rather than four boxes to type a path
+    //  into; `// [0..10]` gives all four a slider. There is nothing
+    //  per-element to write, and nothing anywhere about a particular
+    //  variable's name. See eng::AssetFieldKind in scene/ScriptFields.h.
     //
     //  WHAT IS STILL NOT SUPPORTED, and the distinction is worth keeping: a
     //  GROWABLE list. A std::vector has no length until the game runs, so

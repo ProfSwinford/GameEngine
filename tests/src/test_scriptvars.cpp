@@ -648,6 +648,55 @@ TEST_CASE("a script with no variables still generates a unit that compiles") {
     CHECK(unit.find("if constexpr") == std::string::npos);
 }
 
+TEST_CASE("a member named like one of ScriptBehaviour's own is skipped, not exposed") {
+    // ======================================================================
+    //  THE FIVE NAMES A SCRIPT DOES NOT OWN - transform, gameObject, scene,
+    //  name and tag - and the case whose absence let a build-breaker through.
+    //
+    //  Two different mistakes arrive at the parser as the same declaration.
+    //  A real member of the user's own HIDES the inherited handle, so exposing
+    //  it would put a row labelled "tag" in the Inspector with nothing to do
+    //  with the entity's tag. And a variable this parser only IMAGINED - here
+    //  one inside an `#if 0`, which the whitelist does not read - used to be
+    //  discarded by the `requires` guard in the generated code, because no
+    //  member of that name existed. Against these five it resolves to the
+    //  handle, the guard is satisfied, and ScriptFields::Var's own
+    //  static_assert then fails the user's build from a generated file.
+    //
+    //  Either way the answer is the same: not in `vars`, and in `skipped`
+    //  with a reason, which is what the Console prints.
+    // ======================================================================
+    const ScriptSourceInfo info = ScanScriptSource(R"CPP(
+#include <engine/Engine.h>
+
+class Thing final : public eng::ScriptBehaviour {
+public:
+    float speed = 1.0f;         // this one really is the script's
+    std::string tag;            // hides eng::ScriptBehaviour::tag
+#if 0
+    std::string name;           // imagined: the parser does not read #if
+#endif
+
+    void OnFixedUpdate() {}
+};
+
+ENGINE_REGISTER_SCRIPT(Thing)
+)CPP");
+
+    CHECK(info.className == "Thing");
+
+    REQUIRE(info.vars.size() == 1);
+    CHECK(info.vars[0].name == "speed");
+
+    REQUIRE(info.skipped.size() == 2);
+    CHECK(info.skipped[0].name == "tag");
+    CHECK(info.skipped[1].name == "name");
+    for (const ScriptVarSkipped& one : info.skipped) {
+        CHECK(one.reason.find("already has a member of that name") !=
+              std::string::npos);
+    }
+}
+
 // ===========================================================================
 //  The project's own scripts, as they are actually written
 // ===========================================================================
@@ -675,7 +724,7 @@ public:
     eng::EntityRef centre;               // [TransformComponent] what to circle
 
     void OnStart() {
-        if (eng::Transform2D* transform = Transform(); transform != nullptr) {
+        if (transform != nullptr) {
             m_start = transform->LocalPosition();
         }
     }
@@ -968,4 +1017,125 @@ TEST_CASE("a marked string generates Asset, and a marked reference generates Ref
 
     CHECK(plainUnit.find("f.Var(\"label\"") != std::string::npos);
     CHECK(plainUnit.find("f.Asset(") == std::string::npos);
+}
+
+// ===========================================================================
+//  A marker on the comment line DIRECTLY ABOVE the declaration
+//
+//  THE TRAILING COMMENT USED TO BE THE ONLY PLACE ONE FIT, and that is a
+//  worse limitation than it sounds. The variables most in need of a marker
+//  are the ones with the most explanation above them, so the marker ends up
+//  at the far right of the declaration, past the tooltip, where a reader of
+//  that explanation never looks.
+//
+//  How it was reported: a second array of animation names was added beside
+//  one that had the marker, in the same shape, and came out as four plain
+//  text boxes - the difference being a comment nobody had seen.
+// ===========================================================================
+
+TEST_CASE("a marker on the comment line directly above is read") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [animation] one per direction\n"
+                              "    std::string attackAnimations[4];"));
+
+    const ScriptVarDecl* var = Var(info, "attackAnimations");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType == "animation");
+    CHECK(var->isArray);
+
+    // With no comment of its own, what followed the marker above is the
+    // tooltip - there is nowhere else for one to come from.
+    CHECK(var->tooltip == "one per direction");
+}
+
+TEST_CASE("a range and a required type work from the line above as well") {
+    // Nothing about the marker's MEANING changed, so every kind of marker
+    // arrives by the new route too. Worth pinning: a change that only moved
+    // where [animation] may be written would be a special case.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [0..10] how much to mix\n"
+                              "    float blend = 0.5f;\n"
+                              "    // [Rigidbody2DComponent] what to push\n"
+                              "    eng::EntityRef target;"));
+
+    const ScriptVarDecl* blend = Var(info, "blend");
+    REQUIRE(blend != nullptr);
+    CHECK(blend->ranged);
+    CHECK(blend->min == doctest::Approx(0.0f));
+    CHECK(blend->max == doctest::Approx(10.0f));
+    CHECK(blend->tooltip == "how much to mix");
+
+    const ScriptVarDecl* target = Var(info, "target");
+    REQUIRE(target != nullptr);
+    CHECK(target->requiredType == "Rigidbody2DComponent");
+}
+
+TEST_CASE("the declaration's own marker wins over the line above") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [image] the one above\n"
+                              "    std::string clip;   // [animation] the one beside"));
+
+    const ScriptVarDecl* var = Var(info, "clip");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType == "animation");
+    CHECK(var->tooltip == "the one beside");
+}
+
+TEST_CASE("a trailing comment keeps the tooltip when the marker came from above") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [animation] not this, the line below says it\n"
+                              "    std::string clip;   // which clip to play"));
+
+    const ScriptVarDecl* var = Var(info, "clip");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType == "animation");
+    CHECK(var->tooltip == "which clip to play");
+}
+
+TEST_CASE("a BLANK LINE between the comment and the declaration breaks it") {
+    // "Immediately above" has to mean that, or a [TODO] eight lines up in a
+    // comment block quietly becomes a required type.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [animation] not this one\n"
+                              "\n"
+                              "    std::string clip;"));
+
+    const ScriptVarDecl* var = Var(info, "clip");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType.empty());
+}
+
+TEST_CASE("a banner line between them breaks it too") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [animation] not this one either\n"
+                              "    // ---------------------------------\n"
+                              "    std::string clip;"));
+
+    const ScriptVarDecl* var = Var(info, "clip");
+    REQUIRE(var != nullptr);
+    CHECK(var->requiredType.empty());
+}
+
+TEST_CASE("prose on the line above is not read as a marker") {
+    // The rule is the trailing comment's own: the bracket has to be at the
+    // START. A comment block is documentation first.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // see [1] for why this is 90 and not 100\n"
+                              "    float radius = 90.0f;"));
+
+    const ScriptVarDecl* var = Var(info, "radius");
+    REQUIRE(var != nullptr);
+    CHECK_FALSE(var->ranged);
+    CHECK(var->requiredType.empty());
+}
+
+TEST_CASE("a marker from the line above reaches the generated Asset call") {
+    // The parse is only half of it. This is the half the Inspector sees.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    // [animation] one per direction\n"
+                              "    std::string attackAnimations[4];"));
+    const std::string unit = GenerateExposerUnit(info, "scripts/Thing.cpp");
+
+    CHECK(unit.find("f.Asset(") != std::string::npos);
+    CHECK(unit.find("\"animation\"") != std::string::npos);
 }

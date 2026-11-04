@@ -44,7 +44,6 @@ namespace {
 class Pickup final : public eng::ScriptBehaviour {
 public:
     void OnTriggerEnter(eng::EntityId other) {
-        eng::Scene* scene = GetScene();
         if (scene == nullptr) {
             return;
         }

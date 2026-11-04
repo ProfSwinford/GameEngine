@@ -228,7 +228,7 @@ you are browsing. Drag the `.cpp` onto an entity to attach it.
 class MyScript : public eng::ScriptBehaviour {
 public:
     void OnFixedUpdate() {
-        Transform()->Translate({0, eng::Time::DeltaTime() * 50});
+        transform->Translate({0, eng::Time::DeltaTime() * 50});
     }
 };
 ENGINE_REGISTER_SCRIPT(MyScript)   // without this it can never be found
@@ -286,8 +286,8 @@ public:
 `float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color` and
 `eng::EntityRef`. The trailing comment becomes the tooltip; a `[low..high]` at
 its start makes a slider, and a `[TypeName]` narrows a reference to entities
-carrying that component or script. Keep one off screen by making it `private`
-or naming it `m_something`.
+carrying that component or script. Keep one off screen by making it `private`;
+the name is not consulted.
 
 **This is the one thing the compiler cannot do for us.** `requires` can ask
 whether a *named* member exists; nothing in C++ can ask what members exist. So

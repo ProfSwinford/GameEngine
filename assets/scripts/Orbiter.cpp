@@ -77,15 +77,14 @@ public:
     void OnStart() {
         // The centre of the circle is remembered HERE rather than in a
         // constructor, because a constructor runs before the script is
-        // connected to its entity - Transform() would be null. OnStart is the
+        // connected to its entity - `transform` would be null. OnStart is the
         // first moment the entity is guaranteed to be complete.
-        if (eng::Transform2D* transform = Transform(); transform != nullptr) {
+        if (transform != nullptr) {
             m_start = transform->LocalPosition();
         }
     }
 
     void OnFixedUpdate() {
-        eng::Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;
         }
@@ -145,7 +144,6 @@ public:
         // remembered as a pointer, because it may already have been destroyed.
         // That is the rule the whole engine runs on, and a script is not
         // exempt from it.
-        eng::Scene* scene = GetScene();
         if (scene == nullptr) {
             return;
         }

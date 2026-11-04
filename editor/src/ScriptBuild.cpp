@@ -1265,16 +1265,26 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
         // Cheap, and it keeps the generated exposer in step with the source
         // without a second staleness rule to get wrong. The unit's own write
         // time is never compared against anything; the SOURCE's is.
-        if (dryRun) {
-            // Nothing is written, and nothing is logged: this runs on every
-            // focus change and would otherwise narrate itself constantly.
-        } else if (unit.isScript && !info.hasOnExpose && !info.vars.empty()) {
+        // WHAT WAS SKIPPED IS REPORTED EVEN IF NOTHING SURVIVED, which is not
+        // where this used to live. It sat inside the branch below, so a script
+        // whose every candidate was skipped - all of them private, all of them
+        // pointers, or all of them named like one of ScriptBehaviour's own
+        // members - was told nothing at all. That is the case where "my
+        // variable did not appear" is hardest to answer, because there is no
+        // Inspector row to compare against. Whether a skip is worth reporting
+        // does not depend on something else having been exposed.
+        if (!dryRun && unit.isScript && !info.hasOnExpose) {
             for (const eng::ScriptVarSkipped& skipped : info.skipped) {
                 ENGINE_LOG_WARN(eng::Channels::kEditor,
                                 "{}: '{}' is not shown in the Inspector because {}",
                                 source, skipped.name, skipped.reason);
             }
+        }
 
+        if (dryRun) {
+            // Nothing is written, and nothing is logged: this runs on every
+            // focus change and would otherwise narrate itself constantly.
+        } else if (unit.isScript && !info.hasOnExpose && !info.vars.empty()) {
             std::ofstream out(unit.unitPath, std::ios::trunc);
             if (out) {
                 // The precompiled header first; GenerateExposerUnit knows

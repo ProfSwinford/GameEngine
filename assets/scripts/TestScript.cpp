@@ -134,12 +134,10 @@ namespace {
 class TestScript final : public eng::ScriptBehaviour {
 public:
     void OnStart() {
-        ENGINE_LOG_INFO(eng::Channels::kGame, "TestScript started on '{}'",
-                        Owner() != nullptr ? Owner()->Name() : "<none>");
+        ENGINE_LOG_INFO(eng::Channels::kGame, "TestScript started on '{}'", name);
     }
 
     void OnFixedUpdate() {
-        eng::Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;
         }
@@ -159,7 +157,6 @@ public:
     void OnCollisionEnter(eng::EntityId other) {
         // The other entity is looked up fresh rather than remembered, because
         // it may already have been destroyed this step.
-        eng::Scene* scene = GetScene();
         if (scene == nullptr) {
             return;
         }

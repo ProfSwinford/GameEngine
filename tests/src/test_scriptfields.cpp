@@ -1972,3 +1972,69 @@ TEST_CASE("reverting twice is harmless, as a double click on the button would be
     CHECK_FALSE(attached.component.IsFieldOverridden("number"));
     CHECK(*attached.Field("number")->AsFloat() == doctest::Approx(1.5f));
 }
+
+// ===========================================================================
+//  WHICH MARKERS NAME A KIND OF ASSET
+//
+//  There used to be TWO lists of accepted spellings - one here in the engine
+//  deciding whether to warn, one in the editor's InspectorPanel deciding
+//  whether to draw a slot - with nothing keeping them in step. This is the
+//  one that is left, and these are its edges.
+// ===========================================================================
+
+TEST_CASE("the asset markers this engine accepts, and the ones it does not") {
+    CHECK(AssetFieldKindFor("image") == AssetFieldKind::Image);
+    CHECK(AssetFieldKindFor("texture") == AssetFieldKind::Image);
+    CHECK(AssetFieldKindFor("sprite") == AssetFieldKind::Image);
+
+    CHECK(AssetFieldKindFor("animation") == AssetFieldKind::Animation);
+    CHECK(AssetFieldKindFor("anim") == AssetFieldKind::Animation);
+    CHECK(AssetFieldKindFor("clip") == AssetFieldKind::Animation);
+
+    // CASE DOES NOT MATTER. A marker is prose inside a comment, and
+    // [Animation] used to fall through to a plain text box.
+    CHECK(AssetFieldKindFor("Animation") == AssetFieldKind::Animation);
+    CHECK(AssetFieldKindFor("ANIMATION") == AssetFieldKind::Animation);
+    CHECK(AssetFieldKindFor("Image") == AssetFieldKind::Image);
+    CHECK(AssetFieldKindFor("Clip") == AssetFieldKind::Animation);
+
+    // An EntityRef's required type arrives here whenever somebody writes one
+    // on a string, and so does a tooltip put where the kind goes.
+    CHECK(AssetFieldKindFor("Rigidbody2DComponent") == AssetFieldKind::None);
+    CHECK(AssetFieldKindFor("shown on the HUD") == AssetFieldKind::None);
+    CHECK(AssetFieldKindFor("") == AssetFieldKind::None);
+
+    // Near misses, which have to be refused rather than guessed at.
+    CHECK(AssetFieldKindFor("animations") == AssetFieldKind::None);
+    CHECK(AssetFieldKindFor("img") == AssetFieldKind::None);
+}
+
+TEST_CASE("the message listing the kinds cannot under-report what the code takes") {
+    // It used to say "it knows 'image' and 'animation'" while the code also
+    // accepted 'texture' and 'sprite' - so somebody whose correct marker was
+    // rejected for an unrelated reason was told two of the four were wrong.
+    const std::string names(AssetFieldKindNames());
+    for (const char* one :
+         {"image", "texture", "sprite", "animation", "anim", "clip"}) {
+        CHECK(names.find(one) != std::string::npos);
+    }
+}
+
+TEST_CASE("a marked string stores the CANONICAL kind, however it was spelled") {
+    // So that everything downstream compares against one word rather than
+    // six, and a tooltip reads the same whichever synonym was typed.
+    ScriptFields fields;
+    std::string  clip;
+    std::string  picture;
+
+    fields.Asset("clip", clip, "Clip");
+    fields.Asset("picture", picture, "SPRITE");
+
+    const ScriptField* one = fields.Find("clip");
+    REQUIRE(one != nullptr);
+    CHECK(one->requiredType == "animation");
+
+    const ScriptField* two = fields.Find("picture");
+    REQUIRE(two != nullptr);
+    CHECK(two->requiredType == "image");
+}

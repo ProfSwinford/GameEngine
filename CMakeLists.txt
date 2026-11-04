@@ -76,7 +76,14 @@ project(Engine2D
 #  does not force every project to recompile, and a layout change cannot be
 #  forgotten just because the version was already bumped for something else.
 # =============================================================================
-set(ENGINE_SCRIPT_ABI 1)
+#  History, so that a bump is not a bare number with no reason attached:
+#    1  the first one.
+#    2  ScriptBehaviour gained the bare-name handles - transform, gameObject,
+#       scene, name, tag - which are data members, so sizeof and the layout of
+#       the base of every script class changed. Nothing in ScriptAbi.h compares
+#       sizeof or alignof; this number is the only thing standing between a
+#       stale script DLL and reading the wrong offsets at run time.
+set(ENGINE_SCRIPT_ABI 2)
 
 # --- which version of C++ ----------------------------------------------------
 # C++23 is used for std::format (see core/Log.h) and a handful of other

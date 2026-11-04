@@ -86,18 +86,59 @@
 //  THE COMPONENT ONES ARE POINTER ALIASES, AND THAT IS DELIBERATE
 //
 //  `Transform` is `Transform2D*`, not `Transform2D`, because a script never
-//  holds a transform by value - it asks for one and gets a pointer:
-//
-//      const ::Transform transform = Transform();      // yes, both
+//  holds a transform by value - it asks for one and gets a pointer.
 //
 //  ==========================================================================
-//  WHICH CREATES THE ONE SHARP EDGE IN THIS BLOCK, so it is written down.
+//  EVERY ENGINE TYPE IS ALREADY SPELLABLE WITHOUT QUALIFICATION, and it is
+//  the `using namespace eng;` below that does it rather than any alias here.
 //
-//  Inside a ScriptBehaviour, the unqualified name `Transform` finds the
-//  inherited member FUNCTION and hides this alias - so `Transform transform =
-//  Transform();` does not compile and the error is about a function call. The
-//  leading `::` says "the one at global scope" and is what makes it work. The
-//  same applies to anything else here that shares a name with a member.
+//  So `Transform2D`, `Vec2`, `Entity`, `EntityId`, `Scene`, `Color` and the
+//  other three hundred odd names in `eng` all work bare inside a script. The
+//  `eng::` prefixes in assets/scripts are house style, not a requirement.
+//  A using-directive is not a snapshot either: it keeps finding names added to
+//  the namespace afterwards, which is why even `eng::Engine` - declared below
+//  this line - is visible as plain `Engine`.
+//
+//  ==========================================================================
+//  EXACTLY ONE NAME IS AN EXCEPTION, AND IT IS `Transform`.
+//
+//  Inside a ScriptBehaviour the unqualified name `Transform` finds the
+//  inherited member FUNCTION and hides this alias, because a member found by
+//  unqualified lookup hides a namespace-scope name of the same spelling even
+//  when the member is a function and the hidden name is a type. So:
+//
+//      Transform t = Transform();        // does NOT compile
+//      ::Transform t = Transform();      // compiles - the one at global scope
+//      Transform2D* p = Transform();     // compiles, and is the better line
+//
+//  Two things worth knowing before meeting them:
+//
+//    `eng::Transform` DOES NOT EXIST. The alias is at global scope and the
+//    class is eng::Transform2D, so the usual eng:: escape hatch is not
+//    available for this one name - the error is "'Transform': is not a member
+//    of 'eng'".
+//
+//    `class Transform t;` does not rescue it either. Unqualified lookup finds
+//    the member function rather than the typedef, so the elaborated type
+//    specifier DECLARES A NEW incomplete class in function scope and the error
+//    ("uses undefined class") points nowhere near the real problem.
+//
+//  ==========================================================================
+//  WHICH MOSTLY DOES NOT MATTER ANY MORE: WRITE `transform`.
+//
+//  ScriptBehaviour has a lowercase `transform` member - see the long note in
+//  scene/ScriptComponent.h - so a script asks for its transform by name and
+//  never writes the type:
+//
+//      transform->Translate({0.0f, 10.0f});
+//
+//  Case is what keeps the two apart: `transform` the member, `Transform2D` the
+//  type. The `Transform` alias had no job left and is now COMMENTED OUT below,
+//  so `::Transform` does not compile either any more.
+//
+//  Everything above is kept because it is what somebody needs to read when an
+//  older script that writes `Transform` stops building. The answer is
+//  `Transform2D*`, or better, the inherited `transform`.
 //
 //  ==========================================================================
 //  WHAT IS DELIBERATELY NOT HERE
@@ -118,16 +159,19 @@ typedef eng::Entity* GameObject;
 //Internal Component Definitions
 typedef eng::Rigidbody2DComponent* Rigidbody2D;
 
-// MISSPELLED, AND KEPT. assets/scripts/TilemapWalker.cpp uses this spelling,
-// and a compatibility alias whose whole job is to let existing code compile is
-// the last place to break existing code. Rigidbody2D above is the one to write
-// in anything new.
-typedef eng::Rigidbody2DComponent* Ridigbody2D;
+// THERE WAS A MISSPELLED `Ridigbody2D` BESIDE THIS ONE, and taking it out left
+// assets/scripts/TilemapWalker.cpp unable to compile - it was the one file
+// that wrote it. It writes Rigidbody2D now.
+//
+// WORTH KNOWING BEFORE REMOVING THE NEXT ONE: a project's scripts are compiled
+// by the EDITOR, not by this build, so deleting a name from this list cannot
+// fail the engine build or the test suite. Nothing tells you until somebody
+// opens the editor. Grep assets/scripts first.
 
 typedef eng::ColliderComponent*    Collider2D;
 typedef eng::SpriteComponent*      SpriteRenderer;
 
-using Transform = eng::Transform2D*;
+//using Transform = eng::Transform2D*;
 
 typedef eng::InputMap Input;
 

@@ -1367,6 +1367,27 @@ The engine works out which of those you wrote while the script is compiling, so
 a script with no update is never asked to update — it costs nothing per frame
 rather than a call into an empty function sixty times a second.
 
+### The five names you already have
+
+`transform`, `gameObject`, `scene`, `name` and `tag` are members every script
+inherits, written as though they were local variables — the way Unity's
+`MonoBehaviour` reads:
+
+```cpp
+void OnFixedUpdate() {
+    transform->Translate({0.0f, 2.0f});
+    if (tag == "Enemy") {
+        ENGINE_LOG_INFO(eng::Channels::kGame, "{} is after you", name);
+    }
+}
+```
+
+They ask the entity afresh on every use, so none of them can go stale, and all
+of them answer null — or `""` — once the entity has gone. `name` reads only;
+`Rename()` is the verb, because a name is an identity here and renaming can be
+refused. The scripting reference covers the lot under **Where am I**, including
+the one thing it costs: `std::transform` has to be written out in full.
+
 ### Variables in the Inspector
 
 **Declare a public variable and it is there.** No annotation, no registration,
@@ -1384,22 +1405,65 @@ public:
 };
 ```
 
-The **trailing comment becomes the tooltip**, and a `[low..high]` at the
-*start* of that comment makes it a slider instead of a drag box. Use a range
-only when the ends are part of what the number means — a 0-to-1 blend, a
-percentage. A distance has no upper limit and a slider would invent one. A
-bracket group anywhere other than the start is left alone as ordinary prose.
+The **trailing comment becomes the tooltip**, and a marker at its *start* says
+something more about the variable. A bracket group anywhere other than the
+start is left alone as ordinary prose.
 
 | the comment | what you get |
 | --- | --- |
 | `// how fast it goes` | a drag box, with that tooltip |
 | `// [0..10] how fast` | a slider from 0 to 10, tooltip "how fast" |
 | `// [Rigidbody2DComponent] what to push` | on an `EntityRef`, narrows the picker |
+| `// [animation] the walk cycle` | on a `std::string`, an animation **slot** instead of a box |
+| `// [image] shown on the HUD` | on a `std::string`, an image slot |
 | `// see [1] for why` | a drag box; the bracket is not at the start |
 
-**To keep a variable off screen**, make it `private`, or name it `m_something`
-— this project's convention for internals is respected as a deliberate "not
-this one", so a public `m_body` is left out silently.
+Use a range only when the ends are part of what the number means — a 0-to-1
+blend, a percentage. A distance has no upper limit and a slider would invent
+one.
+
+##### `[image]` and `[animation]`: a slot instead of a text box
+
+This is the marker worth knowing about, because without it a string that names
+an asset is a path you have to type correctly from memory. With it you get the
+same slot a Sprite's texture gets: the asset's **name**, a drop target, and a
+picker.
+
+**It is completely general.** Nothing anywhere knows the name of a particular
+variable. `[animation]` on *any* public `std::string`, or on *any fixed-size
+array* of them, in any script, gets the slot — and on an array it applies to
+every element, so four boxes become four pickers.
+
+```cpp
+std::string portrait;              // [image] shown on the HUD
+std::string walkAnimations[4];     // [animation] right, left, up, down
+```
+
+`[texture]` and `[sprite]` also mean an image, `[anim]` and `[clip]` an
+animation, and **case does not matter** — `[Animation]` is the same marker. A
+marker naming a kind the engine has no slot for is reported in the Console and
+the variable is drawn as ordinary text, so a mistake costs a message rather
+than a variable.
+
+**The marker may also go on the comment line directly above the declaration**,
+which is where a variable with more than a line of explanation wants it:
+
+```cpp
+// [animation] which clip to play walking left
+std::string walkLeft;
+```
+
+One comment line, immediately above, starting with the bracket. A blank line or
+a banner line in between breaks it, and a marker on the declaration's own line
+wins when there is one.
+
+**To hide one, make it `private`.** The name is not consulted: `m_speed` in a
+public section is shown like anything else.
+
+**Five names are already taken.** `transform`, `gameObject`, `scene`, `name`
+and `tag` are members every script inherits. A public variable of your own
+with one of those names would hide the inherited one, so it is left out and
+the Console says why.
 
 A `static constexpr` constant is **not** exposed, and the Console says which
 one and why. Make it an ordinary member to tune it.
@@ -1441,7 +1505,7 @@ Seven types, and only ordinary members:
 | --- | --- |
 | `float`, `int` | a drag box, or a slider with `Range` |
 | `bool` | a checkbox |
-| `std::string` | a text box |
+| `std::string` | a text box — or an asset **slot**, with `[image]` or `[animation]` |
 | `eng::Vec2` | two numbers |
 | `eng::Color` | a colour picker |
 | `eng::EntityRef` | another entity — drag one from the Hierarchy |

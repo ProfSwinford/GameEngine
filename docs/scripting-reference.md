@@ -28,6 +28,7 @@ The vocabulary is different in two places and the same everywhere else:
 | `MonoBehaviour` | `eng::ScriptBehaviour` | You inherit it and write only the hooks you want. |
 | `GetComponent<T>()` | `Find<T>()` | House rule: a lookup that can come back empty is `Find`, never `Get`. |
 | `Instantiate` | `Instantiate` | The same name, because it is the same thing. |
+| `transform`, `gameObject`, `name`, `tag` | the same, spelled the same | Bare names on the base class, reached with `->`. See the next section. |
 
 Everything else keeps its Unity name where there is one. The full mapping is at
 the bottom of this page, including the things that are **not here yet** and what
@@ -63,17 +64,103 @@ so rather than leaving it silent.
 
 ## Where am I, and what am I attached to?
 
+Five of these are **bare names**, written as though they were local variables -
+which is how Unity's `MonoBehaviour` reads too:
+
+```cpp
+transform      // eng::Transform2D*   where it is, how it is turned, how big
+gameObject     // eng::Entity*        the entity itself
+scene          // eng::Scene*         the world
+name           // const std::string&  its name, "" once it has gone
+tag            // const std::string&  what KIND of thing it is
+```
+
+```cpp
+float speed = 200.0f;   // a tunable, and a box in the Inspector
+
+void OnFixedUpdate() {
+    transform->Translate({0.0f, speed * eng::Time::FixedDeltaTime()});
+    if (gameObject->HasTag("Player")) {
+        ENGINE_LOG_INFO(eng::Channels::kGame, "{} is the player", name);
+    }
+}
+```
+
+The same things spelled as functions, which still work and are what most of the
+engine's own code uses:
+
 ```cpp
 Owner()        // eng::Entity*      this script's entity
 OwnerId()      // eng::EntityId     its id, which is what survives a frame
 Transform()    // eng::Transform2D* its position, rotation and scale
 GetScene()     // eng::Scene*       the world
 Name()         // const std::string&  the entity's name, "" once it has gone
+Tag()          // const std::string&  "" when untagged
 ```
 
 All of them work from `OnStart` onwards. All of them answer null - or `""` -
 once the entity has been destroyed, which is why nothing below needs a liveness
-check first.
+check first. `OwnerId()` has no bare spelling on purpose: the id is the one
+thing worth *holding on to*, so it reads better as something you asked for.
+
+### They are reached with `->`, because they ask afresh
+
+A bare name is not a cached pointer. It is a one-pointer handle that asks the
+entity again on every use, so `transform` cannot be stale after something moves
+or reparents the entity, and `name` follows a rename made anywhere:
+
+```cpp
+eng::Transform2D* raw = transform;   // converts, so it passes anywhere the pointer does
+if (transform) { ... }               // false once the entity has gone
+std::size_t len = name->size();      // `->` for the string ones too
+bool boss = (tag == "Boss");         // and they compare against strings
+tag = "Enemy";                       // the only one that can be assigned
+```
+
+`transform->X()` on a destroyed entity is a null dereference, exactly as
+`Transform()->X()` already was - the handle does not make that safe and does
+not pretend to. In practice a script stops being ticked before its entity goes,
+so the checks that eight of the fourteen scripts in `assets/scripts` do write
+are belt-and-braces rather than load-bearing.
+
+**`name` cannot be assigned.** A name is an identity here - parents and entity
+references are recorded by it, and the scene keeps a name-to-entity table - so
+renaming goes through the scene, can be **refused**, and says why:
+
+```cpp
+if (!Rename("Boss")) { /* taken, or empty - the Console says which */ }
+```
+
+### Three things worth knowing before you meet them
+
+**`std::transform` is hidden.** A member found by unqualified lookup also
+suppresses argument-dependent lookup, so an unqualified
+`transform(first, last, out, fn)` no longer reaches `std::transform`, and the
+error - *"term does not evaluate to a function taking 4 arguments"* - names
+neither. Write `std::transform`, which is unaffected and is the better spelling
+anyway. No other bare name has a standard-library counterpart.
+
+**Every engine type is already spellable without qualification.** `Transform2D`,
+`Vec2`, `Entity`, `Scene`, `Color` and the rest, because `<engine/Engine.h>`
+contains `using namespace eng;`. The `eng::` prefixes in `assets/scripts` are
+house style, not a requirement.
+
+The one exception is the `Transform` **alias** for `eng::Transform2D*`, which
+the member function `Transform()` hides - so it needs `::Transform`, and
+`eng::Transform` does not exist at all. With `transform` in place there is no
+longer a reason to write either; use `Transform2D*` when you need to name the
+type.
+
+**These five names are taken, and so is your class's own.** A public variable
+of your own called `transform`, `gameObject`, `scene`, `name` or `tag` would
+hide the inherited one, so the editor leaves it out of the Inspector and says
+why in the Console. Give yours a different name.
+
+The same lookup rule catches the script class itself: inside `class Destroy`
+the name `Destroy` means the class, so `assets/scripts/Destroy.cpp` cannot call
+the inherited `Destroy(EntityId)`. `Find`, `FindAll`, `Tag`, `SetTag` and
+`Rename` are the other members a class name can hide. Nothing stops you - it is
+legal C++ - but the member then needs `ScriptBehaviour::` in front of it.
 
 ---
 
@@ -85,6 +172,10 @@ FindInChildren<T>()    // the first T here or anywhere below
 FindInParents<T>()     // the first T here or anywhere above
 Add<T>()               // attach another one               (Unity: AddComponent<T>)
 Require<T>()           // the existing one, or attach one
+
+FindAll<T>(into)           // every T on this entity       (Unity: GetComponents<T>)
+FindAllInChildren<T>(into) // every T here or below
+FindAllInParents<T>(into)  // every T here or above, NEAREST FIRST
 ```
 
 ```cpp
@@ -100,11 +191,16 @@ The entity itself has more, for when you are holding one that is not yours:
 ```cpp
 entity->Find<T>()                  entity->FindAll<T>(into)
 entity->FindInChildren<T>()        entity->FindAllInChildren<T>(into)
-entity->FindInParents<T>()         entity->Add<T>()
+entity->FindInParents<T>()         entity->FindAllInParents<T>(into)
+entity->Add<T>()
 ```
 
-`FindAll` takes the vector to fill, clears it first, and returns how many it
-wrote - so a per-frame walk allocates once.
+Every `FindAll*` takes the vector to fill, **clears it first**, and returns how
+many it wrote - so a per-frame walk allocates once, and a lookup that found
+nothing hands back an empty vector rather than the previous answer. The two
+hierarchy ones take a second argument to leave this entity out
+(`FindAllInParents<T>(into, false)`); on the script's own versions it is always
+included, as Unity's are.
 
 **They do not find scripts.** Every script's component is called
 `"ScriptComponent"`, so `Find<Chaser>()` cannot work. Use `FindScriptOn<T>` or
@@ -161,8 +257,14 @@ A tag is what **kind** of thing something is: `"Player"`, `"Enemy"`,
 
 ```cpp
 entity->Tag()              entity->SetTag("Enemy")        entity->HasTag("Enemy")
-HasTag("Enemy")            // this script's own entity
+
+tag                        tag = "Enemy"                  HasTag("Enemy")
+Tag()                      SetTag("Enemy")                // this script's own entity
 ```
+
+`tag` is the one bare name that can be **assigned**, because a tag is a label
+rather than an identity - setting one costs nothing and cannot collide with
+anything. Compare it against a string directly: `if (tag == "Enemy")`.
 
 It is not any of the three identities the engine already had:
 
@@ -444,7 +546,7 @@ Input goes through **named actions**, bound in `config/engine.json`, so the
 player can rebind them:
 
 ```cpp
-eng::InputMap::IsPressed("Jump")    // only on the step it went down
+eng::InputMap::IsPressed("Jump")    // only on the FRAME it went down
 eng::InputMap::IsHeld("Jump")       eng::InputMap::IsReleased("Jump")
 eng::InputMap::IsDown("Jump")       // pressed OR held
 eng::InputMap::GetAxis("MoveX")
@@ -454,6 +556,45 @@ eng::InputMap::PushContext("Menu")  eng::InputMap::PopContext()
 
 A context masks the bindings beneath it, which is how a menu stops gameplay
 input without every script checking a flag.
+
+### Which hook to read it in
+
+Input updates **once a frame**, before any fixed step. So every query answers
+the same thing to every `OnFixedUpdate` of that frame, and a *held* key or an
+axis reads the same from either hook.
+
+A **press** is different. `IsPressed` and `IsReleased` are true for one frame
+only, and a frame runs between **zero and five** fixed steps — zero whenever
+the frame rate is above 60, five when it collapses. Read from `OnFixedUpdate`,
+a press is therefore missed on a fast frame and handled several times on a slow
+one.
+
+So latch an edge in `OnUpdate`, which runs once a frame, and consume it in
+`OnFixedUpdate`:
+
+```cpp
+void OnUpdate() {
+    m_fireQueued = m_fireQueued || eng::InputMap::IsPressed("Fire");
+}
+
+void OnFixedUpdate() {
+    if (m_fireQueued) {
+        m_fireQueued = false;   // the first step to see it is the only one
+        Fire();
+    }
+}
+```
+
+`||` rather than `=`, because `OnUpdate` also runs on frames that no step
+follows — assigning would throw away a press nothing had acted on yet. And
+cleared by the first step that acts, which is what makes one press one shot.
+`assets/scripts/TilemapWalker.cpp` is the worked example.
+
+**`OnUpdate` runs after the step loop, not before it**, so a value stored there
+is read by the *next* frame's steps — one frame later. That is what the latch
+costs. It is worth paying for an edge; for an axis it is a frame of latency for
+nothing, so leave those where they are unless you want every input read in one
+place.
 
 The mouse, which cannot be rebound and so is not an action:
 
@@ -588,9 +729,29 @@ std::string portrait;                  // [image] shown on the HUD
 std::string walkAnimations[4];         // [animation] right, left, up, down
 ```
 
+`[texture]` and `[sprite]` also mean an image, `[anim]` and `[clip]` an
+animation, and **case does not matter** — `[Animation]` is the same marker.
+Which spellings count is decided in one place, `eng::AssetFieldKindFor`, and
+the Inspector maps that answer onto its widget rather than keeping a list of
+its own.
+
 A marker naming a kind the Inspector has no slot for is reported and the
 variable is drawn as ordinary text — so a tooltip written where the kind goes
 costs a message rather than a variable.
+
+**A marker may also sit on the comment line directly above the declaration.**
+The trailing comment used to be the only place one fit, which is past the
+tooltip and out of sight of the comment block that describes the variable —
+and the variables most in need of a marker are the ones with the most to
+explain:
+
+```cpp
+// [animation] which clip to play walking left
+std::string walkLeft;
+```
+
+One comment line, immediately above, starting with the bracket: a blank line or
+a banner line in between breaks it. A marker on the declaration's own line wins.
 
 Supported: `float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color`,
 `eng::EntityRef`, `eng::PrefabRef` — **or a fixed-size array of any of them**.
@@ -617,6 +778,11 @@ std::string walkAnimations[4];   // right, left, up, down
 shows up as four boxes — `walkAnimations[0]` to `walkAnimations[3]` — each an
 ordinary variable of the element's type, each saved separately, each with that
 same tooltip. Index it in the script as you would any array.
+
+**A marker applies to every element.** Written `// [animation] right, left, up,
+down`, that same declaration gives all four the animation slot rather than four
+boxes to type a path into — which is the whole of the difference between the
+two string arrays in `assets/scripts/TilemapWalker.cpp`.
 
 The **length is never read** from the declaration: the generated exposer loops
 over `std::size()`, so `[4]`, `[kFacingCount]` or anything else the compiler
@@ -860,6 +1026,10 @@ Said plainly, so that nobody spends an afternoon looking:
 | `StartCoroutine`, `WaitForSeconds` | None. An `enum Phase` plus a float is the house pattern, and `assets/scripts/GameRules.cpp` is the worked example. |
 | `Invoke`, `InvokeRepeating` | None. Count down a float in `OnFixedUpdate`. |
 | `OnEnable`, `OnDisable` | None. Writing one is a compile error that says so. Compare `IsActive()` against last step. |
+| `enabled`, `isActiveAndEnabled` | **No per-component switch.** `SetActive` / `IsActive` are the *entity's*, and `IsActive()` already means Unity's `activeInHierarchy` - a different thing from `enabled`, so it is left out rather than spelled misleadingly. |
+| `GetComponent<T>`, `CompareTag`, `FindObjectOfType<T>` | The same jobs under house names - `Find<T>`, `HasTag`, `FindFirstComponent<T>`. The *properties* are spelled Unity's way; the *methods* are not, and there are no Unity-spelled aliases for them. |
+| `SendMessage`, `BroadcastMessage` | Different model: `eng::MessageBus` is queued and typed rather than a reflective call by method name. See **Talking to other scripts**. |
+| `print`, `Debug.Log` | `ENGINE_LOG_INFO` and friends. `print` is deliberately absent: a log line should say which channel and which level it is, and `print` says neither. |
 | `LateUpdate` | None. Stage 700 already runs after all gameplay and movement; see `SystemOrder.h`. |
 | `Input.GetKey(KeyCode)` | Deliberately absent - use named actions. |
 | Gamepad, analog axes | Not wired up. `GetAxis` is currently Unity's `GetAxisRaw`. |

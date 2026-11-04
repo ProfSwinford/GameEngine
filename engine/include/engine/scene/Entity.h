@@ -211,6 +211,16 @@ public:
     template <typename T>
     std::size_t FindAllInChildren(std::vector<T*>& into, bool includeSelf = true);
 
+    // The same up the parent chain - Unity's GetComponentsInParent. NEAREST
+    // FIRST, so index 0 is this entity when includeSelf is true and otherwise
+    // its parent, which is the order somebody walking the result expects.
+    //
+    // THE ASYMMETRY THIS FILLS IN: FindInParents existed and FindAllInParents
+    // did not, so "every Health above me" was the one lookup of the four with
+    // no spelling at all. It was not a decision - the other three are here.
+    template <typename T>
+    std::size_t FindAllInParents(std::vector<T*>& into, bool includeSelf = true);
+
     // Removes the FIRST component with this type name. Fine when a type can
     // only sensibly appear once; see RemoveComponentAt when it cannot.
     bool RemoveComponent(std::string_view typeName);

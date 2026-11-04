@@ -1547,14 +1547,33 @@ float DragStepFor(float value) {
 // `// [image]` or `// [animation]` on a std::string turns its text box into
 // the slot a Sprite's texture gets. Anything else in the marker is a required
 // TYPE for an entity reference and means nothing here, so the box stays a box.
+//
+// ===========================================================================
+//  THE LIST OF ACCEPTED SPELLINGS IS THE ENGINE'S, NOT THIS FILE'S.
+//
+//  This used to keep its own copy of it - image/texture/sprite/animation -
+//  which agreed with eng::ScriptFields::AddAsset's copy by hand and by luck.
+//  Two lists, one deciding whether to warn and one deciding whether to draw,
+//  with nothing keeping them in step: add a kind to one and a marker either
+//  draws a slot after being warned about or is accepted silently and then
+//  drawn as text.
+//
+//  All that is left here is the mapping onto this panel's own widget, and the
+//  switch has NO `default:` - so a kind added to eng::AssetFieldKind is a
+//  warning on this line rather than a silent text box in the Inspector.
+//
+//  See the note above AssetFieldKind in engine/scene/ScriptFields.h.
+// ===========================================================================
 bool AssetSlotKindForMarker(const std::string& marker, AssetSlotKind& outKind) {
-    if (marker == "image" || marker == "texture" || marker == "sprite") {
-        outKind = AssetSlotKind::Image;
-        return true;
-    }
-    if (marker == "animation") {
-        outKind = AssetSlotKind::Animation;
-        return true;
+    switch (eng::AssetFieldKindFor(marker)) {
+        case eng::AssetFieldKind::Image:
+            outKind = AssetSlotKind::Image;
+            return true;
+        case eng::AssetFieldKind::Animation:
+            outKind = AssetSlotKind::Animation;
+            return true;
+        case eng::AssetFieldKind::None:
+            break;
     }
     return false;
 }

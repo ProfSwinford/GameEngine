@@ -227,45 +227,104 @@ constexpr std::array kQualifiers{
 };
 
 // ---------------------------------------------------------------------------
-//  The trailing comment: markers, then the tooltip
+//  A marker, and what is left of the comment once it is off the front
 //
 //  A bracket group AT THE VERY START is a marker. Only at the start, so that
 //  ordinary prose mentioning "[1]" is left alone - a comment is documentation
 //  first and a declaration second.
+//
+//  Returns whether one was there, and takes it off `text`.
 // ---------------------------------------------------------------------------
-void ReadComment(std::string_view comment, ScriptVarDecl& into) {
-    std::string rest = TrimmedCopy(comment);
+bool TakeMarker(std::string& text, ScriptVarDecl& into) {
+    if (!text.starts_with('[')) {
+        return false;
+    }
+    const std::size_t close = text.find(']');
+    if (close == std::string::npos) {
+        return false;   // unfinished, so the whole thing stays as prose
+    }
 
-    if (rest.starts_with('[')) {
-        const std::size_t close = rest.find(']');
-        if (close != std::string::npos) {
-            const std::string marker = TrimmedCopy(rest.substr(1, close - 1));
-            rest                     = TrimmedCopy(rest.substr(close + 1));
+    const std::string marker = TrimmedCopy(text.substr(1, close - 1));
+    text                     = TrimmedCopy(text.substr(close + 1));
 
-            // "0..10" - a range, for a number.
-            if (const std::size_t dots = marker.find(".."); dots != std::string::npos) {
-                const std::string lowText  = TrimmedCopy(marker.substr(0, dots));
-                const std::string highText = TrimmedCopy(marker.substr(dots + 2));
+    // "0..10" - a range, for a number.
+    if (const std::size_t dots = marker.find(".."); dots != std::string::npos) {
+        const std::string lowText  = TrimmedCopy(marker.substr(0, dots));
+        const std::string highText = TrimmedCopy(marker.substr(dots + 2));
 
-                // std::from_chars rather than std::stof: it does not throw, and
-                // a marker somebody typed wrong should leave the variable alone
-                // rather than take the whole build down.
-                float low = 0.0f, high = 0.0f;
-                const auto a = std::from_chars(lowText.data(),
-                                               lowText.data() + lowText.size(), low);
-                const auto b = std::from_chars(highText.data(),
-                                               highText.data() + highText.size(), high);
-                if (a.ec == std::errc{} && b.ec == std::errc{} && low < high) {
-                    into.ranged = true;
-                    into.min    = low;
-                    into.max    = high;
-                }
-            } else if (!marker.empty()) {
-                // Anything else is a type name, which only means something to
-                // a reference. ScriptFields::Ref reports one that names
-                // nothing registered, so it is not checked here.
-                into.requiredType = marker;
-            }
+        // std::from_chars rather than std::stof: it does not throw, and a
+        // marker somebody typed wrong should leave the variable alone rather
+        // than take the whole build down.
+        float low = 0.0f, high = 0.0f;
+        const auto a = std::from_chars(lowText.data(),
+                                       lowText.data() + lowText.size(), low);
+        const auto b = std::from_chars(highText.data(),
+                                       highText.data() + highText.size(), high);
+        if (a.ec == std::errc{} && b.ec == std::errc{} && low < high) {
+            into.ranged = true;
+            into.min    = low;
+            into.max    = high;
+        }
+    } else if (!marker.empty()) {
+        // Anything else is a NAME, and which kind depends on the type it ends
+        // up on: a component type or script for an EntityRef, a kind of asset
+        // for a std::string. Neither is judged here - eng::ScriptFields::Ref
+        // and ::Asset each report one they do not recognise, and the engine's
+        // own lists are the only ones that should have an opinion.
+        into.requiredType = marker;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  THE COMMENT ON A DECLARATION, OR THE ONE DIRECTLY ABOVE IT
+//
+//  The trailing comment is read first and it wins. If it carries no marker,
+//  the comment line IMMEDIATELY ABOVE the declaration is read for one.
+//
+//  ==========================================================================
+//  WHY BOTH, when the trailing comment was the only place for a year.
+//
+//  A trailing marker only fits on the declaration's own line, and the
+//  variables most in need of one are the variables with the most to explain.
+//  An array of animation names with thirty lines of comment above it had to
+//  carry `// [animation]` at the far right of the declaration, past the
+//  tooltip, in the one place a reader of that comment block never looks.
+//
+//  THAT IS EXACTLY HOW THIS WAS REPORTED: a second array was added beside the
+//  first, in the same shape, and came out as four plain text boxes - with the
+//  difference being a comment nobody had seen, and the obvious conclusion
+//  from outside being that the first array had been wired in by hand.
+//
+//  So a marker may now go where the variable is already being described:
+//
+//      // [animation] which clip to play walking left
+//      std::string walkLeft;
+//
+//  ==========================================================================
+//  IMMEDIATELY ABOVE, AND NOTHING FURTHER.
+//
+//  One line, with nothing between it and the declaration, and it has to START
+//  with the bracket - the rule the trailing comment has always had. A banner
+//  line, a blank line, or any line of code clears it.
+//
+//  Without that, a `[TODO]` eight lines up in a comment block would quietly
+//  become a required type. A comment block is full of prose that a parser has
+//  no business reading, and the further from the declaration a line is the
+//  less likely it is to be about it.
+// ---------------------------------------------------------------------------
+void ReadComment(std::string_view trailing, std::string_view above,
+                 ScriptVarDecl& into) {
+    std::string rest = TrimmedCopy(trailing);
+
+    if (!TakeMarker(rest, into)) {
+        std::string aboveRest = TrimmedCopy(above);
+        if (TakeMarker(aboveRest, into) && rest.empty()) {
+            // The declaration had no comment of its own, so what followed the
+            // marker above is the tooltip - there is nowhere else for one to
+            // come from. A trailing comment, where there is one, says it
+            // better and keeps the job.
+            rest = aboveRest;
         }
     }
 
@@ -279,8 +338,9 @@ void ReadComment(std::string_view comment, ScriptVarDecl& into) {
 //  member function, a nested type, a blank line. Those are not "skipped", they
 //  were never candidates, and reporting them would bury the real reports.
 // ---------------------------------------------------------------------------
-bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
-                     ScriptVarSkipped& outSkipped, bool& outWasSkipped) {
+bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
+                     ScriptVarDecl& outVar, ScriptVarSkipped& outSkipped,
+                     bool& outWasSkipped) {
     outWasSkipped = false;
 
     std::string code = line.code;
@@ -489,7 +549,7 @@ bool ReadDeclaration(const SourceLine& line, ScriptVarDecl& outVar,
     outVar.type      = std::string(matched->spelling);
     outVar.fieldType = matched->type;
     outVar.isArray   = isArray;
-    ReadComment(line.comment, outVar);
+    ReadComment(line.comment, commentAbove, outVar);
 
     // A range only means something on a number, and a required type only on a
     // reference. Dropped rather than carried, so nothing downstream has to ask
@@ -545,6 +605,37 @@ std::string BoundLiteral(ScriptFieldType type, float value) {
         std::snprintf(text, sizeof(text), "%.6ff", static_cast<double>(value));
     }
     return text;
+}
+
+// ---------------------------------------------------------------------------
+//  THE FIVE NAMES A SCRIPT DOES NOT OWN.
+//
+//  eng::ScriptBehaviour has public handle members called transform,
+//  gameObject, scene, name and tag - see the long note at the top of
+//  scene/ScriptComponent.h. Two different mistakes both arrive here as a
+//  declaration of one of those names, and neither can be exposed:
+//
+//    A MEMBER OF THE USER'S OWN by that name HIDES the inherited handle. The
+//    Inspector would show a row labelled "tag" with nothing to do with the
+//    entity's tag, while HasTag() and FindEntityWithTag went on reading the
+//    real one - two answers that disagree for ever, with nothing said.
+//
+//    A VARIABLE THIS PARSER ONLY THOUGHT IT SAW - inside an `#if 0`, behind a
+//    macro, or past a miscounted raw string - used to be discarded by the
+//    `requires` guard in GenerateExposerUnit, because no member of that name
+//    existed. Against these five it RESOLVES, to the handle.
+//
+//  Either way the answer is to leave it out and say why in the Console, which
+//  is what the skipped report is for.
+// ---------------------------------------------------------------------------
+std::string_view InheritedMemberReason(std::string_view name) {
+    if (name == "transform" || name == "gameObject" || name == "scene" ||
+        name == "name" || name == "tag") {
+        return "eng::ScriptBehaviour already has a member of that name - one of "
+               "the bare names every script inherits. A member of your own by "
+               "that name hides it, so give yours a different one";
+    }
+    return {};
 }
 
 } // namespace
@@ -710,13 +801,36 @@ ScriptSourceInfo ScanScriptSource(std::string_view source) {
             }
 
             if (isPublic && !code.empty()) {
+                // ==========================================================
+                //  THE COMMENT LINE DIRECTLY ABOVE, which is where the marker
+                //  is when the declaration's own comment has none.
+                //
+                //  A line that is NOTHING BUT a comment, with nothing between
+                //  it and this one. A blank line carries no comment and a line
+                //  of code is not one, so either clears it - which is what
+                //  makes "immediately above" mean that. See ReadComment.
+                // ==========================================================
+                const std::string_view commentAbove =
+                    (i > bodyLine && lines[i - 1].code.empty())
+                        ? std::string_view(lines[i - 1].comment)
+                        : std::string_view{};
+
                 SourceLine candidate{code, line.comment};
                 ScriptVarDecl    found;
                 ScriptVarSkipped skipped;
                 bool             wasSkipped = false;
 
-                if (ReadDeclaration(candidate, found, skipped, wasSkipped)) {
-                    info.vars.push_back(std::move(found));
+                if (ReadDeclaration(candidate, commentAbove, found, skipped,
+                                    wasSkipped)) {
+                    // One of ScriptBehaviour's own names is not this script's
+                    // to expose - see InheritedMemberReason above for the two
+                    // quite different ways a declaration gets here.
+                    if (const std::string_view why = InheritedMemberReason(found.name);
+                        !why.empty()) {
+                        info.skipped.push_back({found.name, std::string(why)});
+                    } else {
+                        info.vars.push_back(std::move(found));
+                    }
                 } else if (wasSkipped) {
                     info.skipped.push_back(std::move(skipped));
                 }
@@ -748,14 +862,16 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
     out += "// every __FILE__ and the file's own anonymous namespace stay exactly as\n";
     out += "// they were - a compiler error still points at the line you wrote.\n";
     out += "//\n";
-    out += "// The three standard headers are for the loop an ARRAY variable expands\n";
-    out += "// to - std::size, std::to_string and std::size_t. Named rather than\n";
-    out += "// relied on through the engine's own headers, because a generated file\n";
-    out += "// that compiles only because of what something else happened to include\n";
-    out += "// is a file that breaks for a reason nobody can see.\n";
+    out += "// Three of the standard headers are for the loop an ARRAY variable\n";
+    out += "// expands to - std::size, std::to_string and std::size_t - and\n";
+    out += "// <type_traits> is for the std::remove_cvref_t in every guard below.\n";
+    out += "// Named rather than relied on through the engine's own headers, because\n";
+    out += "// a generated file that compiles only because of what something else\n";
+    out += "// happened to include is a file that breaks for a reason nobody can see.\n";
     out += "#include <cstddef>\n";
     out += "#include <iterator>\n";
-    out += "#include <string>\n\n";
+    out += "#include <string>\n";
+    out += "#include <type_traits>\n\n";
     out += "#include \"";
     out += includePath;
     out += "\"\n\n";
@@ -790,6 +906,22 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
         //  The effect: a variable this parser imagined, or one that turned out
         //  to be inaccessible, COMPILES AWAY instead of failing. It is then
         //  absent from the Inspector and present in the skipped report.
+        //
+        //  AND THE GUARD HAS TO ASK ABOUT THE TYPE SEPARATELY, which is the
+        //  part that is easy to get wrong. ScriptFields::Var is an
+        //  unconstrained template whose static_assert is in its BODY, and a
+        //  requires-expression never instantiates a body - so
+        //  `requires { f.Var(n, v); }` is SATISFIED for a type the Inspector
+        //  cannot draw, the branch goes live, and that assert then fails the
+        //  user's build from a generated file. Which is the one thing this
+        //  file promises cannot happen.
+        //
+        //  THE TYPE CHECK IS A NESTED REQUIREMENT, inside the
+        //  requires-expression rather than beside it with `&&`. Beside it,
+        //  `decltype(s->x)` would no longer be in a SFINAE context, so a
+        //  variable this parser imagined that resolves to NOTHING - much the
+        //  commoner case - would become a hard "is not a member of" error
+        //  instead of compiling away. Nested, both kinds are simply false.
         // ================================================================
         // ================================================================
         //  WHICH CALL, and the String case is the one that bites.
@@ -840,7 +972,8 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
                    var.name + "); ++i) {\n";
         }
         out += "                    if constexpr (requires { f." + call + "(" + args +
-               "); }) {\n";
+               "); requires ::eng::fields::Traits< ::std::remove_cvref_t<decltype(" +
+               element + ")> >::known; }) {\n";
         out += "                        f." + call + "(" + args;
         if (!var.tooltip.empty()) {
             out += ", \"" + Escaped(var.tooltip) + "\"";

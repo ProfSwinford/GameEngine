@@ -153,6 +153,65 @@ enum class ScriptFieldType {
 const char* ScriptFieldTypeName(ScriptFieldType type);
 
 // ---------------------------------------------------------------------------
+//  WHAT KIND OF ASSET A STRING NAMES, and the ONE list that decides it.
+//
+//  `// [animation]` on a std::string is what turns its text box into the slot
+//  a Sprite's texture gets. THE MECHANISM IS GENERAL: it works on any public
+//  std::string, and on any fixed-size array of them, in any script. Nothing
+//  anywhere knows the name of a particular variable - which is worth stating
+//  plainly, because the opposite was reported. A second array of animations
+//  added beside one that had the marker came out as plain text boxes, and the
+//  only possible conclusion from the outside was that the first one had been
+//  wired in by hand.
+//
+//  ==========================================================================
+//  WHY THIS LIVES IN THE ENGINE AND NOT IN THE INSPECTOR
+//
+//  There used to be TWO lists of accepted spellings: one in AddAsset below,
+//  deciding whether to warn, and one in the editor's InspectorPanel, deciding
+//  whether to draw a slot. They agreed, and nothing kept them agreeing.
+//
+//  Adding a kind to the editor's list alone would draw a slot for a marker
+//  the engine had just warned about. Adding it here alone would accept the
+//  marker silently and then draw a text box - which is the failure this
+//  marker already has too much of.
+//
+//  So the accepted spellings are decided once, here, and the editor maps the
+//  ANSWER onto its own widget. Its switch has no `default:`, so a kind added
+//  below is a compiler warning there rather than a silent text box.
+//
+//  ==========================================================================
+//  CASE-INSENSITIVE, AND WITH THE SPELLINGS SOMEBODY ACTUALLY TYPES.
+//
+//  `[Animation]` used to fall through to an ordinary text box. It was
+//  reported in the Console, which is better than nothing, but a marker is
+//  prose inside a comment and nobody capitalises prose consistently.
+//
+//  The required type on an EntityRef - `[Rigidbody2DComponent]` - is a C++
+//  name and stays case-SENSITIVE, because it has to match one. This is not a
+//  C++ name and does not have to match anything, so it does not need to be.
+// ---------------------------------------------------------------------------
+enum class AssetFieldKind {
+    None,        // not a kind this engine can draw a slot for
+    Image,       // any picture, including one frame cut out of a sliced sheet
+    Animation,   // a named animation stored inside a sheet, and nothing else
+};
+
+// Ignores case. Returns None for anything that is not one of the spellings
+// AssetFieldKindNames() lists - including an EntityRef's required type, which
+// arrives here whenever somebody writes one on a string by mistake.
+AssetFieldKind AssetFieldKindFor(std::string_view marker);
+
+// "image", "animation", or empty for None. THE CANONICAL SPELLING, which is
+// what a field stores however the marker was typed - so everything downstream
+// compares against one word rather than six.
+std::string_view AssetFieldKindName(AssetFieldKind kind);
+
+// Every accepted spelling, for the messages and tooltips that have to list
+// them. One source, so a message cannot under-report what the code takes.
+std::string_view AssetFieldKindNames();
+
+// ---------------------------------------------------------------------------
 //  One variable a script has offered up.
 // ---------------------------------------------------------------------------
 struct ScriptField {
@@ -181,9 +240,18 @@ struct ScriptField {
     float min    = 0.0f;
     float max    = 0.0f;
 
-    // Set by Ref(), and only meaningful for Entity. The component type name or
-    // script name the target has to carry - "Rigidbody2DComponent",
-    // "DoorSwitch" - or empty for "any entity will do".
+    // WHAT THE MARKER IN THE COMMENT SAID, and it means two different things
+    // depending on the type in front of it:
+    //
+    //   on an Entity   a component type name or a script name the target has
+    //                  to carry - "Rigidbody2DComponent", "DoorSwitch"
+    //   on a String    a kind of asset - "image" or "animation", canonical,
+    //                  whatever spelling the marker used. See AssetFieldKind.
+    //
+    // Empty for everything else, and for "any entity will do". The Inspector
+    // asks the field's TYPE before reading this, because the two meanings
+    // share one string: a tooltip that read "an entity with a animation on
+    // it" is what that costs when it is forgotten.
     //
     // A NAME AND NOT A TYPE, which is what lets one mechanism serve both a
     // component the engine ships and a script somebody wrote this afternoon.
@@ -376,11 +444,17 @@ public:
     //
     //      std::string walkAnimations[4];   // [animation] by direction
     //
-    //  `kind` is "image" or "animation", and it comes from that marker. The
-    //  Inspector then draws the same slot a Sprite's texture gets - the file's
-    //  NAME, a drop target, and a picker - instead of a path somebody has to
-    //  type correctly from memory, which is how this was reported: the boxes
-    //  could not be filled in at all.
+    //  `kind` comes from that marker, and AssetFieldKindFor above is what
+    //  decides whether it is one - case-insensitively, and accepting the
+    //  spellings somebody actually types. The Inspector then draws the same
+    //  slot a Sprite's texture gets - the file's NAME, a drop target, and a
+    //  picker - instead of a path somebody has to type correctly from memory,
+    //  which is how this was reported: the boxes could not be filled in at
+    //  all.
+    //
+    //  ON AN ARRAY IT APPLIES TO EVERY ELEMENT, because the generated exposer
+    //  calls this once per element with the same kind. Four boxes become four
+    //  pickers and there is nothing per-element to write.
     //
     //  WHY A SEPARATE CALL AND NOT A MARKER ON Var. Var is a template over
     //  eight types and its third argument is the tooltip; adding a fourth

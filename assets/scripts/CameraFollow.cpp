@@ -96,13 +96,12 @@ public:
         // Start ON the target rather than easing in from wherever the scene
         // file left the camera, which otherwise looks like a swoop at the
         // start of every single play session.
-        if (const eng::Transform2D* transform = Transform()) {
+        if (transform != nullptr) {
             eng::Engine::Get().GetCamera().SetPosition(transform->WorldPosition());
         }
     }
 
     void OnFixedUpdate() {
-        const eng::Transform2D* transform = Transform();
         if (transform == nullptr) {
             return;   // this entity is on its way out
         }
