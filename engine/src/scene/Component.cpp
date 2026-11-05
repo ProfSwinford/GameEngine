@@ -259,6 +259,13 @@ void SpriteComponent::SetTexture(std::string_view virtualPath) {
     m_texturePath.assign(virtualPath);
 }
 
+void SpriteComponent::SetTexture(const ImageRef& image) {
+    // The string_view is spelled out rather than left to the conversion, so
+    // that the overload this picks is obvious on the line instead of being a
+    // question about ranking.
+    SetTexture(std::string_view(image.Path()));
+}
+
 void SpriteComponent::ShowTexture(const TextureRef& texture) {
     m_texture = texture;   // and NOT m_texturePath - see Component.h
 }

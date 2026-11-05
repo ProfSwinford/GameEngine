@@ -1172,3 +1172,385 @@ TEST_CASE("a kinematic body falls through nothing: gravity still ignores it") {
     CHECK(entity->Transform().WorldPosition().y == doctest::Approx(0.0f));
     CHECK(lift->Velocity().y == doctest::Approx(0.0f));
 }
+
+// ===========================================================================
+//  CONTACTS ARE KEYED BY COLLIDER PAIR, NOT BY ENTITY PAIR
+//
+//  Everything below is new coverage, and it was all unasserted: nothing in
+//  this suite drove a contact as far as an EVENT, so which pair sent which
+//  kind, and when, was checked by nothing at all. That bookkeeping is exactly
+//  what the collider-pair key changed.
+// ===========================================================================
+
+#include <vector>
+
+namespace {
+
+// Removes ONE SPECIFIC collider. Entity::RemoveComponent takes a type NAME and
+// so always takes the first of its kind, which is precisely the thing these
+// cases must not do - every one of them has two box colliders on one entity.
+bool RemoveCollider(eng::Entity& entity, eng::ColliderComponent* which) {
+    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+        if (entity.ComponentAt(i) == which) {
+            return entity.RemoveComponentAt(i);
+        }
+    }
+    return false;
+}
+
+// Counts the contact events the bus actually delivers to ONE entity.
+//
+// Subscribes to the same six message types the script system does, so this
+// sees precisely what a script on that entity would be told - without needing
+// a compiled script to hear it.
+struct EventLog {
+    int collisionEnter = 0;
+    int collisionStay  = 0;
+    int collisionExit  = 0;
+    int triggerEnter   = 0;
+    int triggerStay    = 0;
+    int triggerExit    = 0;
+
+    // Any event whose PARTNER is the receiver itself. Always a bug: it means
+    // two colliders on one entity were treated as a pair.
+    int namingItself = 0;
+
+    explicit EventLog(eng::EntityId watch) : m_watch(watch) {
+        // Anything a previous case queued and never delivered would otherwise
+        // land in the first Deliver() below. Stale messages are dropped by
+        // target validation anyway, but not relying on that keeps the counts
+        // readable when one of these fails.
+        eng::MessageBus::ClearQueue();
+
+        Listen(eng::MessageTypes::kCollisionEnter, collisionEnter);
+        Listen(eng::MessageTypes::kCollisionStay, collisionStay);
+        Listen(eng::MessageTypes::kCollisionExit, collisionExit);
+        Listen(eng::MessageTypes::kTriggerEnter, triggerEnter);
+        Listen(eng::MessageTypes::kTriggerStay, triggerStay);
+        Listen(eng::MessageTypes::kTriggerExit, triggerExit);
+    }
+
+    ~EventLog() {
+        for (const eng::SubscriptionId id : m_subs) {
+            eng::MessageBus::Unsubscribe(id);
+        }
+    }
+
+    EventLog(const EventLog&)            = delete;
+    EventLog& operator=(const EventLog&) = delete;
+
+    int Total() const {
+        return collisionEnter + collisionStay + collisionExit + triggerEnter +
+               triggerStay + triggerExit;
+    }
+
+    void Forget() {
+        collisionEnter = collisionStay = collisionExit = 0;
+        triggerEnter = triggerStay = triggerExit = 0;
+        namingItself = 0;
+    }
+
+private:
+    void Listen(const char* type, int& counter) {
+        m_subs.push_back(eng::MessageBus::SubscribeBroadcast(
+            type, [this, &counter](const eng::Message& message) {
+                if (message.target != m_watch) {
+                    return;
+                }
+                ++counter;
+                if (message.other == m_watch) {
+                    ++namingItself;
+                }
+            }));
+    }
+
+    eng::EntityId                    m_watch;
+    std::vector<eng::SubscriptionId> m_subs;
+};
+
+// One step, and then the delivery that normally happens at stage 500. Step()
+// alone only QUEUES the events - see Messaging.h.
+void Deliver(float dt = 1.0f / 60.0f) {
+    Step(dt);
+    eng::MessageBus::Dispatch();
+}
+
+// The arrangement Collider.h:227-229 recommends: a compound body, several
+// colliders on the one entity that carries the rigidbody. Here one is solid
+// and one is a trigger, and both overlap the mover.
+//
+// `triggerOffsetX` only moves the trigger box, which changes nothing about
+// what overlaps what - it changes the order the broad phase sorts them in,
+// which used to decide the outcome.
+struct CompoundBody {
+    eng::Entity* wall  = nullptr;
+    eng::Entity* mover = nullptr;
+    eng::ColliderComponent* solid   = nullptr;
+    eng::ColliderComponent* sensor  = nullptr;
+
+    CompoundBody(SceneFixture& fixture, float triggerOffsetX) {
+        wall  = fixture.Add("Wall", eng::Vec2{0.0f, 0.0f});
+        solid = AddBox(*wall, eng::Vec2{50.0f, 50.0f});
+
+        sensor = AddBox(*wall, eng::Vec2{50.0f, 50.0f});
+        sensor->SetOffset(eng::Vec2{triggerOffsetX, 0.0f});
+        sensor->SetTrigger(true);
+
+        mover = fixture.Add("Mover", eng::Vec2{40.0f, 0.0f});
+        AddBox(*mover, eng::Vec2{20.0f, 20.0f});
+        AddBody(*mover)->SetGravityScale(0.0f);
+    }
+};
+
+} // namespace
+
+TEST_CASE("a compound body solves its solid contact AND reports its trigger") {
+    // =======================================================================
+    //  THE HEADLINE CASE. Contacts used to be keyed by ENTITY pair while the
+    //  broad phase tests COLLIDER pairs, and the store was a map::emplace,
+    //  which does not overwrite - so one of these two contacts was silently
+    //  dropped, and the survivor decided the fate of the whole entity pair:
+    //
+    //    the trigger one survived -> solid() is false, the solid contact is
+    //                                never solved, and the mover walks
+    //                                straight through a solid collider
+    //    the solid one survived   -> the trigger never fires
+    //
+    //  Exactly one of the three checks below failed, depending on a sort.
+    // =======================================================================
+    SceneFixture fixture;
+    CompoundBody scene(fixture, -1.0f);
+    EventLog     heard(scene.wall->Id());
+
+    const float startX = scene.mover->Transform().WorldPosition().x;
+    Deliver();
+
+    // Two collider pairs, not one entity pair.
+    CHECK(eng::CollisionSystem::ActivePairCount() == 2);
+
+    // The solid contact was solved...
+    CHECK(scene.mover->Transform().WorldPosition().x > startX + 0.01f);
+
+    // ...and BOTH kinds were reported, once each.
+    CHECK(heard.collisionEnter == 1);
+    CHECK(heard.triggerEnter == 1);
+    CHECK(heard.Total() == 2);
+}
+
+TEST_CASE("and the sort order cannot change any of that") {
+    // The same scene with the trigger box on the other side, so the broad
+    // phase reaches the two collider pairs the other way round. Moving a
+    // trigger box one pixel used to decide whether a SOLID collider blocked.
+    SceneFixture fixture;
+    CompoundBody scene(fixture, +1.0f);
+    EventLog     heard(scene.wall->Id());
+
+    const float startX = scene.mover->Transform().WorldPosition().x;
+    Deliver();
+
+    CHECK(eng::CollisionSystem::ActivePairCount() == 2);
+    CHECK(scene.mover->Transform().WorldPosition().x > startX + 0.01f);
+    CHECK(heard.collisionEnter == 1);
+    CHECK(heard.triggerEnter == 1);
+    CHECK(heard.Total() == 2);
+}
+
+TEST_CASE("two colliders on ONE entity do not collide with each other") {
+    // =======================================================================
+    //  Unity's rule, and without the guard a compound body overlaps ITSELF:
+    //  the pair loop had no owner-equality test, so two colliders on one
+    //  entity formed a real pair, stored a real contact, and the event loop
+    //  sent it to both of its sides - which are the same entity. It was told
+    //  it had touched itself, twice, every step.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* body = fixture.Add("Body", eng::Vec2{0.0f, 0.0f});
+    AddBox(*body, eng::Vec2{50.0f, 50.0f});
+    AddBox(*body, eng::Vec2{50.0f, 50.0f})->SetOffset(eng::Vec2{1.0f, 0.0f});
+
+    EventLog heard(body->Id());
+    Deliver();
+
+    CHECK(eng::CollisionSystem::ActivePairCount() == 0);
+    CHECK(heard.Total() == 0);
+    CHECK(heard.namingItself == 0);
+}
+
+TEST_CASE("an overlap that ENDS sends exactly one exit") {
+    // Nothing in the repository defined an OnCollisionExit or an OnTriggerExit
+    // before, so the separation-driven exit - the ordinary one, not the
+    // destroy-driven one - was delivered by code that no test had ever run.
+    SceneFixture fixture;
+
+    eng::Entity* a = fixture.Add("A", eng::Vec2{0.0f, 0.0f});
+    AddBox(*a, eng::Vec2{20.0f, 20.0f});
+    eng::Entity* b = fixture.Add("B", eng::Vec2{10.0f, 0.0f});
+    AddBox(*b, eng::Vec2{20.0f, 20.0f});
+
+    EventLog heard(a->Id());
+    Deliver();
+    REQUIRE(heard.collisionEnter == 1);
+    heard.Forget();
+
+    b->Transform().SetLocalPosition(eng::Vec2{900.0f, 0.0f});
+    Deliver();
+
+    CHECK(eng::CollisionSystem::ActivePairCount() == 0);
+    CHECK(heard.collisionExit == 1);
+    CHECK(heard.collisionStay == 0);
+
+    // And it does not repeat on the following step.
+    heard.Forget();
+    Deliver();
+    CHECK(heard.Total() == 0);
+}
+
+TEST_CASE("an overlap that persists enters once and then stays") {
+    // THE CANONICAL-AND-STABLE GUARANTEE for the new key. A pair key that was
+    // not ordered the same way every step - or an id that moved when a
+    // collider was registered or removed - would make the diff miss, and the
+    // overlap would ENTER again on every single step. See the note on CPair.
+    SceneFixture fixture;
+
+    eng::Entity* a = fixture.Add("A", eng::Vec2{0.0f, 0.0f});
+    AddBox(*a, eng::Vec2{20.0f, 20.0f});
+    eng::Entity* b = fixture.Add("B", eng::Vec2{10.0f, 0.0f});
+    AddBox(*b, eng::Vec2{20.0f, 20.0f});
+
+    EventLog heard(a->Id());
+    for (int step = 0; step < 20; ++step) {
+        Deliver();
+    }
+
+    CHECK(heard.collisionEnter == 1);
+    CHECK(heard.collisionStay == 19);
+    CHECK(heard.collisionExit == 0);
+}
+
+TEST_CASE("detaching ONE collider of a compound body ends only ITS pair") {
+    // =======================================================================
+    //  Unregister used to match pairs by the detaching collider's OWNER, so
+    //  removing one collider erased the pairs held through its SIBLINGS too -
+    //  and told the script those overlaps had ended while they were still
+    //  perfectly live.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity*            wall = fixture.Add("Wall", eng::Vec2{0.0f, 0.0f});
+    eng::ColliderComponent* first = AddBox(*wall, eng::Vec2{50.0f, 50.0f});
+    AddBox(*wall, eng::Vec2{50.0f, 50.0f})->SetOffset(eng::Vec2{1.0f, 0.0f});
+
+    eng::Entity* mover = fixture.Add("Mover", eng::Vec2{40.0f, 0.0f});
+    AddBox(*mover, eng::Vec2{20.0f, 20.0f});
+
+    EventLog heard(wall->Id());
+    Deliver();
+    REQUIRE(eng::CollisionSystem::ActivePairCount() == 2);
+    REQUIRE(heard.collisionEnter == 2);   // one per collider pair
+    heard.Forget();
+
+    // Take one collider away. OnDetach runs immediately, so the exit for its
+    // pair is queued there and delivered by the next Dispatch.
+    REQUIRE(RemoveCollider(*wall, first));
+    eng::MessageBus::Dispatch();
+
+    CHECK(heard.collisionExit == 1);      // ITS pair, and only its pair
+    CHECK(heard.triggerExit == 0);
+
+    // The sibling's overlap is untouched and goes on reporting.
+    heard.Forget();
+    Deliver();
+    CHECK(eng::CollisionSystem::ActivePairCount() == 1);
+    CHECK(heard.collisionStay == 1);
+    CHECK(heard.collisionExit == 0);      // no second, spurious exit
+}
+
+TEST_CASE("an exit carries no contact, even while a sibling is still touching") {
+    // =======================================================================
+    //  THE ONE THE COLLIDER-PAIR KEY PUT AT RISK. An exit pair has no entry
+    //  in the contact table, which is what physics/Contact.h promises at the
+    //  separation and relativeVelocity fields. But FindContact answers per
+    //  ENTITY pair - so once one collider of a compound body stops touching
+    //  while a SIBLING carries on, the lookup would come back holding the
+    //  sibling's LIVE contact and hand it to the exit handler, every number
+    //  in it plausible. ScriptComponent::DispatchCollision therefore does not
+    //  ask at all on an exit.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity*            wall  = fixture.Add("Wall", eng::Vec2{0.0f, 0.0f});
+    eng::ColliderComponent* going = AddBox(*wall, eng::Vec2{50.0f, 50.0f});
+    AddBox(*wall, eng::Vec2{50.0f, 50.0f})->SetOffset(eng::Vec2{1.0f, 0.0f});
+
+    eng::Entity* mover = fixture.Add("Mover", eng::Vec2{40.0f, 0.0f});
+    AddBox(*mover, eng::Vec2{20.0f, 20.0f});
+
+    Deliver();
+    REQUIRE(eng::CollisionSystem::ActivePairCount() == 2);
+
+    // The sibling is still touching, so FindContact still answers for this
+    // pair of ENTITIES - which is precisely the trap.
+    REQUIRE(RemoveCollider(*wall, going));
+    Deliver();
+
+    REQUIRE(eng::CollisionSystem::ActivePairCount() == 1);
+    const eng::Collision2D* still =
+        eng::CollisionSystem::FindContact(wall->Id(), mover->Id());
+    CHECK(still != nullptr);              // the sibling's contact IS live...
+    CHECK(still->separation < 0.0f);      // ...and has real numbers in it
+}
+
+TEST_CASE("FindContact answers with a SOLID contact, never a trigger's") {
+    // A collision hook is handed whatever this returns, so a trigger's record
+    // must never be it. Before contacts were keyed per collider there was one
+    // slot per entity pair and the trigger could win it.
+    SceneFixture fixture;
+    CompoundBody scene(fixture, -1.0f);
+
+    Deliver();
+
+    const eng::Collision2D* contact =
+        eng::CollisionSystem::FindContact(scene.wall->Id(), scene.mover->Id());
+    REQUIRE(contact != nullptr);
+    REQUIRE(contact->thisCollider != nullptr);
+    REQUIRE(contact->otherCollider != nullptr);
+    CHECK_FALSE(contact->thisCollider->IsTrigger());
+    CHECK_FALSE(contact->otherCollider->IsTrigger());
+
+    // Take the solid one away and only the trigger pair is left, so there is
+    // no solid contact to answer with at all.
+    REQUIRE(RemoveCollider(*scene.wall, scene.solid));
+    Deliver();
+    CHECK(eng::CollisionSystem::FindContact(scene.wall->Id(), scene.mover->Id()) ==
+          nullptr);
+}
+
+TEST_CASE("a collider turned into a trigger mid-overlap closes the old pairing") {
+    // =======================================================================
+    //  SetTrigger is public and nothing stops a script calling it from inside
+    //  a handler. The pair would then simply start sending the other family's
+    //  STAY - an OnTriggerStay for something that never sent an
+    //  OnTriggerEnter, and an OnCollisionEnter that never gets its exit. So
+    //  the old lifecycle is closed and the new one opens as a fresh enter.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity*            a   = fixture.Add("A", eng::Vec2{0.0f, 0.0f});
+    eng::ColliderComponent* box = AddBox(*a, eng::Vec2{20.0f, 20.0f});
+    eng::Entity*            b   = fixture.Add("B", eng::Vec2{10.0f, 0.0f});
+    AddBox(*b, eng::Vec2{20.0f, 20.0f});
+
+    EventLog heard(a->Id());
+    Deliver();
+    REQUIRE(heard.collisionEnter == 1);
+    heard.Forget();
+
+    box->SetTrigger(true);
+    Deliver();
+
+    CHECK(heard.collisionExit == 1);   // the solid pairing is closed...
+    CHECK(heard.triggerEnter == 1);    // ...and the trigger one opens
+    CHECK(heard.triggerStay == 0);     // never a stay with no enter
+    CHECK(heard.collisionStay == 0);
+}

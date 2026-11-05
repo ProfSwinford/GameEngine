@@ -325,6 +325,13 @@ switch back to the editor window, and it rebuilds and reloads by itself. You
 never rebuild the editor. That does need a C++ compiler installed - see
 [docs/editor-guide.md](docs/editor-guide.md).
 
+`File -> Set Up IDE IntelliSense` writes the include paths and the language
+standard into your project folder, so that Visual Studio - or anything using
+clangd - completes `eng::` names in a script instead of reporting the whole
+engine as unknown. A script opened with no project behind it has no include
+path, and `#include <engine/Engine.h>` is the umbrella over every other header,
+so that one failure takes the lot with it.
+
 `assets/scripts/Orbiter.cpp` is a worked example, and
 [`engine/include/engine/scene/ScriptFields.h`](engine/include/engine/scene/ScriptFields.h)
 explains the trade-offs above.
@@ -384,7 +391,9 @@ the hook is real and correctly spelled, just not the one being sent. Because
 that is silent, the engine reports it in the Console the first time it happens,
 naming the entity and the hook to use instead.
 
-A collision hook may take either the other entity or the whole contact:
+A collision or trigger hook may take either the other entity or the whole
+contact, and a trigger enter or stay may take the other collider as Unity's
+does:
 
 ```cpp
 void OnCollisionEnter(eng::EntityId other) { }                  // simple

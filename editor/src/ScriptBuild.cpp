@@ -65,6 +65,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <ostream>
 #include <set>
 #include <sstream>
 
@@ -267,6 +268,31 @@ std::vector<fs::path> IncludeDirectories() {
     }
 #endif
     return result;
+}
+
+// ---------------------------------------------------------------------------
+//  THE FLAGS, WRITTEN ONCE.
+//
+//  Everything here affects how the source is PARSED: the standard, the
+//  exception model, the C runtime, the warning level, where headers are found.
+//  Nothing here is about output - no /Fo, no /Fe, not even /c - because the
+//  six callers disagree about output and agree about all of this.
+//
+//  That split is the point. It is also what makes the same description usable
+//  by a compile database, which has to carry the parsing flags and must NOT
+//  carry the plumbing. See ScriptIde.cpp.
+// ---------------------------------------------------------------------------
+void AppendParseFlags(std::ostream& out, const ScriptBuild::CompileSettings& settings) {
+    for (const std::string& argument : settings.ParseArguments()) {
+        out << " " << argument;
+    }
+
+    // QUOTED, ALWAYS. One of this project's own scripts lives in
+    // "assets/scripts/Sprite Animator/", and a space in a path is the kind of
+    // thing that works on the machine it was written on.
+    for (const std::string& dir : settings.includeDirs) {
+        out << (settings.msvc ? " /I\"" : " -I\"") << dir << "\"";
+    }
 }
 
 // The library a script links against: engine.lib on Windows, libengine.so
@@ -516,7 +542,12 @@ std::string ToVirtualPath(const fs::path& real) {
 // Asks vswhere where Visual Studio is. vswhere ships with every Visual Studio
 // install since 2017 and always lives in the same place, which is what makes
 // it the reliable way to find a compiler rather than guessing at paths.
-std::string FindVisualStudioVcvars() {
+//
+// SPLIT IN TWO because the install path is now worth having on its own: the
+// compiler search wants vcvars64.bat under it, and opening a project in the
+// IDE wants devenv.exe under it. Neither is on PATH, and both move with every
+// Visual Studio version, so both ask rather than guess.
+std::string FindVisualStudioInstall() {
     const char* programFiles = std::getenv("ProgramFiles(x86)");
     if (programFiles == nullptr) {
         programFiles = std::getenv("ProgramFiles");
@@ -554,7 +585,21 @@ std::string FindVisualStudioVcvars() {
         return {};
     }
 
-    const fs::path vcvars =
+    return installPath;
+}
+
+// vcvars64.bat inside that install, or empty when there is no such install or
+// no such file. Empty is an ordinary answer: a Visual Studio with no C++
+// workload has no vcvars64.bat, and that is exactly the machine the "install
+// the C++ workload" advice below is written for.
+std::string FindVisualStudioVcvars() {
+    const std::string installPath = FindVisualStudioInstall();
+    if (installPath.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    const fs::path  vcvars =
         fs::path(installPath) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat";
     return fs::exists(vcvars, ec) ? vcvars.string() : std::string{};
 }
@@ -842,6 +887,63 @@ void ScriptBuild::Init() {
 const std::string& ScriptBuild::CompilerDescription() { return g_compilerDescription; }
 bool               ScriptBuild::HasCompiler()         { return g_haveCompiler; }
 const std::string& ScriptBuild::LastOutput()          { return g_lastOutput; }
+
+// The header every generated translation unit includes before it includes the
+// script. Defined with the other precompiled-header helpers further down,
+// which is where it is used for its own purpose; declared here because
+// Settings() needs it and sits up with the rest of the public interface.
+//
+// AT THIS SCOPE AND NOT IN THE ANONYMOUS NAMESPACE ABOVE, which is where it
+// looks like it should go. The definition is at editor scope, so a second
+// declaration inside the anonymous namespace is a second FUNCTION with
+// internal linkage, and every existing call becomes ambiguous rather than
+// resolving to either one.
+const char* PchHeaderName();
+
+std::vector<std::string> ScriptBuild::CompileSettings::ParseArguments() const {
+    std::vector<std::string> arguments;
+    arguments.reserve(switches.size() + 1);
+    arguments.push_back((msvc ? "/std:" : "-std=") + standard);
+    arguments.insert(arguments.end(), switches.begin(), switches.end());
+    return arguments;
+}
+
+ScriptBuild::CompileSettings ScriptBuild::Settings() {
+    CompileSettings settings;
+
+    settings.standard      = "c++20";
+    settings.forcedInclude = PchHeaderName();
+
+#if defined(_WIN32)
+    // MSVC on Windows, rather than "MSVC if this editor happened to be built
+    // with it". The script written below invokes cl.exe by name, so the flags
+    // have to be the ones cl.exe understands whatever compiled the editor.
+    settings.msvc     = true;
+    settings.driver   = "cl.exe";
+    settings.switches = {"/EHsc", ENGINE_SCRIPT_IS_DEBUG ? "/MDd" : "/MD", "/W3"};
+#else
+    settings.msvc     = false;
+    settings.driver   = g_compilerPath;
+    settings.switches = {"-fPIC", "-Wall"};
+#endif
+
+    // GENERIC, so the separator is a forward slash on every platform. MSVC
+    // takes either one in /I, but a backslash is an escape sequence in JSON
+    // and in an #include - and these strings end up in both.
+    for (const fs::path& dir : IncludeDirectories()) {
+        settings.includeDirs.push_back(dir.generic_string());
+    }
+
+    return settings;
+}
+
+std::string ScriptBuild::VisualStudioPath() {
+#if defined(_WIN32)
+    return FindVisualStudioInstall();
+#else
+    return {};
+#endif
+}
 
 // ---------------------------------------------------------------------------
 //  Deciding whether anything needs doing
@@ -1631,7 +1733,7 @@ ScriptBuild::Result ScriptBuild::Compile() {
     const BuildPlan             plan      = PlanBuild(sources, stampChanged);
     const fs::path              scriptLog = buildDir / "build.log";
     const fs::path              engineLib = EngineLinkLibrary();
-    const std::vector<fs::path> includes  = IncludeDirectories();
+    const CompileSettings       settings  = Settings();
 
     if (!plan.anyToCompile && !plan.anyToLink) {
         // The caller still reloads: BeginBuild has already unloaded, so
@@ -1679,12 +1781,8 @@ ScriptBuild::Result ScriptBuild::Compile() {
         // NOT with /MP. One file does not need splitting across processes, and
         // /Yc with /MP is not a combination MSVC accepts.
         if (plan.usePch && plan.pchStale) {
-            bat << "cl.exe /nologo /c /std:c++20 /EHsc";
-            bat << (ENGINE_SCRIPT_IS_DEBUG ? " /MDd" : " /MD");
-            bat << " /W3";
-            for (const fs::path& include : includes) {
-                bat << " /I\"" << include.string() << "\"";
-            }
+            bat << settings.driver << " /nologo /c";
+            AppendParseFlags(bat, settings);
             bat << " /Yc\"" << PchHeaderName() << "\"";
             bat << " /Fp\"" << PchFilePath().string() << "\"";
             bat << " /Fo\"" << PchObjectPath().string() << "\"";
@@ -1697,17 +1795,11 @@ ScriptBuild::Result ScriptBuild::Compile() {
         // invocation with eleven files is what makes a cold build parallel;
         // eleven invocations would each pay for cl's own start-up.
         if (plan.anyToCompile) {
-            bat << "cl.exe /nologo /c /MP /std:c++20 /EHsc";
-            // The C runtime setting has to match the engine's - see
-            // ScriptBuild.h.
-            bat << (ENGINE_SCRIPT_IS_DEBUG ? " /MDd" : " /MD");
-            // Warnings are kept modest on purpose: this is somebody's game
-            // code, not the engine, and an unused parameter in a half-written
-            // script should not produce a wall of output.
-            bat << " /W3";
-            for (const fs::path& include : includes) {
-                bat << " /I\"" << include.string() << "\"";
-            }
+            // The standard, the C runtime and the warning level all come from
+            // one description now, so build.bat and the IDE files cannot
+            // disagree about them. See CompileSettings in ScriptBuild.h.
+            bat << settings.driver << " /nologo /c /MP";
+            AppendParseFlags(bat, settings);
             // EVERY UNIT IS COMPILED AGAINST THE PRECOMPILED HEADER, with the
             // same flags /Yc was given. A mismatch is refused by the compiler
             // rather than quietly ignored, which is the good outcome.
@@ -1777,10 +1869,8 @@ ScriptBuild::Result ScriptBuild::Compile() {
             if (!unit.stale) {
                 continue;
             }
-            sh << g_compilerPath << " -std=c++20 -fPIC -Wall -c";
-            for (const fs::path& include : includes) {
-                sh << " -I\"" << include.string() << "\"";
-            }
+            sh << settings.driver << " -c";
+            AppendParseFlags(sh, settings);
             sh << " -o \"" << unit.objectPath.string() << "\"";
             sh << " \"" << unit.unitPath.string() << "\"\n";
         }
@@ -2116,7 +2206,7 @@ ScriptBuild::Result ScriptBuild::BuildBundle() {
     const fs::path              buildDir  = BuildDirectory();
     const fs::path              scriptLog = buildDir / "bundle.log";
     const fs::path              engineLib = EngineLinkLibrary();
-    const std::vector<fs::path> includes  = IncludeDirectories();
+    const CompileSettings       settings  = Settings();
 
     std::ostringstream cmd;
 
@@ -2132,12 +2222,8 @@ ScriptBuild::Result ScriptBuild::BuildBundle() {
         }
 
         if (plan.usePch && plan.pchStale) {
-            bat << "cl.exe /nologo /c /std:c++20 /EHsc";
-            bat << (ENGINE_SCRIPT_IS_DEBUG ? " /MDd" : " /MD");
-            bat << " /W3";
-            for (const fs::path& include : includes) {
-                bat << " /I\"" << include.string() << "\"";
-            }
+            bat << settings.driver << " /nologo /c";
+            AppendParseFlags(bat, settings);
             bat << " /Yc\"" << PchHeaderName() << "\"";
             bat << " /Fp\"" << PchFilePath().string() << "\"";
             bat << " /Fo\"" << PchObjectPath().string() << "\"";
@@ -2145,12 +2231,8 @@ ScriptBuild::Result ScriptBuild::BuildBundle() {
         }
 
         if (plan.anyToCompile) {
-            bat << "cl.exe /nologo /c /MP /std:c++20 /EHsc";
-            bat << (ENGINE_SCRIPT_IS_DEBUG ? " /MDd" : " /MD");
-            bat << " /W3";
-            for (const fs::path& include : includes) {
-                bat << " /I\"" << include.string() << "\"";
-            }
+            bat << settings.driver << " /nologo /c /MP";
+            AppendParseFlags(bat, settings);
             if (plan.usePch) {
                 bat << " /Yu\"" << PchHeaderName() << "\"";
                 bat << " /Fp\"" << PchFilePath().string() << "\"";
@@ -2191,10 +2273,8 @@ ScriptBuild::Result ScriptBuild::BuildBundle() {
             if (!unit.stale) {
                 continue;
             }
-            sh << g_compilerPath << " -std=c++20 -fPIC -Wall -c";
-            for (const fs::path& include : includes) {
-                sh << " -I\"" << include.string() << "\"";
-            }
+            sh << settings.driver << " -c";
+            AppendParseFlags(sh, settings);
             sh << " -o \"" << unit.objectPath.string() << "\"";
             sh << " \"" << unit.unitPath.string() << "\"\n";
         }

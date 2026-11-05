@@ -17,6 +17,7 @@
 #include "EditorSession.h"
 #include "GameExport.h"
 #include "ScriptBuild.h"
+#include "ScriptIde.h"
 #include "ProjectMenu.h"
 #include "Relaunch.h"
 #include "Shortcuts.h"
@@ -1163,6 +1164,50 @@ void EditorApp::DrawMenuBar() {
             ImGui::SetTooltip("Builds the scripts and copies a standalone game - the "
                               "player, the engine, your assets and your settings - into "
                               "a folder you choose.");
+        }
+
+        ImGui::Separator();
+
+        // ---- writing scripts somewhere other than here --------------------
+        //
+        // OFFERED, NEVER DONE FOR YOU. Both of these write into the project
+        // folder, and ProjectMenu.cpp states the rule they follow: putting a
+        // file in somebody's folder because they opened it is how a tool
+        // stops being trusted. See ScriptIde.h for what the two files are.
+        if (ImGui::MenuItem("Set Up IDE IntelliSense")) {
+            std::string summary;
+            std::string error;
+            if (WriteIdeFiles(summary, error)) {
+                std::snprintf(m_status, sizeof(m_status), "%s", summary.c_str());
+            } else {
+                std::snprintf(m_status, sizeof(m_status), "%s", error.c_str());
+                ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                                 "could not write the IDE files: {}", error);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Writes CppProperties.json and compile_commands.json into "
+                              "the project folder, so an editor outside this one knows "
+                              "where the engine's headers are and which standard your "
+                              "scripts are compiled at. Without them every eng:: name "
+                              "in a script reads as unknown.");
+        }
+
+        if (ImGui::MenuItem("Open Project in Visual Studio")) {
+            std::string error;
+            if (OpenInVisualStudio(error)) {
+                std::snprintf(m_status, sizeof(m_status), "opening Visual Studio");
+            } else {
+                std::snprintf(m_status, sizeof(m_status), "%s", error.c_str());
+                ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                                 "could not open Visual Studio: {}", error);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Opens the project FOLDER, which is the only thing Visual "
+                              "Studio will read CppProperties.json for. Opening a lone "
+                              "script - which is what double-clicking one does - is the "
+                              "case with no IntelliSense at all.");
         }
 
         ImGui::Separator();

@@ -20,8 +20,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <map>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -32,35 +32,121 @@ namespace {
 //  The collider list, and the shapes for this step
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+//  EVERY COLLIDER GETS A NUMBER, and a contact is keyed on a pair of THOSE
+//  rather than on a pair of entities.
+//
+//  WHAT THAT FIXES, because it reads like bookkeeping and is not. Pairs used
+//  to be keyed by ENTITY while the loop below tests COLLIDERS, and the store
+//  was a std::map::emplace, which does not overwrite. So an entity with two
+//  colliders touching one partner kept ONE contact - whichever the broad
+//  phase reached first - and that single record decided the fate of the whole
+//  entity pair:
+//
+//    the TRIGGER one survived  solid() below is false, so the solid contact
+//                              is never solved and THE OTHER ENTITY PASSES
+//                              STRAIGHT THROUGH A SOLID COLLIDER
+//    the SOLID one survived    the trigger never fires at all
+//
+//  Which one survived was decided by the sort on bounds.min.x below, so
+//  moving a collider one pixel could change it, and moving an object could
+//  change it mid-overlap - sending an enter of one kind and an exit of the
+//  other. Collider.h's own advice for a compound body - put every collider on
+//  the entity that has the rigidbody rather than on children - walks straight
+//  into it.
+//
+//  Unity sends one callback per COLLIDER pair. So does this, now.
+//
+//  A NUMBER AND NOT A ColliderComponent*, for one reason that is easy to miss:
+//  std::map iteration order IS the solver's sweep order below, and a pointer
+//  key orders by heap address - stable within a run, different between runs.
+//  Ids are handed out in Register order, which is attach order, which is the
+//  order the scene file lists components in, so the solver sweeps identically
+//  on every run and machine. A physics bug stays bisectable. It is also why
+//  an id is never reused and why Clear() does not reset the counter.
+// ---------------------------------------------------------------------------
+using ColliderId = std::uint32_t;   // 0 means "no collider"
+
+ColliderId g_nextColliderId = 1;
+
 struct ColliderRecord {
     ColliderComponent* collider = nullptr;
     EntityId           owner{};
+    ColliderId         id = 0;
 };
 
 std::vector<ColliderRecord> g_colliders;
 
-// A pair of entities that are touching. Always stored with the smaller id
+// A pair of COLLIDERS that are touching. Always stored with the smaller id
 // first, so that (a,b) and (b,a) are recognised as the same pair. Forgetting
 // that is how you end up with an "enter" event every single frame - the set
 // never matches, because the order flipped.
-using Pair = std::pair<EntityId, EntityId>;
+using CPair = std::pair<ColliderId, ColliderId>;
 
-Pair MakePair(EntityId a, EntityId b) {
-    return (a < b) ? Pair{a, b} : Pair{b, a};
+CPair MakePair(ColliderId a, ColliderId b) {
+    return (a < b) ? CPair{a, b} : CPair{b, a};
 }
 
-std::set<Pair> g_lastFrame;
-std::set<Pair> g_thisFrame;
+// A pair of ENTITIES, which is still what an event names and still what
+// FindContact is asked about. Only the index below is keyed on it.
+using EPair = std::pair<EntityId, EntityId>;
 
-// Which pairs were TRIGGER pairs last step, so that an exit can be sent as the
-// same kind of event as the enter was. Without this, a pickup destroyed while
-// overlapping would send a trigger-enter and a collision-exit, and a script
-// listening for only one of them would never see the pair close.
-std::set<Pair> g_lastFrameTriggers;
+EPair MakeEntityPair(EntityId a, EntityId b) {
+    return (a < b) ? EPair{a, b} : EPair{b, a};
+}
 
-// The contact for every touching pair this step, so that the script
-// dispatcher can attach it to the event. Keyed the same way as the pair sets.
-std::map<Pair, Collision2D> g_contacts;
+// What a touching pair needs that its key cannot carry: whose colliders these
+// are, and whether the pair reports as a trigger. `a` is always the owner of
+// the pair's FIRST collider.
+//
+// THE TRIGGER FLAG LIVES HERE rather than in a second container beside this
+// one, which is what it used to be. One container cannot drift out of step
+// with itself on an erase - and the exit loop and Unregister can both read the
+// kind without dereferencing a collider that may already have been destroyed,
+// which is the whole reason the kind has to be remembered at all: a pickup
+// destroyed while overlapping would otherwise send a trigger-enter and a
+// collision-exit, and a script listening for only one would never see the
+// pair close.
+struct PairInfo {
+    EntityId a{};
+    EntityId b{};
+    bool     isTrigger = false;
+};
+
+std::map<CPair, PairInfo> g_lastFrame;
+std::map<CPair, PairInfo> g_thisFrame;
+
+// The contact for every touching collider pair this step, so that the script
+// dispatcher can attach it to the event. Keyed the same way as the pair maps.
+std::map<CPair, Collision2D> g_contacts;
+
+// Which collider pair holds the DEEPEST contact between two entities - one
+// index for solid pairs and one for trigger pairs.
+//
+// THE ONE THING STILL ASKED FOR BY ENTITY. An event names two entities, not
+// two colliders, so the dispatcher can only ask by entity - and a compound
+// body may hold several contacts with one partner, so the answer has to be
+// one of them. The deepest, by the same tie-break the sub-shape loop uses.
+//
+// SPLIT BY KIND, AND THAT IS THE POINT OF HAVING TWO. A collision hook must
+// never be handed a trigger's record nor the other way round, and with one
+// shared slot per entity pair it could be: before this existed, whichever
+// kind won the race above decided what BOTH families were told. Each lookup
+// now answers for its own kind or answers nothing.
+std::map<EPair, CPair> g_entityContact;   // solid pairs
+std::map<EPair, CPair> g_entityTrigger;   // trigger pairs
+
+// Shared by FindContact and FindTriggerContact, which differ only in which
+// index they consult.
+const Collision2D* LookUpByEntities(const std::map<EPair, CPair>& index, EntityId a,
+                                    EntityId b) {
+    const auto it = index.find(MakeEntityPair(a, b));
+    if (it == index.end()) {
+        return nullptr;
+    }
+    const auto contact = g_contacts.find(it->second);
+    return (contact == g_contacts.end()) ? nullptr : &contact->second;
+}
 
 bool g_collisionsSubscribed = false;
 
@@ -824,7 +910,10 @@ ColliderComponent* FindCollider(Entity& entity) {
 // ---------------------------------------------------------------------------
 
 void CollisionSystem::Register(ColliderComponent& collider) {
-    g_colliders.push_back(ColliderRecord{&collider, collider.OwnerId()});
+    // The id is handed out here and never reused, so a pair key is fixed for
+    // as long as both colliders stay attached. See the note on ColliderId.
+    g_colliders.push_back(
+        ColliderRecord{&collider, collider.OwnerId(), g_nextColliderId++});
 }
 
 void CollisionSystem::Unregister(ColliderComponent& collider) {
@@ -836,7 +925,8 @@ void CollisionSystem::Unregister(ColliderComponent& collider) {
         return;
     }
 
-    const EntityId owner = it->owner;
+    const EntityId   owner = it->owner;
+    const ColliderId id    = it->id;
 
     // EXIT WHEN ONE SIDE IS DESTROYED. Every pair this collider was part of
     // sends an exit to the OTHER entity, now, before the pair disappears.
@@ -848,23 +938,57 @@ void CollisionSystem::Unregister(ColliderComponent& collider) {
     // destroys itself would otherwise send a trigger-enter and a
     // collision-exit, and a script listening for only one would never see the
     // pair close.
+    // MATCHED ON THIS COLLIDER'S ID, NOT ON ITS OWNER'S, which used to be the
+    // test. An entity with several colliders would otherwise lose the pairs
+    // held through its SIBLINGS as well - and be told those overlaps had ended
+    // while they were still perfectly live.
     for (auto pairIt = g_lastFrame.begin(); pairIt != g_lastFrame.end();) {
-        if (pairIt->first == owner || pairIt->second == owner) {
-            const EntityId survivor = (pairIt->first == owner) ? pairIt->second
-                                                               : pairIt->first;
-            const char* type = g_lastFrameTriggers.contains(*pairIt)
+        if (pairIt->first.first == id || pairIt->first.second == id) {
+            // The other entity, read out of the RECORD rather than worked out
+            // from the key: an id cannot be turned back into an owner once its
+            // collider is gone, and this one is going.
+            const EntityId survivor = (pairIt->first.first == id)
+                                          ? pairIt->second.b
+                                          : pairIt->second.a;
+            const char* type = pairIt->second.isTrigger
                                    ? MessageTypes::kTriggerExit
                                    : MessageTypes::kCollisionExit;
+            // BOTH SIDES, exactly as the diff loop in Update does.
+            //
+            // The entity LOSING the collider used to be left out, so a script
+            // on it saw an enter with no matching exit whenever one of its
+            // colliders was removed - and with contacts keyed per collider
+            // pair that is now a routine thing to do rather than an unusual
+            // one. Unity closes the pairing on both sides.
+            //
+            // When the collider is going because its ENTITY is being
+            // destroyed, that second message costs nothing: the dying entity
+            // fails MessageBus::Dispatch's target check and its copy is
+            // dropped. So this fixes the plain-removal case without changing
+            // the destroy case at all.
             SendPairEvent(type, survivor, owner);
+            SendPairEvent(type, owner, survivor);
 
-            g_lastFrameTriggers.erase(*pairIt);
-            g_contacts.erase(*pairIt);
+            g_contacts.erase(pairIt->first);
 
             // erase() returns an iterator to the next element, which is what
-            // makes it safe to remove entries while walking the set.
+            // makes it safe to remove entries while walking the map.
             pairIt = g_lastFrame.erase(pairIt);
         } else {
             ++pairIt;
+        }
+    }
+
+    // And drop any entity-level index entry that pointed at one of this
+    // collider's pairs, or a lookup would hand back a contact belonging to a
+    // collider that no longer exists. Both indexes, for the same reason.
+    for (std::map<EPair, CPair>* index : {&g_entityContact, &g_entityTrigger}) {
+        for (auto entityIt = index->begin(); entityIt != index->end();) {
+            if (entityIt->second.first == id || entityIt->second.second == id) {
+                entityIt = index->erase(entityIt);
+            } else {
+                ++entityIt;
+            }
         }
     }
 
@@ -878,10 +1002,16 @@ void CollisionSystem::Clear() {
     g_colliders.clear();
     g_lastFrame.clear();
     g_thisFrame.clear();
-    g_lastFrameTriggers.clear();
     g_contacts.clear();
+    g_entityContact.clear();
+    g_entityTrigger.clear();
     g_shapePool.clear();
     g_slices.clear();
+
+    // g_nextColliderId IS DELIBERATELY NOT RESET. Reusing an id would let a
+    // brand new collider inherit a pair that a destroyed one was part of, and
+    // the only cost of not resetting is that the numbers keep climbing - which
+    // nothing reads or stores.
 }
 
 void CollisionSystem::SetSolverIterations(int iterations) {
@@ -891,8 +1021,16 @@ void CollisionSystem::SetSolverIterations(int iterations) {
 int CollisionSystem::SolverIterations() { return g_solverIterations; }
 
 const Collision2D* CollisionSystem::FindContact(EntityId a, EntityId b) {
-    const auto it = g_contacts.find(MakePair(a, b));
-    return (it == g_contacts.end()) ? nullptr : &it->second;
+    // THE DEEPEST SOLID CONTACT BETWEEN THESE TWO ENTITIES, or null - never a
+    // trigger's, which is what the separate index is for.
+    return LookUpByEntities(g_entityContact, a, b);
+}
+
+const Collision2D* CollisionSystem::FindTriggerContact(EntityId a, EntityId b) {
+    // The same for the other kind. A trigger pair has a full contact - the
+    // narrow phase never looks at IsTrigger, only the solver does - so this
+    // carries a real normal, point and separation as well as both colliders.
+    return LookUpByEntities(g_entityTrigger, a, b);
 }
 
 const std::vector<ColliderComponent*>& CollisionSystem::All() {
@@ -1172,6 +1310,8 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
 
     g_thisFrame.clear();
     g_contacts.clear();
+    g_entityContact.clear();
+    g_entityTrigger.clear();
     g_narrowPhaseTests = 0;
     g_broadPhasePairs  = 0;
 
@@ -1186,6 +1326,7 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
     struct Live {
         ColliderComponent* collider = nullptr;
         EntityId           owner{};
+        ColliderId         id    = 0;
         int                slice = 0;
     };
     std::vector<Live> live;
@@ -1235,7 +1376,8 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
             }
         }
 
-        live.push_back(Live{collider, record.owner, static_cast<int>(g_slices.size())});
+        live.push_back(
+            Live{collider, record.owner, record.id, static_cast<int>(g_slices.size())});
         g_slices.push_back(slice);
     }
 
@@ -1272,6 +1414,29 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
                 break;
             }
 
+            // ==============================================================
+            //  TWO COLLIDERS ON ONE ENTITY DO NOT COLLIDE WITH EACH OTHER.
+            //
+            //  Unity's rule, and without it a compound body - which
+            //  Collider.h recommends building as several colliders on the one
+            //  entity that carries the rigidbody - OVERLAPS ITSELF. That
+            //  stored a real contact, and the event loop below sends every
+            //  pair's event to both of its sides, so the entity was told it
+            //  had touched itself, twice, every step.
+            //
+            //  Guarded before the key is formed rather than after, so the
+            //  degenerate pair cannot reach any container, cannot inflate the
+            //  touching-pair count and cannot turn the gizmo red. It costs one
+            //  comparison of two entity ids.
+            //
+            //  The cost is that siblings can no longer push each other apart.
+            //  Nothing in the engine, the assets or the tests wants that, and
+            //  a compound body pushing itself apart was never the intent.
+            // ==============================================================
+            if (live[i].owner == live[j].owner) {
+                continue;
+            }
+
             // Still worth the cheap y test before the expensive shape test.
             if (!Overlaps(sliceA.bounds, sliceB.bounds)) {
                 continue;
@@ -1304,10 +1469,20 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
                 continue;
             }
 
-            const Pair pair = MakePair(live[i].owner, live[j].owner);
-            g_thisFrame.insert(pair);
+            const CPair pair = MakePair(live[i].id, live[j].id);
 
-            // Stored once, oriented for whichever entity comes first in the
+            // THE KIND, worked out here where both colliders are already in
+            // hand. A trigger on EITHER side makes the pair a trigger pair;
+            // the solver below asks the opposite question, because solid()
+            // needs both of them to be non-triggers.
+            //
+            // Recorded rather than re-derived in the event loop, which used to
+            // look the contact up again to ask it - one map find per touching
+            // pair, every step, for a bool that was known right here.
+            const bool isTrigger =
+                live[i].collider->IsTrigger() || live[j].collider->IsTrigger();
+
+            // Stored once, oriented for whichever COLLIDER comes first in the
             // pair. The dispatcher flips it for the other side.
             Collision2D info;
             info.other         = live[j].owner;
@@ -1329,16 +1504,56 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
                                                  : Vec2{};
             info.relativeVelocity = velB - velA;
 
-            // Keyed so that `first` of the pair is the one `info` describes,
-            // which is what lets the dispatcher know when to flip.
-            if (pair.first != live[i].owner) {
+            // Keyed so that `first` of the pair is the COLLIDER `info`
+            // describes, which is what lets the dispatcher know when to flip.
+            const bool firstIsI = pair.first == live[i].id;
+            if (!firstIsI) {
                 info.other         = live[i].owner;
                 info.otherCollider = live[i].collider;
                 info.thisCollider  = live[j].collider;
                 info.normal        = deepest.normal;
                 info.relativeVelocity = velA - velB;
             }
-            g_contacts.emplace(pair, info);
+
+            // THE OWNERS GO IN THE RECORD, because an id cannot be turned back
+            // into an entity once its collider is gone - and that is exactly
+            // the moment Unregister has to name the surviving side of the pair.
+            g_thisFrame.insert_or_assign(
+                pair, PairInfo{firstIsI ? live[i].owner : live[j].owner,
+                               firstIsI ? live[j].owner : live[i].owner, isTrigger});
+
+            // insert_or_assign AND NOT emplace. The loop above reaches each
+            // collider pair exactly once, so this never actually replaces
+            // anything - but "silently keep the first and drop the rest" is
+            // the precise failure this key exists to remove, and leaving the
+            // call that did it sitting in the file would invite it back.
+            g_contacts.insert_or_assign(pair, info);
+
+            // ---- the entity-level index, which is all a lookup can use -----
+            //
+            // INTO THE INDEX FOR THIS PAIR'S KIND. See the note on the two
+            // maps: keeping them apart is what stops a collision hook being
+            // handed a trigger's record, and a trigger hook a solid one.
+            {
+                std::map<EPair, CPair>& index =
+                    isTrigger ? g_entityTrigger : g_entityContact;
+
+                const EPair entities = MakeEntityPair(live[i].owner, live[j].owner);
+                const auto  existing = index.find(entities);
+                if (existing == index.end()) {
+                    index.emplace(entities, pair);
+                } else {
+                    // Separation is NEGATIVE when they overlap, so deeper is
+                    // smaller. A missing held contact cannot happen - it was
+                    // stored in the same iteration - but answering with the
+                    // newer one if it ever did is the safe direction.
+                    const auto held = g_contacts.find(existing->second);
+                    if (held == g_contacts.end() ||
+                        deepest.separation < held->second.separation) {
+                        existing->second = pair;
+                    }
+                }
+            }
         }
     }
 
@@ -1374,45 +1589,56 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
     //
     // Compare this step's pairs against last step's. BOTH entities get every
     // event, each naming the other as the partner.
-    std::set<Pair> triggersThisFrame;
+    for (const auto& [pair, info] : g_thisFrame) {
+        const auto lastIt      = g_lastFrame.find(pair);
+        bool       wasTouching = lastIt != g_lastFrame.end();
 
-    for (const Pair& pair : g_thisFrame) {
-        const auto contactIt = g_contacts.find(pair);
-        const bool isTrigger =
-            contactIt != g_contacts.end() && contactIt->second.thisCollider != nullptr &&
-            contactIt->second.otherCollider != nullptr &&
-            (contactIt->second.thisCollider->IsTrigger() ||
-             contactIt->second.otherCollider->IsTrigger());
-
-        if (isTrigger) {
-            triggersThisFrame.insert(pair);
+        // ==================================================================
+        //  THE KIND CHANGED WHILE THEY WERE STILL TOUCHING, which a script
+        //  can cause at any moment: SetTrigger is public and nothing stops it
+        //  being called from inside a handler.
+        //
+        //  Without this the pair would simply start sending the OTHER
+        //  family's stay - an OnTriggerStay for something that never sent an
+        //  OnTriggerEnter, and an OnCollisionEnter that never gets its exit.
+        //  So the old lifecycle is closed first and the new one opens as a
+        //  fresh enter, which is the only reading under which every enter has
+        //  a matching exit.
+        // ==================================================================
+        if (wasTouching && lastIt->second.isTrigger != info.isTrigger) {
+            const char* closing = lastIt->second.isTrigger
+                                      ? MessageTypes::kTriggerExit
+                                      : MessageTypes::kCollisionExit;
+            SendPairEvent(closing, info.a, info.b);
+            SendPairEvent(closing, info.b, info.a);
+            wasTouching = false;
         }
 
-        const bool wasTouching = g_lastFrame.contains(pair);
         const char* type =
-            isTrigger ? (wasTouching ? MessageTypes::kTriggerStay
-                                     : MessageTypes::kTriggerEnter)
-                      : (wasTouching ? MessageTypes::kCollisionStay
-                                     : MessageTypes::kCollisionEnter);
+            info.isTrigger ? (wasTouching ? MessageTypes::kTriggerStay
+                                          : MessageTypes::kTriggerEnter)
+                           : (wasTouching ? MessageTypes::kCollisionStay
+                                          : MessageTypes::kCollisionEnter);
 
-        SendPairEvent(type, pair.first, pair.second);
-        SendPairEvent(type, pair.second, pair.first);
+        SendPairEvent(type, info.a, info.b);
+        SendPairEvent(type, info.b, info.a);
     }
 
-    for (const Pair& pair : g_lastFrame) {
+    for (const auto& [pair, info] : g_lastFrame) {
         if (g_thisFrame.contains(pair)) {
             continue;
         }
         // Exit: it was touching last step and is not now. Sent as the same
-        // KIND of event the enter was.
-        const char* type = g_lastFrameTriggers.contains(pair) ? MessageTypes::kTriggerExit
-                                                              : MessageTypes::kCollisionExit;
-        SendPairEvent(type, pair.first, pair.second);
-        SendPairEvent(type, pair.second, pair.first);
+        // KIND of event the enter was, which is what the flag on the record is
+        // remembered for - and remembering it rather than asking the colliders
+        // is what makes this work when one of them has just been destroyed.
+        const char* type = info.isTrigger ? MessageTypes::kTriggerExit
+                                          : MessageTypes::kCollisionExit;
+        SendPairEvent(type, info.a, info.b);
+        SendPairEvent(type, info.b, info.a);
     }
 
-    g_lastFrame         = g_thisFrame;
-    g_lastFrameTriggers = triggersThisFrame;
+    g_lastFrame = g_thisFrame;
 
     // ---- gizmos -----------------------------------------------------------
     //
@@ -1433,11 +1659,14 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
             } else if (collider->IsTrigger()) {
                 color = Color::Cyan();
             } else {
+                // THIS COLLIDER, not its entity. A collider used to turn red
+                // because a SIBLING was touching something, which is not what
+                // the colour claims to mean.
                 const bool touching =
                     std::any_of(g_thisFrame.begin(), g_thisFrame.end(),
-                                [&](const Pair& pair) {
-                                    return pair.first == record.owner ||
-                                           pair.second == record.owner;
+                                [&](const auto& entry) {
+                                    return entry.first.first == record.id ||
+                                           entry.first.second == record.id;
                                 });
                 if (touching) {
                     color = Color::Red();

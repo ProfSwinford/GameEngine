@@ -124,21 +124,113 @@ concept HasOnCollisionExit = HasOnCollisionExitId<T> || HasOnCollisionExitInfo<T
 
 // ---- triggers, which are a different event ------------------------------
 //
-// A pair where EITHER side is a trigger sends these and NOT the collision
-// hooks above. See the note in physics/Collider.h: a trigger reports and
-// nothing else, a solid collider is pushed apart, and they are different
-// enough that one event for both would be a lie.
+// A pair of colliders where EITHER side is a trigger sends these and NOT the
+// collision hooks above. See the note in physics/Collider.h: a trigger
+// reports and nothing else, a solid collider is pushed apart, and they are
+// different enough that one event for both would be a lie.
 //
-// These take an EntityId only. Unity hands over a Collider2D, but a pointer
-// to a component that may already have been destroyed is exactly what this
-// engine's collision events have always refused to hand out - look it up
-// through the scene instead.
+// THREE WAYS TO WRITE ONE, and the richest a script wrote wins:
+//
+//     void OnTriggerEnter(eng::EntityId other)            // the partner
+//     void OnTriggerEnter(Collider2D other)               // Unity's form
+//     void OnTriggerEnter(const eng::Collision2D& hit)    // everything
+//
+// THE SECOND ONE IS UNITY'S OnTriggerEnter2D(Collider2D), spelled with the
+// typedef Engine.h already publishes - Collider2D is eng::ColliderComponent*.
+// It is what you want almost always: `other->Owner()` is the entity, with no
+// lookup through the scene, and `other->IsTrigger()` and the layer are right
+// there.
+//
+// THE THIRD ANSWERS A QUESTION UNITY CANNOT: `hit.thisCollider` is MY
+// collider, so an entity carrying several triggers can tell WHICH of them
+// fired. Unity passes only the other side and leaves you splitting triggers
+// across child objects to find out. A trigger pair also carries a real
+// normal, point and separation, because the narrow phase computes them for
+// every touching pair and only the SOLVER skips the trigger ones.
+//
+// THIS FILE USED TO SAY a Collider2D was "exactly what this engine's
+// collision events have always refused to hand out". That was never true:
+// Collision2D has carried two collider pointers all along, RaycastHit2D
+// carries one, six Physics2D::Overlap functions return them, and Collider2D
+// is a published typedef. The pointers are documented as valid for the
+// handler and no longer, which is the real rule.
+//
+// AN EXIT TAKES NO COLLIDER, and that is the one asymmetry here. An exit pair
+// is by definition one that was touching last step and is not now, so there
+// is no contact left to read the colliders out of - and when the exit was
+// caused by the other side being destroyed, its collider has been freed. A
+// parameter that was always null would teach the opposite of the truth, so
+// the form is refused with a message saying so. Take the entity id, which is
+// always right on an exit, or the contact if you want to check for null
+// yourself.
 template <class T>
-concept HasOnTriggerEnter = requires(T& t, EntityId other) { t.OnTriggerEnter(other); };
+concept HasOnTriggerEnterId = requires(T& t, EntityId other) {
+    t.OnTriggerEnter(other);
+};
 template <class T>
-concept HasOnTriggerStay = requires(T& t, EntityId other) { t.OnTriggerStay(other); };
+concept HasOnTriggerStayId = requires(T& t, EntityId other) {
+    t.OnTriggerStay(other);
+};
 template <class T>
-concept HasOnTriggerExit = requires(T& t, EntityId other) { t.OnTriggerExit(other); };
+concept HasOnTriggerExitId = requires(T& t, EntityId other) {
+    t.OnTriggerExit(other);
+};
+
+template <class T>
+concept HasOnTriggerEnterInfo = requires(T& t, const Collision2D& hit) {
+    t.OnTriggerEnter(hit);
+};
+template <class T>
+concept HasOnTriggerStayInfo = requires(T& t, const Collision2D& hit) {
+    t.OnTriggerStay(hit);
+};
+template <class T>
+concept HasOnTriggerExitInfo = requires(T& t, const Collision2D& hit) {
+    t.OnTriggerExit(hit);
+};
+
+// THE EXCLUSION OF bool IS LOAD-BEARING, not tidiness. A pointer converts to
+// a bool, so `requires(ColliderComponent* c) { t.OnTriggerEnter(c); }` on its
+// own is ALSO satisfied by a hook declared `void OnTriggerEnter(bool)` - and
+// that script would then be handed `true` every time something touched it,
+// with nothing anywhere saying why. Excluding it turns that into no match,
+// and from there into the wrong-signature error at the bottom of the macro.
+//
+// EntityId and Collision2D need no such exclusion: neither has a constructor
+// that takes a pointer, so the three forms cannot be confused for each other.
+//
+// ColliderComponent is named only through a pointer here, never dereferenced,
+// so the forward declaration in physics/Contact.h is enough and this header
+// still does not have to include physics/Collider.h - see the note at the top
+// of Contact.h for why that matters.
+template <class T>
+concept HasOnTriggerEnterCollider =
+    requires(T& t, ColliderComponent* c) { t.OnTriggerEnter(c); } &&
+    !requires(T& t) { t.OnTriggerEnter(true); };
+template <class T>
+concept HasOnTriggerStayCollider =
+    requires(T& t, ColliderComponent* c) { t.OnTriggerStay(c); } &&
+    !requires(T& t) { t.OnTriggerStay(true); };
+
+// NOT an accepted form - this one exists purely to produce a specific error.
+// See the note above on why an exit has no collider to hand over, and the
+// TakesDeltaOnUpdate concept below for the same pattern.
+template <class T>
+concept TakesColliderOnTriggerExit =
+    requires(T& t, ColliderComponent* c) { t.OnTriggerExit(c); } &&
+    !requires(T& t) { t.OnTriggerExit(true); };
+
+// THE AGGREGATES KEEP THEIR OLD NAMES, which is what lets the wrong-signature
+// asserts and the has-no-hooks check at the bottom of the macro go on reading
+// correctly without being touched.
+template <class T>
+concept HasOnTriggerEnter =
+    HasOnTriggerEnterId<T> || HasOnTriggerEnterInfo<T> || HasOnTriggerEnterCollider<T>;
+template <class T>
+concept HasOnTriggerStay =
+    HasOnTriggerStayId<T> || HasOnTriggerStayInfo<T> || HasOnTriggerStayCollider<T>;
+template <class T>
+concept HasOnTriggerExit = HasOnTriggerExitId<T> || HasOnTriggerExitInfo<T>;
 
 // "There is a member with this name", regardless of what it takes. Used only
 // to produce a good error message: a class that HAS OnUpdate but whose
@@ -244,16 +336,26 @@ struct ScriptHooks {
     void (*expose)(ScriptBehaviour*, ScriptFields&) = nullptr;
 
     // ONE POINTER PER EVENT, taking the full Collision2D, whichever way the
-    // script wrote its hook. A script that only asked for the entity gets a
-    // lambda that pulls it out of the struct - so this table does not need two
-    // slots per event and the dispatcher does not need to choose between them.
+    // script wrote its hook. A script that only asked for the entity or for
+    // the other collider gets a lambda that pulls it out of the struct - so
+    // this table does not need a slot per form and the dispatcher does not
+    // need to choose between them.
+    //
+    // THE TRIGGER SLOTS WERE RETYPED RATHER THAN ADDED TO, and that is the
+    // single most important line of this change. A second `triggerEnterInfo`
+    // beside the first would have left a correctly written hook sitting
+    // behind an AnyTrigger() that returned false - so the dispatcher would
+    // drop the event, and the Console and the Inspector would both report
+    // that the script has no hooks at all. One slot makes that impossible
+    // instead of merely avoided, and leaves AnyTrigger, AnyContact,
+    // DescribeHooks and the editor's hook list needing no edit.
     void (*collisionEnter)(ScriptBehaviour*, const Collision2D&) = nullptr;
     void (*collisionStay)(ScriptBehaviour*, const Collision2D&)  = nullptr;
     void (*collisionExit)(ScriptBehaviour*, const Collision2D&)  = nullptr;
 
-    void (*triggerEnter)(ScriptBehaviour*, EntityId) = nullptr;
-    void (*triggerStay)(ScriptBehaviour*, EntityId)  = nullptr;
-    void (*triggerExit)(ScriptBehaviour*, EntityId)  = nullptr;
+    void (*triggerEnter)(ScriptBehaviour*, const Collision2D&) = nullptr;
+    void (*triggerStay)(ScriptBehaviour*, const Collision2D&)  = nullptr;
+    void (*triggerExit)(ScriptBehaviour*, const Collision2D&)  = nullptr;
 
     bool AnyCollision() const {
         return collisionEnter != nullptr || collisionStay != nullptr ||
@@ -326,19 +428,46 @@ constexpr ScriptHooks MakeScriptHooks() {
         };
     }
 
-    if constexpr (hooks::HasOnTriggerEnter<T>) {
-        h.triggerEnter = [](ScriptBehaviour* s, EntityId o) {
-            static_cast<T*>(s)->OnTriggerEnter(o);
+    // The richest form a script wrote wins, exactly as it does for the
+    // collision hooks above. Getting this ladder wrong is SILENT: a missed
+    // branch leaves the slot null and the event is simply never delivered.
+    if constexpr (hooks::HasOnTriggerEnterInfo<T>) {
+        h.triggerEnter = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerEnter(c);
+        };
+    } else if constexpr (hooks::HasOnTriggerEnterCollider<T>) {
+        h.triggerEnter = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerEnter(c.otherCollider);
+        };
+    } else if constexpr (hooks::HasOnTriggerEnterId<T>) {
+        h.triggerEnter = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerEnter(c.other);
         };
     }
-    if constexpr (hooks::HasOnTriggerStay<T>) {
-        h.triggerStay = [](ScriptBehaviour* s, EntityId o) {
-            static_cast<T*>(s)->OnTriggerStay(o);
+
+    if constexpr (hooks::HasOnTriggerStayInfo<T>) {
+        h.triggerStay = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerStay(c);
+        };
+    } else if constexpr (hooks::HasOnTriggerStayCollider<T>) {
+        h.triggerStay = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerStay(c.otherCollider);
+        };
+    } else if constexpr (hooks::HasOnTriggerStayId<T>) {
+        h.triggerStay = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerStay(c.other);
         };
     }
-    if constexpr (hooks::HasOnTriggerExit<T>) {
-        h.triggerExit = [](ScriptBehaviour* s, EntityId o) {
-            static_cast<T*>(s)->OnTriggerExit(o);
+
+    // No collider branch here: an exit has no contact, so there would be
+    // nothing to pass. See the note on the concepts.
+    if constexpr (hooks::HasOnTriggerExitInfo<T>) {
+        h.triggerExit = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerExit(c);
+        };
+    } else if constexpr (hooks::HasOnTriggerExitId<T>) {
+        h.triggerExit = [](ScriptBehaviour* s, const Collision2D& c) {
+            static_cast<T*>(s)->OnTriggerExit(c.other);
         };
     }
     return h;
@@ -437,18 +566,40 @@ std::string DescribeHooks(const ScriptHooks& hooks);
                   #Type "::OnCollisionExit has the wrong signature. It must be: "      \
                         "void OnCollisionExit(eng::EntityId other) or "                \
                         "void OnCollisionExit(const eng::Collision2D& hit)");          \
+    /* Deliberately before the generic one below, which carries the matching */        \
+    /* exclusion term - so this specific message is the one that prints.     */        \
+    static_assert(!::eng::hooks::TakesColliderOnTriggerExit<Type>,                     \
+                  #Type "::OnTriggerExit cannot take a collider. An exit pair is "     \
+                        "one that WAS touching and is not now, so there is no "        \
+                        "contact left to name a collider from - and when the exit "    \
+                        "is caused by the other side being destroyed, its collider "   \
+                        "has been freed. Take the partner instead: "                   \
+                        "void OnTriggerExit(eng::EntityId other) - which is always "   \
+                        "right on an exit - or the whole contact, "                    \
+                        "void OnTriggerExit(const eng::Collision2D& hit), whose "      \
+                        "collider pointers are both null there. OnTriggerEnter and "   \
+                        "OnTriggerStay DO take Collider2D.");                          \
     static_assert(!(::eng::hooks::NamesOnTriggerEnter<Type> &&                         \
                     !::eng::hooks::HasOnTriggerEnter<Type>),                           \
-                  #Type "::OnTriggerEnter has the wrong signature. It must be: "       \
-                        "void OnTriggerEnter(eng::EntityId other)");                   \
+                  #Type "::OnTriggerEnter has the wrong signature. It must take "      \
+                        "EITHER the other entity, the other collider, or the whole "   \
+                        "contact: void OnTriggerEnter(eng::EntityId other), "          \
+                        "void OnTriggerEnter(Collider2D other), or "                   \
+                        "void OnTriggerEnter(const eng::Collision2D& hit)");           \
     static_assert(!(::eng::hooks::NamesOnTriggerStay<Type> &&                          \
                     !::eng::hooks::HasOnTriggerStay<Type>),                            \
-                  #Type "::OnTriggerStay has the wrong signature. It must be: "        \
-                        "void OnTriggerStay(eng::EntityId other)");                    \
+                  #Type "::OnTriggerStay has the wrong signature. It must take "       \
+                        "EITHER the other entity, the other collider, or the whole "   \
+                        "contact: void OnTriggerStay(eng::EntityId other), "           \
+                        "void OnTriggerStay(Collider2D other), or "                    \
+                        "void OnTriggerStay(const eng::Collision2D& hit)");            \
     static_assert(!(::eng::hooks::NamesOnTriggerExit<Type> &&                          \
-                    !::eng::hooks::HasOnTriggerExit<Type>),                            \
-                  #Type "::OnTriggerExit has the wrong signature. It must be: "        \
-                        "void OnTriggerExit(eng::EntityId other)");                    \
+                    !::eng::hooks::HasOnTriggerExit<Type> &&                           \
+                    !::eng::hooks::TakesColliderOnTriggerExit<Type>),                  \
+                  #Type "::OnTriggerExit has the wrong signature. It must take "       \
+                        "EITHER the other entity or the whole contact: "               \
+                        "void OnTriggerExit(eng::EntityId other) or "                  \
+                        "void OnTriggerExit(const eng::Collision2D& hit)");            \
     /* --- the names other engines use --------------------------------------- */     \
     static_assert(!::eng::hooks::NamesUpdate<Type>,                                    \
                   "This engine calls it OnUpdate(), not Update. Rename " #Type         \

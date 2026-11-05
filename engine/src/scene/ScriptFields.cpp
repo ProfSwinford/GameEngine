@@ -52,6 +52,8 @@ const char* ScriptFieldTypeName(ScriptFieldType type) {
         case ScriptFieldType::Color:  return "colour";
         case ScriptFieldType::Entity: return "entity";
         case ScriptFieldType::Prefab: return "prefab";
+        case ScriptFieldType::Animation: return "animation";
+        case ScriptFieldType::Image:     return "image";
     }
     return "unknown";
 }
@@ -87,6 +89,15 @@ EntityRef* ScriptField::AsEntityRef() const {
 
 PrefabRef* ScriptField::AsPrefabRef() const {
     return type == ScriptFieldType::Prefab ? static_cast<PrefabRef*>(value) : nullptr;
+}
+
+AnimationRef* ScriptField::AsAnimationRef() const {
+    return type == ScriptFieldType::Animation ? static_cast<AnimationRef*>(value)
+                                              : nullptr;
+}
+
+ImageRef* ScriptField::AsImageRef() const {
+    return type == ScriptFieldType::Image ? static_cast<ImageRef*>(value) : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +313,14 @@ bool JsonFitsFieldType(ScriptFieldType type, const Json& value) {
         case ScriptFieldType::String:
         case ScriptFieldType::Entity:
         case ScriptFieldType::Prefab:
+        case ScriptFieldType::Animation:
+        case ScriptFieldType::Image:
+            // THE REASON SWITCHING A SCRIPT FROM std::string TO AnimationRef
+            // OR ImageRef COSTS NOTHING. All five read and write a bare JSON
+            // string, and the file carries no type tag at all - a value saved
+            // years ago from a text box is still exactly what this expects.
+            // Nothing compares a saved value against what last wrote it.
+            //
             // An entity reference IS a string in the file - the target's name.
             // Nothing here checks that anything answers to it: a scene saved
             // half-built refers to entities that do not exist yet, and
@@ -398,6 +417,14 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
                 field.AsPrefabRef()->Set(value.get<std::string>());
                 return true;
 
+            case ScriptFieldType::Animation:
+                field.AsAnimationRef()->Set(value.get<std::string>());
+                return true;
+
+            case ScriptFieldType::Image:
+                field.AsImageRef()->Set(value.get<std::string>());
+                return true;
+
             case ScriptFieldType::Vec2:
                 *field.AsVec2() = Vec2{value[0].get<float>(), value[1].get<float>()};
                 return true;
@@ -447,6 +474,22 @@ Json FieldToJson(const ScriptField& field) {
             // has been moved is a reference somebody can see and put right,
             // and blanking it would destroy the only record of what was meant.
             return Json(field.AsPrefabRef()->Path());
+
+        case ScriptFieldType::Animation:
+            // The path as stored, third time for the same reason - and here
+            // the cost of getting it wrong is worse than a blank. A missing
+            // arm in THIS switch falls through to `return Json()` at the
+            // bottom, a JSON null, which a prefab instance reads as "erase
+            // this field" (see the note on the null marker in Prefab.cpp). One
+            // click in the Inspector would then quietly delete the path.
+            return Json(field.AsAnimationRef()->Path());
+
+        case ScriptFieldType::Image:
+            // The path as stored, a fourth time. The warning on the arm above
+            // applies to this one word for word: forget it and a picture
+            // somebody chose is written out as null, which a prefab instance
+            // reads as "erase this field".
+            return Json(field.AsImageRef()->Path());
 
         case ScriptFieldType::Vec2: {
             const Vec2 v = *field.AsVec2();

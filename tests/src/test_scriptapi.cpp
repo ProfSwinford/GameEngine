@@ -351,11 +351,61 @@ public:
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+//  THE TWO NEWER WAYS TO WRITE A TRIGGER HOOK, one probe each. Touchy above
+//  keeps the EntityId form compiling and working, which is what back-compat
+//  rests on.
+//
+//  ColliderComponent* is what Engine.h publishes as Collider2D - Unity's own
+//  spelling - and they are the same type. This file does not include
+//  <engine/Engine.h>, so the typedef itself is exercised by compiling a real
+//  project script instead.
+// ---------------------------------------------------------------------------
+
+// Unity's form: the OTHER collider.
+class TriggerByCollider final : public ScriptBehaviour {
+public:
+    int                enters = 0;
+    int                stays  = 0;
+    ColliderComponent* last   = nullptr;
+
+    void OnStart() {}
+    void OnTriggerEnter(ColliderComponent* other) {
+        ++enters;
+        last = other;
+    }
+    void OnTriggerStay(ColliderComponent* other) {
+        ++stays;
+        last = other;
+    }
+};
+
+// The whole contact - the only form that says which of MY colliders fired.
+class TriggerByContact final : public ScriptBehaviour {
+public:
+    int         enters = 0;
+    int         exits  = 0;
+    Collision2D lastEnter;
+    Collision2D lastExit;
+
+    void OnStart() {}
+    void OnTriggerEnter(const Collision2D& hit) {
+        ++enters;
+        lastEnter = hit;
+    }
+    void OnTriggerExit(const Collision2D& hit) {
+        ++exits;
+        lastExit = hit;
+    }
+};
+
 ENGINE_REGISTER_SCRIPT(Probe)
 ENGINE_REGISTER_SCRIPT(Spawner)
 ENGINE_REGISTER_SCRIPT(Suicide)
 ENGINE_REGISTER_SCRIPT(Touchy)
 ENGINE_REGISTER_SCRIPT(Seeker)
+ENGINE_REGISTER_SCRIPT(TriggerByCollider)
+ENGINE_REGISTER_SCRIPT(TriggerByContact)
 
 namespace {
 
@@ -2131,4 +2181,228 @@ TEST_CASE("FindAllInParents can leave this entity out, and clears what it is giv
     found.push_back(nullptr);
     CHECK(loose->FindAllInChildren<SpinComponent>(found) == 0);
     CHECK(found.empty());
+}
+
+// ===========================================================================
+//  THE TRIGGER HOOKS, DRIVEN ALL THE WAY THROUGH
+//
+//  CollisionSystem::Update queues the events and MessageBus::Dispatch delivers
+//  them, which is stage 400 and stage 500 of a real frame. Nothing in this
+//  suite did that before - every contact case either stopped at
+//  ActivePairCount or called ScriptComponent::DispatchCollision by hand - so
+//  the whole path from a real overlap to a real hook was unasserted, and with
+//  it the re-orientation that decides whose collider is whose.
+// ===========================================================================
+
+namespace {
+
+// A trigger collider of the given size, at an offset from its entity.
+BoxColliderComponent* AddTrigger(Entity& entity, Vec2 size, Vec2 offset) {
+    auto* box = entity.Add<BoxColliderComponent>();
+    REQUIRE(box != nullptr);
+    box->SetSize(size);
+    box->SetOffset(offset);
+    box->SetTrigger(true);
+    return box;
+}
+
+// One full frame of the two stages that matter here.
+void StepAndDeliver(ScriptSystem& scripts, float dt = 1.0f / 60.0f) {
+    scripts.Update(dt);          // OnStart first, or the contact is dropped
+    CollisionSystem collision;
+    collision.Update(dt);
+    MessageBus::Dispatch();
+}
+
+} // namespace
+
+TEST_CASE("a trigger hook can take the other collider, which is Unity's form") {
+    Fixture world("trigger-collider-form");
+    ScriptSystem::SubscribeToCollisions();
+
+    // ANYTHING A PREVIOUS CASE QUEUED AND NEVER DELIVERED HAS TO GO, and this
+    // is not belt and braces - it cost a real failure. A Fixture's teardown
+    // unloads its scene, which detaches colliders, which QUEUES exit events;
+    // nothing dispatches them. Entity ids and their generations restart with
+    // each new scene, so a stale message can name an id that is perfectly
+    // valid in THIS scene and be delivered to whatever now holds it - which
+    // showed up here as one exit too many.
+    MessageBus::ClearQueue();
+
+    const EntityId sensorId = world.scene.CreateEntity("Sensor");
+    Entity*        sensor   = world.scene.Get(sensorId);
+    REQUIRE(sensor != nullptr);
+    AddTrigger(*sensor, Vec2{80.0f, 80.0f}, Vec2{0.0f, 0.0f});
+
+    auto* probe =
+        AttachScript<TriggerByCollider>(world.scene, sensorId, "TriggerByCollider");
+    REQUIRE(probe != nullptr);
+
+    const EntityId walkerId = world.WithCollider("Walker", Vec2{5.0f, 0.0f});
+
+    ScriptSystem scripts;
+    StepAndDeliver(scripts);
+
+    CHECK(probe->enters == 1);
+
+    // THE PARAMETER IS THE OTHER SIDE, as Unity's OnTriggerEnter2D is - and it
+    // reaches the entity in one hop, with no lookup through the scene. That
+    // lookup is the thing this form exists to delete.
+    REQUIRE(probe->last != nullptr);
+    REQUIRE(probe->last->Owner() != nullptr);
+    CHECK(probe->last->Owner()->Id() == walkerId);
+    CHECK_FALSE(probe->last->IsTrigger());   // the walker is solid; the sensor is not
+
+    // And it keeps arriving on the following steps.
+    StepAndDeliver(scripts);
+    CHECK(probe->stays == 1);
+}
+
+TEST_CASE("a trigger hook taking the contact is told WHICH of its colliders fired") {
+    // =======================================================================
+    //  THE QUESTION UNITY CANNOT ANSWER. Unity passes only the other side, so
+    //  an object with several triggers has to split them across child objects
+    //  to find out which one was entered. `hit.thisCollider` answers it
+    //  directly - and it is only trustworthy because contacts are keyed per
+    //  collider pair and the dispatcher re-orients the record for whichever
+    //  side is receiving it.
+    // =======================================================================
+    Fixture world("trigger-which-of-mine");
+    ScriptSystem::SubscribeToCollisions();
+
+    // ANYTHING A PREVIOUS CASE QUEUED AND NEVER DELIVERED HAS TO GO, and this
+    // is not belt and braces - it cost a real failure. A Fixture's teardown
+    // unloads its scene, which detaches colliders, which QUEUES exit events;
+    // nothing dispatches them. Entity ids and their generations restart with
+    // each new scene, so a stale message can name an id that is perfectly
+    // valid in THIS scene and be delivered to whatever now holds it - which
+    // showed up here as one exit too many.
+    MessageBus::ClearQueue();
+
+    const EntityId sensorId = world.scene.CreateEntity("Sensor");
+    Entity*        sensor   = world.scene.Get(sensorId);
+    REQUIRE(sensor != nullptr);
+
+    // Two triggers on ONE entity, far enough apart that only one is reachable.
+    BoxColliderComponent* left =
+        AddTrigger(*sensor, Vec2{20.0f, 20.0f}, Vec2{-100.0f, 0.0f});
+    BoxColliderComponent* right =
+        AddTrigger(*sensor, Vec2{20.0f, 20.0f}, Vec2{100.0f, 0.0f});
+
+    auto* probe =
+        AttachScript<TriggerByContact>(world.scene, sensorId, "TriggerByContact");
+    REQUIRE(probe != nullptr);
+
+    // Standing in the LEFT one only.
+    const EntityId walkerId = world.WithCollider("Walker", Vec2{-100.0f, 0.0f});
+
+    ScriptSystem scripts;
+    StepAndDeliver(scripts);
+
+    CHECK(probe->enters == 1);
+    CHECK(probe->lastEnter.thisCollider == left);    // mine, and the correct one
+    CHECK(probe->lastEnter.thisCollider != right);
+    REQUIRE(probe->lastEnter.otherCollider != nullptr);
+    REQUIRE(probe->lastEnter.otherCollider->Owner() != nullptr);
+    CHECK(probe->lastEnter.otherCollider->Owner()->Id() == walkerId);
+    CHECK(probe->lastEnter.other == walkerId);
+}
+
+TEST_CASE("both sides of a trigger pair are told about their OWN collider") {
+    // =======================================================================
+    //  THE RE-ORIENTATION, which is the one thing here that is right by luck
+    //  on one side. A contact is stored once, oriented for whichever collider
+    //  sorted first in the pair, and the dispatcher swaps it for the other
+    //  receiver. Drop that swap and HALF of all trigger events name the
+    //  partner's collider as `thisCollider` - the half where the receiver
+    //  sorted second. Testing one side only would pass either way.
+    // =======================================================================
+    Fixture world("trigger-both-sides");
+    ScriptSystem::SubscribeToCollisions();
+
+    // ANYTHING A PREVIOUS CASE QUEUED AND NEVER DELIVERED HAS TO GO, and this
+    // is not belt and braces - it cost a real failure. A Fixture's teardown
+    // unloads its scene, which detaches colliders, which QUEUES exit events;
+    // nothing dispatches them. Entity ids and their generations restart with
+    // each new scene, so a stale message can name an id that is perfectly
+    // valid in THIS scene and be delivered to whatever now holds it - which
+    // showed up here as one exit too many.
+    MessageBus::ClearQueue();
+
+    const EntityId aId = world.scene.CreateEntity("A");
+    Entity*        a   = world.scene.Get(aId);
+    REQUIRE(a != nullptr);
+    BoxColliderComponent* aBox = AddTrigger(*a, Vec2{40.0f, 40.0f}, Vec2{0.0f, 0.0f});
+    auto* aProbe = AttachScript<TriggerByContact>(world.scene, aId, "TriggerByContact");
+
+    const EntityId bId = world.scene.CreateEntity("B");
+    Entity*        b   = world.scene.Get(bId);
+    REQUIRE(b != nullptr);
+    b->Transform().SetLocalPosition(Vec2{5.0f, 0.0f});
+    BoxColliderComponent* bBox = AddTrigger(*b, Vec2{40.0f, 40.0f}, Vec2{0.0f, 0.0f});
+    auto* bProbe = AttachScript<TriggerByContact>(world.scene, bId, "TriggerByContact");
+
+    REQUIRE(aProbe != nullptr);
+    REQUIRE(bProbe != nullptr);
+
+    ScriptSystem scripts;
+    StepAndDeliver(scripts);
+
+    REQUIRE(aProbe->enters == 1);
+    REQUIRE(bProbe->enters == 1);
+
+    CHECK(aProbe->lastEnter.thisCollider == aBox);
+    CHECK(aProbe->lastEnter.otherCollider == bBox);
+    CHECK(aProbe->lastEnter.other == bId);
+
+    CHECK(bProbe->lastEnter.thisCollider == bBox);
+    CHECK(bProbe->lastEnter.otherCollider == aBox);
+    CHECK(bProbe->lastEnter.other == aId);
+}
+
+TEST_CASE("a trigger exit carries the partner and no colliders at all") {
+    // =======================================================================
+    //  The documented degenerate payload, pinned so that nobody later
+    //  "fixes" it into something that looks populated. An exit pair is one
+    //  that WAS touching and is not now, so there is no contact to read -
+    //  which is why ScriptComponent::DispatchCollision does not even ask on
+    //  an exit, and why OnTriggerExit refuses a bare collider parameter.
+    // =======================================================================
+    Fixture world("trigger-exit-payload");
+    ScriptSystem::SubscribeToCollisions();
+
+    // ANYTHING A PREVIOUS CASE QUEUED AND NEVER DELIVERED HAS TO GO, and this
+    // is not belt and braces - it cost a real failure. A Fixture's teardown
+    // unloads its scene, which detaches colliders, which QUEUES exit events;
+    // nothing dispatches them. Entity ids and their generations restart with
+    // each new scene, so a stale message can name an id that is perfectly
+    // valid in THIS scene and be delivered to whatever now holds it - which
+    // showed up here as one exit too many.
+    MessageBus::ClearQueue();
+
+    const EntityId sensorId = world.scene.CreateEntity("Sensor");
+    Entity*        sensor   = world.scene.Get(sensorId);
+    REQUIRE(sensor != nullptr);
+    AddTrigger(*sensor, Vec2{40.0f, 40.0f}, Vec2{0.0f, 0.0f});
+    auto* probe =
+        AttachScript<TriggerByContact>(world.scene, sensorId, "TriggerByContact");
+    REQUIRE(probe != nullptr);
+
+    const EntityId walkerId = world.WithCollider("Walker", Vec2{5.0f, 0.0f});
+
+    ScriptSystem scripts;
+    StepAndDeliver(scripts);
+    REQUIRE(probe->enters == 1);
+
+    // Walk away.
+    world.scene.Get(walkerId)->Transform().SetLocalPosition(Vec2{900.0f, 0.0f});
+    StepAndDeliver(scripts);
+
+    CHECK(probe->exits == 1);
+    CHECK(probe->lastExit.other == walkerId);        // the partner, always
+    CHECK(probe->lastExit.thisCollider == nullptr);  // and nothing else
+    CHECK(probe->lastExit.otherCollider == nullptr);
+    CHECK(probe->lastExit.separation == doctest::Approx(0.0f));
+    CHECK(probe->lastExit.normal.x == doctest::Approx(0.0f));
+    CHECK(probe->lastExit.normal.y == doctest::Approx(0.0f));
 }

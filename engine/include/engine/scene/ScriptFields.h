@@ -52,10 +52,16 @@
 //  source, which is what Unreal does and what the editor does here.
 //
 //  THE COST OF THAT CHOICE IS THE ONE UNITY HAS TOO: every public field of a
-//  supported type is exposed whether or not it was meant to be. Three ways to
-//  keep one off screen, in order of how often they are the right answer:
-//  make it private, prefix it m_ (this project's convention, and respected as
-//  such), or write OnExpose and leave it out.
+//  supported type is exposed whether or not it was meant to be. TWO ways to
+//  keep one off screen: make it PRIVATE, or write OnExpose and leave it out.
+//
+//  AN m_ PREFIX DOES NOT HIDE ANYTHING, and this file used to say it did.
+//  It was read that way once - this project's own naming convention taken as
+//  [HideInInspector] - and that was a trap, because half the C++ world names
+//  ordinary members m_something and got no box, no skipped report and no way
+//  to find out why. `private:` is the language's own way of saying "not part
+//  of the interface" and cannot be arrived at by accident. The long note in
+//  engine/src/tools/ScriptVars.cpp has the argument.
 //
 //  ==========================================================================
 //  WHAT THE SCENE FILE STORES, AND WHAT IT DELIBERATELY DOES NOT
@@ -101,7 +107,9 @@
 #include <engine/core/Json.h>
 #include <engine/math/Vec2.h>
 #include <engine/render/Renderer.h>
+#include <engine/scene/AnimationRef.h>
 #include <engine/scene/EntityRef.h>
+#include <engine/scene/ImageRef.h>
 #include <engine/scene/PrefabRef.h>
 
 #include <string>
@@ -116,8 +124,17 @@ namespace eng {
 //
 //  A SHORT LIST ON PURPOSE. Every entry here is a widget the Inspector has to
 //  draw and a shape the scene file has to store, so each one has to earn its
-//  place. These six cover what scripts in this project actually tune: a
-//  distance, a count, a switch, a label, a position and a colour.
+//  place. They cover what scripts in this project actually tune: a distance, a
+//  count, a switch, a label, a position, a colour, and the four that are not
+//  values at all - another entity, a prefab to spawn, an animation to play and
+//  a picture to draw.
+//
+//  NEW VALUES ARE APPENDED AND NEVER INSERTED, and that is not a style rule.
+//  A script lives in its own DLL and ScriptField's accessors are a tag test
+//  followed by an UNCHECKED cast - `type == Prefab ? static_cast<PrefabRef*>`.
+//  Renumbering means a library built against the old order hands a Vec2 to a
+//  function that will call Path() on it, which is not a crash, it is a
+//  plausible-looking string written into somebody's scene file.
 //
 //  An enum rather than std::type_info, because a script lives in its own DLL:
 //  comparing typeid across two binaries is a question about how the linker
@@ -147,6 +164,48 @@ enum class ScriptFieldType {
     // when the file it names is not there. See PrefabRef.h for why a spawner
     // written with a plain std::string is worse in four separate ways.
     Prefab,
+
+    // AN ANIMATION TO PLAY. The third one that is not a value, and the newest.
+    //
+    // It is an eng::AnimationRef, which holds the sub-asset path of one clip
+    // inside one sheet - "textures/hero.png#walk_left". The Inspector draws it
+    // as the same slot a Sprite Animation component's own clip gets, with the
+    // project's clips in a picker, and paints it red when no sheet holds the
+    // animation it names.
+    //
+    // THE OLDER SPELLING WAS `std::string x; // [animation]`, and it still
+    // works - see AssetFieldKind above. What it could not do was be guessed:
+    // an animation was the only thing in this engine designated by a comment,
+    // so a second one added beside the first silently came out as a text box.
+    // AnimationRef.h has the argument; SpriteAnimationComponent::Play(const
+    // AnimationRef&) has the twenty-five lines of script-side path-vs-name
+    // reasoning it absorbs.
+    //
+    // APPENDED, for the reason in the note above this enum.
+    Animation,
+
+    // A PICTURE TO DRAW. The fourth that is not a value, and AnimationRef's
+    // twin.
+    //
+    // It is an eng::ImageRef, which holds the virtual path of a whole image -
+    // "textures/ui/key.png" - or of one part of a sliced sheet -
+    // "textures/ui/items.png#key". The Inspector draws it as the same slot a
+    // Sprite component's texture gets, with the project's images and every
+    // sliced frame in a picker, and paints it red when the file is gone or the
+    // sheet has no part by that name.
+    //
+    // THE OLDER SPELLING WAS `std::string x; // [image]`, and it still works.
+    // Unlike [animation], NOTHING IN THIS PROJECT EVER USED IT - which is the
+    // weakest state a feature can be in: documented, unexercised, and
+    // discoverable only by reading this header.
+    //
+    // ImageRef.h has the argument, including why this is a SECOND TYPE rather
+    // than AnimationRef carrying a kind: a bare string means opposite things
+    // in the two of them, so the accessors come out inverted rather than
+    // shared.
+    //
+    // APPENDED, for the reason in the note above this enum.
+    Image,
 };
 
 // "float", "colour" - for error messages and the Inspector's tooltips.
@@ -190,6 +249,18 @@ const char* ScriptFieldTypeName(ScriptFieldType type);
 //  The required type on an EntityRef - `[Rigidbody2DComponent]` - is a C++
 //  name and stays case-SENSITIVE, because it has to match one. This is not a
 //  C++ name and does not have to match anything, so it does not need to be.
+//
+//  ==========================================================================
+//  BOTH KINDS NOW HAVE A TYPE, so this whole mechanism is the OLDER SPELLING.
+//
+//  eng::AnimationRef and eng::ImageRef say in the DECLARATION what a marker
+//  says in a comment, and they are what a new script should reach for. See
+//  AnimationRef.h and ImageRef.h for the argument.
+//
+//  NOTHING HERE IS DEPRECATED IN THE SENSE OF WARNING. A script written with
+//  a marker is correct - here and in anybody else's project - and draws the
+//  same slot it always did. Removing this would break working scripts to save
+//  nothing.
 // ---------------------------------------------------------------------------
 enum class AssetFieldKind {
     None,        // not a kind this engine can draw a slot for
@@ -248,6 +319,18 @@ struct ScriptField {
     //   on a String    a kind of asset - "image" or "animation", canonical,
     //                  whatever spelling the marker used. See AssetFieldKind.
     //
+    // AND EMPTY ON AN Animation OR AN Image FIELD, which is worth stating
+    // because those look like the two places it would be full. A typed
+    // eng::AnimationRef or eng::ImageRef carries its meaning in its TYPE, so
+    // there is no marker to record: "animation" and "image" can only arrive
+    // in this string from the older std::string spelling.
+    //
+    // The parser enforces it - it clears this for every type that is neither
+    // Entity nor String - and that filter is load-bearing: a leftover
+    // `// [animation]` on an AnimationRef would otherwise drive the generator
+    // to emit f.Ref(..., AnimationRef&, "animation"), which is ill-formed and
+    // would make the field vanish rather than fail.
+    //
     // Empty for everything else, and for "any entity will do". The Inspector
     // asks the field's TYPE before reading this, because the two meanings
     // share one string: a tooltip that read "an entity with a animation on
@@ -282,6 +365,11 @@ struct ScriptField {
     Color*       AsColor() const;
     EntityRef*   AsEntityRef() const;
     PrefabRef*   AsPrefabRef() const;
+
+    // Longer than its neighbours, so these two break the column rather than
+    // widening the eight above that were fine.
+    AnimationRef* AsAnimationRef() const;
+    ImageRef*     AsImageRef() const;
 };
 
 namespace fields {
@@ -326,6 +414,23 @@ template <> struct Traits<PrefabRef> {
     static constexpr bool            known = true;
     static constexpr ScriptFieldType type  = ScriptFieldType::Prefab;
 };
+// THE WHOLE OF WHAT MAKES AnimationRef A FIRST-CLASS FIELD. Two independent
+// consumers need it and neither says so out loud if it is missing: Var's
+// `if constexpr (Traits<Clean>::known)` below, and the generated exposer's
+// nested requirement in ScriptVars.cpp. Without this specialization the
+// generated lambda compiles away and the variable simply never appears.
+template <> struct Traits<AnimationRef> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::Animation;
+};
+// AND THE SAME FOR ImageRef, with the same two silent consumers: Var's
+// `if constexpr (Traits<Clean>::known)` and the generated exposer's nested
+// requirement in ScriptVars.cpp. Forget this and the generated lambda
+// compiles away - a clean build, and the variable simply never appears.
+template <> struct Traits<ImageRef> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::Image;
+};
 
 // A slider needs two ends to put them at, so only the numeric types can have
 // one. Named separately from `known` so the two mistakes get two messages.
@@ -362,7 +467,8 @@ public:
         static_assert(fields::Traits<Clean>::known,
                       "a script variable must be one of: float, int, bool, "
                       "std::string, eng::Vec2, eng::Color, eng::EntityRef, "
-                      "eng::PrefabRef - or a FIXED-SIZE ARRAY of one of those, "
+                      "eng::PrefabRef, eng::AnimationRef, eng::ImageRef - or "
+                      "a FIXED-SIZE ARRAY of one of those, "
                       "which the exposer turns into one row per element. Those are "
                       "the ones the Inspector can draw and the scene file can "
                       "store. A GROWABLE list is still out: a std::vector has no "
@@ -394,9 +500,15 @@ public:
     void Range(std::string_view name, T& value, T min, T max,
                std::string_view tooltip = "") {
         using Clean = std::remove_cv_t<T>;
+        // THIS LIST WAS ALREADY TWO TYPES OUT OF DATE before AnimationRef -
+        // it never gained EntityRef or PrefabRef - so somebody writing Range
+        // on a reference was told their correct type was not a script variable
+        // at all. The second assert below is the one that answers them; this
+        // one only fires for a type the engine really does not know.
         static_assert(fields::Traits<Clean>::known,
                       "a script variable must be one of: float, int, bool, "
-                      "std::string, eng::Vec2, eng::Color.");
+                      "std::string, eng::Vec2, eng::Color, eng::EntityRef, "
+                      "eng::PrefabRef, eng::AnimationRef, eng::ImageRef.");
         static_assert(fields::CanHaveRange<Clean>,
                       "only a float or an int can have a Range - a slider needs two "
                       "ends to put them at. Use Var() instead.");
@@ -457,7 +569,7 @@ public:
     //  pickers and there is nothing per-element to write.
     //
     //  WHY A SEPARATE CALL AND NOT A MARKER ON Var. Var is a template over
-    //  eight types and its third argument is the tooltip; adding a fourth
+    //  ten types and its third argument is the tooltip; adding a fourth
     //  meaning for one of those types would make `Var(name, value, "walk")`
     //  mean two different things depending on the type in front of it. This is
     //  the same split Ref already makes for the same reason.
@@ -466,6 +578,11 @@ public:
     //  type that names nothing is: the variable is kept and drawn as an
     //  ordinary string, so a typo in a marker costs a message rather than a
     //  variable.
+    //
+    //  THE TYPED SPELLING IS THE ONE TO REACH FOR NOW: eng::AnimationRef or
+    //  eng::ImageRef as the member's type, and no comment at all. This call
+    //  stays because the scripts that use a marker are correct and go on
+    //  working - see the note above AssetFieldKind.
     // ========================================================================
     void Asset(std::string_view name, std::string& value, std::string_view kind,
                std::string_view tooltip = "") {

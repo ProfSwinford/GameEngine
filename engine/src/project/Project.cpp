@@ -489,7 +489,19 @@ bool Project::Create(std::string_view realParentDirectory, std::string_view name
            << "# Where the editor remembers your place: the open scene, the selection,\n"
            << "# the Scene view's camera and the panel layout. One person's place in\n"
            << "# the work, so committing it would move everybody else's camera.\n"
-           << ".editor/\n";
+           << ".editor/\n"
+           << "\n"
+           << "# What \"Set Up IDE IntelliSense\" writes for clangd, and so for VS Code\n"
+           << "# and anything else built on it. It names absolute paths to wherever the\n"
+           << "# engine headers live on one machine, so a committed copy is wrong on the\n"
+           << "# next one rather than just out of date.\n"
+           << "compile_commands.json\n"
+           << "\n"
+           << "# CppProperties.json, which the same menu item writes for Visual Studio,\n"
+           << "# is deliberately NOT listed - even though everything above applies to it\n"
+           << "# too. Visual Studio can be made to ignore a file that this project's own\n"
+           << "# .gitignore ignores, and IntelliSense silently not working is a worse\n"
+           << "# problem than one untracked file. Regenerate it rather than commit it.\n";
     if (!WriteWholeFile(root / ".gitignore", ignore.str(), outError)) {
         return false;
     }

@@ -1683,3 +1683,140 @@ TEST_CASE("a grid with no frames is not sliced, even though it is not a default 
     grid.frames.push_back(SheetFrame{"f0", 0, 0, 16, 20});
     CHECK(grid.IsSliced());
 }
+
+// ---------------------------------------------------------------------------
+//  WHICH PICTURE A NAME RESOLVES TO, and whether a reference resolves at all
+//
+//  These two decide what the Inspector paints red for an eng::ImageRef and
+//  for the older `// [image]` string, and they have to agree with what
+//  ResourceManager::LoadTexture will actually do - a red slot holding a
+//  picture that draws perfectly well is worse than no colour at all.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A sliced sheet with two frames and three animations. "ghost" lists a frame
+// that is not there, which is the case FindImage has to step over, and
+// "empty" lists only missing ones, which is the case it cannot answer.
+void GiveSlicedSheet(const Sandbox& box, const std::string& asset) {
+    box.Write(asset, "not really pixels");
+
+    TextureImport settings;
+    settings.sheet.cellWidth  = 16;
+    settings.sheet.cellHeight = 16;
+    settings.sheet.frames     = {SheetFrame{"f0", 0, 0, 16, 16},
+                                 SheetFrame{"f1", 16, 0, 16, 16}};
+    settings.sheet.animations = {
+        SheetAnimation{"walk", {"f0", "f1"}, 8.0f, true, false},
+        SheetAnimation{"ghost", {"gone", "f1"}, 8.0f, true, false},
+        SheetAnimation{"empty", {"gone"}, 8.0f, true, false},
+    };
+
+    std::string error;
+    REQUIRE(ImportLibrary::Save(asset, settings, error));
+}
+
+} // namespace
+
+TEST_CASE("a part of a sheet resolves to a picture, frame or animation alike") {
+    SheetSlice slice;
+    slice.frames     = {SheetFrame{"f0", 0, 0, 16, 16},
+                        SheetFrame{"f1", 16, 0, 16, 16}};
+    slice.animations = {
+        SheetAnimation{"walk", {"f0", "f1"}, 8.0f, true, false},
+        SheetAnimation{"ghost", {"gone", "f1"}, 8.0f, true, false},
+        SheetAnimation{"empty", {"gone"}, 8.0f, true, false},
+    };
+
+    const SheetFrame* frame = slice.FindImage("f1");
+    REQUIRE(frame != nullptr);
+    CHECK(frame->name == "f1");
+    CHECK(frame->x == 16);
+
+    // AN ANIMATION RESOLVES TO ITS FIRST FRAME, which is what makes
+    // "hero.png#walk" a picture as well as a clip - and therefore what makes
+    // an eng::ImageRef and an eng::AnimationRef able to hold the same string.
+    const SheetFrame* first = slice.FindImage("walk");
+    REQUIRE(first != nullptr);
+    CHECK(first->name == "f0");
+
+    // ...THE FIRST THAT STILL EXISTS. An animation holds frame NAMES, so one
+    // it lists may have been renamed away since, and stopping at the first
+    // entry would draw the placeholder for a clip that plays.
+    const SheetFrame* survivor = slice.FindImage("ghost");
+    REQUIRE(survivor != nullptr);
+    CHECK(survivor->name == "f1");
+
+    CHECK(slice.FindImage("empty") == nullptr);
+    CHECK(slice.FindImage("nothing like this") == nullptr);
+    CHECK(slice.FindImage("") == nullptr);
+}
+
+TEST_CASE("ImageExists answers for every shape a reference can hold") {
+    Sandbox box("image-exists");
+
+    // ---- a whole picture -------------------------------------------------
+    box.Write("textures/solo.png", "not really pixels");
+    CHECK(ImageExists("textures/solo.png"));
+    CHECK_FALSE(ImageExists("textures/gone.png"));
+
+    // ---- one part of a sliced sheet, WHICH IS THE CASE THAT WAS WRONG ----
+    //
+    // The Inspector's image picker offers every frame of every sliced sheet,
+    // so this is a path somebody CHOOSES FROM A LIST the engine itself drew.
+    // FileSystem::Exists answers no to it, because there is no such file -
+    // so a correct reference, picked from that list, painted red.
+    ImportLibrary::Clear();
+    GiveSlicedSheet(box, "textures/sheet.png");
+
+    CHECK(ImageExists("textures/sheet.png#f0"));
+    CHECK_FALSE(FileSystem::Exists("textures/sheet.png#f0"));   // the old test
+
+    // An animation is a picture too - its first frame. See FindImage.
+    CHECK(ImageExists("textures/sheet.png#walk"));
+    CHECK(ImageExists("textures/sheet.png#ghost"));
+
+    // And these genuinely do not resolve.
+    CHECK_FALSE(ImageExists("textures/sheet.png#empty"));
+    CHECK_FALSE(ImageExists("textures/sheet.png#nosuch"));
+    CHECK_FALSE(ImageExists("textures/nosheet.png#f0"));
+
+    // ---- a real file whose own name contains a separator ------------------
+    //
+    // '#' is a legal filename character, so "a.png#b" can be a real file -
+    // and it reads as frame "b" of the sheet "a.png" by the split rule. The
+    // loader falls back to the disk once the sub-asset reading has failed, so
+    // this has to as well or the Inspector would mark a file that loads.
+    box.Write("textures/odd.png#part", "not really pixels");
+    REQUIRE(IsSubAsset("textures/odd.png#part"));   // it IS read as a frame
+    CHECK(ImageExists("textures/odd.png#part"));    // ...and still found
+
+    // ---- nothing chosen is not broken ------------------------------------
+    CHECK_FALSE(ImageExists(""));
+}
+
+TEST_CASE("SheetHasAnimation tells an animation from a frame, and needs a sheet") {
+    // It had no test of its own: it was written to replace four hand-rolled
+    // copies of this question and was only ever exercised through them.
+    Sandbox box("sheet-has-animation");
+    ImportLibrary::Clear();
+    GiveSlicedSheet(box, "textures/sheet.png");
+
+    CHECK(SheetHasAnimation("textures/sheet.png#walk"));
+
+    // A FRAME IS NOT AN ANIMATION, and nothing about the path says which it
+    // is - that is the whole reason this function exists. It is also where it
+    // parts company with ImageExists, which says yes to both.
+    CHECK_FALSE(SheetHasAnimation("textures/sheet.png#f0"));
+    CHECK(ImageExists("textures/sheet.png#f0"));
+
+    CHECK_FALSE(SheetHasAnimation("textures/sheet.png#nosuch"));
+
+    // FALSE FOR A BARE NAME, which is "cannot be answered" rather than "no":
+    // a path with no '#' does not say which sheet to look in, and guessing
+    // would make the answer depend on load order. A
+    // SpriteAnimationComponent can still play a bare name because IT knows
+    // its own sheet.
+    CHECK_FALSE(SheetHasAnimation("walk"));
+    CHECK_FALSE(SheetHasAnimation(""));
+}

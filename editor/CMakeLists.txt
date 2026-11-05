@@ -27,6 +27,7 @@ set(EDITOR_SOURCES
     src/Shortcuts.cpp                    # the keyboard, in one table
     src/UndoStack.cpp                    # Ctrl+Z, by snapshotting the scene
     src/ScriptBuild.cpp                  # finds a compiler and builds the project
+    src/ScriptIde.cpp                    # tells an IDE what a script compiles with
     src/AssetDragDrop.cpp                # what happens when you drag a file onto something
     src/EditorSession.cpp                # remembers where you were when you closed it
     src/GameExport.cpp                   # File -> Build Game...

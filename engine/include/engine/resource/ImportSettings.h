@@ -204,6 +204,63 @@ std::string SubAssetNameOf(std::string_view path);
 std::string MakeSubAssetPath(std::string_view sheetPath, std::string_view name);
 
 // ---------------------------------------------------------------------------
+//  DOES THE SHEET THIS PATH NAMES ACTUALLY HOLD THAT ANIMATION?
+//
+//  THE ONLY TEST THAT CAN TELL AN ANIMATION FROM A FRAME, because nothing
+//  about the path itself says which it is: "hero.png#f0" and "hero.png#walk"
+//  are the same shape, and both are correctly a picture. So the sheet's slice
+//  has to be asked.
+//
+//  Written down here because four separate places were asking it by hand -
+//  the asset drop handler, the Assets panel, the slicer and the Inspector -
+//  and a fifth was about to. Declared beside the path helpers although it is
+//  the only one that consults the import library, because "is this an
+//  animation?" is the question a caller has, and which cache answers it is
+//  not their problem.
+//
+//  FALSE FOR A BARE NAME. A path with no '#' does not say which sheet to look
+//  in, and guessing would make the answer depend on load order.
+//  SpriteAnimationComponent can still play a bare name because IT knows its
+//  own sheet; a caller holding only the string does not.
+//
+//  IT CAN CHANGE WITHOUT THE PATH CHANGING, which is the point: re-slicing a
+//  sheet or deleting a clip makes a reference that was fine go red.
+// ---------------------------------------------------------------------------
+bool SheetHasAnimation(std::string_view subAssetPath);
+
+// ---------------------------------------------------------------------------
+//  WOULD THIS PATH LOAD AS A PICTURE?
+//
+//  THE OTHER HALF OF SheetHasAnimation, and a different question rather than
+//  its opposite. That one asks "is this an animation?"; this one asks "is
+//  there an image at the end of this reference?" - which is what decides
+//  whether the Inspector paints an eng::ImageRef red, and what a `// [image]`
+//  string has been getting wrong.
+//
+//  IT ANSWERS FOR ALL THREE SHAPES A REFERENCE CAN HOLD, because
+//  ResourceManager::LoadTexture accepts all three and the red has to agree
+//  with the loader or it is noise:
+//
+//    "ui/key.png"         a whole picture - does the file exist?
+//    "ui/items.png#key"   a part of a sliced sheet - SheetSlice::FindImage,
+//                         so a FRAME or an ANIMATION both count
+//    "odd#name.png"       a real file whose own name contains a '#', which
+//                         is legal and which the loader falls back to
+//
+//  FileSystem::Exists ALONE IS THE WRONG TEST, and that is not theoretical:
+//  the Inspector's image slot offers every sliced frame in its picker, so
+//  choosing one produced a path that Exists answers no to - a correct
+//  reference, chosen from the engine's own list, painted red.
+//
+//  FALSE FOR AN EMPTY PATH. "Nothing chosen" is not a broken reference, and
+//  every caller has to tell those apart anyway - see ImageRef::IsSet.
+//
+//  IT CAN CHANGE WITHOUT THE PATH CHANGING, which is the point: deleting the
+//  image or re-slicing the sheet makes a reference that was fine go red.
+// ---------------------------------------------------------------------------
+bool ImageExists(std::string_view path);
+
+// ---------------------------------------------------------------------------
 //  What to CALL this asset on screen: the file's own name, plus the part
 //  inside it when the path names one.
 //
@@ -340,6 +397,26 @@ struct SheetSlice {
     // IsLegalSubAssetName.
     const SheetFrame*     FindFrame(std::string_view name) const;
     const SheetAnimation* FindAnimation(std::string_view name) const;
+
+    // ======================================================================
+    //  THE PICTURE A NAME RESOLVES TO, which is not the same question as
+    //  FindFrame.
+    //
+    //  Frames and animations SHARE ONE NAMESPACE inside a sheet, so
+    //  "hero.png#walk" is a path somebody will type or drag, and the useful
+    //  answer to "draw this animation as a picture" is the frame it starts
+    //  on rather than the magenta placeholder. So: the frame called `name`,
+    //  or - when the name is an animation's - the FIRST OF ITS FRAMES THAT
+    //  STILL EXISTS, because an animation holds frame NAMES and one it lists
+    //  may since have been renamed away.
+    //
+    //  WRITTEN DOWN HERE BECAUSE TWO PLACES HAVE TO AGREE EXACTLY. The
+    //  loader resolves a sub-asset path with this rule, and the Inspector
+    //  paints a reference red when it would fail - see eng::ImageExists. A
+    //  second copy of the rule that drifted would show a red slot for a
+    //  picture that draws perfectly well, or the reverse.
+    // ======================================================================
+    const SheetFrame* FindImage(std::string_view name) const;
 };
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@
 #include "EditorApp.h"
 #include "GameExport.h"
 #include "ScriptBuild.h"
+#include "ScriptIde.h"
 #include "ProjectMenu.h"
 #include "Relaunch.h"
 
@@ -311,6 +312,50 @@ int BuildScriptsAndExit() {
     return result.ok ? 0 : 1;
 }
 
+// --write-ide-files: describe the script compile to an IDE and exit, without
+// opening a window.
+//
+// The same thing File > Set Up IDE IntelliSense does. It exists as an option
+// for the same reason --build-scripts does: a freshly cloned project, or a
+// setup script, where there is nobody to pick a menu item - and because the
+// flags it writes down are the ones THIS editor compiles with, so the answer
+// cannot be checked in and shared.
+int WriteIdeFilesAndExit() {
+    // The same two subsystems --build-scripts brings up by hand, in the same
+    // order and for the same reason - see the note in BuildScriptsAndExit.
+    const eng::BootConfig config;
+    eng::Log              log;
+    eng::FileSystem       fileSystem;
+
+    if (!fileSystem.Init(config)) {
+        std::fprintf(stderr, "no project to describe - see the message above\n");
+        return kExitNoProject;
+    }
+    log.Init(config);
+
+    // NEEDED, even though nothing is compiled here: the files describe a
+    // compiler, so there has to be one to describe. ScriptIde reports the
+    // lack of one as an ordinary failure rather than writing a guess.
+    editor::ScriptBuild::Init();
+
+    std::string summary;
+    std::string error;
+    const bool  ok = editor::WriteIdeFiles(summary, error);
+
+    // Printed as well as logged. This mode is run from a terminal by
+    // definition, and the project's own log threshold may be set high enough
+    // to discard the success line - see editor/src/ShellOpen.h.
+    if (ok) {
+        std::printf("%s\n", summary.c_str());
+    } else {
+        std::fprintf(stderr, "could not write the IDE files: %s\n", error.c_str());
+    }
+
+    fileSystem.Shutdown();
+    log.Shutdown();
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -338,6 +383,7 @@ int main(int argc, char** argv) {
     std::string projectRoot;
     const char* exportTo    = nullptr;
     bool        buildScripts = false;
+    bool        writeIdeFiles = false;
 
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
@@ -382,6 +428,10 @@ int main(int argc, char** argv) {
             buildScripts = true;
             continue;
         }
+        if (std::strcmp(arg, "--write-ide-files") == 0) {
+            writeIdeFiles = true;
+            continue;
+        }
         if (std::strcmp(arg, "--build-game") == 0) {
             if (i + 1 >= argc) {
                 std::printf("--build-game needs a folder to export into\n");
@@ -415,6 +465,7 @@ int main(int argc, char** argv) {
             "  <folder>                 open that project\n"
             "  --project <folder>       open that project; combines with the options below\n"
             "  --build-scripts          compile the project's scripts and exit\n"
+            "  --write-ide-files        describe the script compile to an IDE and exit\n"
             "  --build-game <folder>    export a standalone game and exit\n"
             "  --frames <N>             run N frames, then exit\n"
             "  --version                print which engine build this is and exit\n"
@@ -425,18 +476,22 @@ int main(int argc, char** argv) {
             "none of those it opens the launcher rather than guessing, which is what\n"
             "stops a cold start loading whichever project happens to sit above it.\n"
             "\n"
-            "--build-scripts and --build-game are the exception and DO look upwards for\n"
-            "a project, because an automated build has nobody to pick one.\n");
+            "--build-scripts, --build-game and --write-ide-files are the exception and DO\n"
+            "look upwards for a project, because an automated build has nobody to pick\n"
+            "one.\n");
         return askedForHelp ? kExitOk : kExitUsage;
     }
 
     // Named once, here, so every mode below agrees about which project it is
-    // working on - including the two headless ones, which bring the file
+    // working on - including the headless ones, which bring the file
     // system up themselves.
     eng::FileSystem::UseRoot(projectRoot);
 
     if (buildScripts) {
         return BuildScriptsAndExit();
+    }
+    if (writeIdeFiles) {
+        return WriteIdeFilesAndExit();
     }
     if (exportTo != nullptr) {
         return BuildGameAndExit(exportTo);
@@ -463,7 +518,7 @@ int main(int argc, char** argv) {
     //  be explicit - --project, a bare folder argument (which is what
     //  dragging a project folder onto the editor does), and ENGINE_ASSET_ROOT.
     //
-    //  THE TWO HEADLESS MODES ARE EXEMPT and still search, which is why they
+    //  THE HEADLESS MODES ARE EXEMPT and still search, which is why they
     //  are checked above this rather than below it: they exist for when there
     //  is nobody to pick anything. `editor --build-scripts` inside a freshly
     //  cloned project is how the scripts get built before anything is opened,

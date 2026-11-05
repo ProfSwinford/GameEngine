@@ -17,6 +17,65 @@ Every script needs one include, and it is the only one most scripts ever need:
 
 ---
 
+## Making your editor understand that include
+
+Double-click a script and the include above is the first thing that fails. Not
+because anything is wrong with it: the file opens with no project behind it, so
+there are no include directories, so `engine/Engine.h` is not found - and since
+that one header is the umbrella over every other, **every** `eng::` name in the
+file then reads as unknown. No completion, no parameter hints, no
+go-to-definition, and a red line under most of what you wrote.
+
+The editor knows exactly what it compiles your scripts with, and can write it
+down:
+
+**File -> Set Up IDE IntelliSense**
+
+That writes two files into your project folder. There are two because nothing
+reads both:
+
+| File | Read by |
+|---|---|
+| `CppProperties.json` | Visual Studio, and only in its Open Folder mode |
+| `compile_commands.json` | clangd, and so VS Code, CLion, Qt Creator, Neovim, Emacs |
+
+Then **File -> Open Project in Visual Studio**, which opens the *folder*. That
+is the part that matters: Visual Studio only reads `CppProperties.json` for a
+folder you opened as a folder, so opening a single script - which is what
+double-clicking one does - is precisely the case that gives you nothing. With
+the folder open, scripts you then open from the Assets panel land in that same
+instance and work.
+
+Without opening a window at all: `editor --write-ide-files`.
+
+Two things worth knowing:
+
+- **Neither file is worth committing.** The include paths in them are absolute,
+  and a released editor and a source tree do not even use the same set of them,
+  so a copy from somebody else is wrong rather than merely out of date.
+  Regenerating is one menu item.
+- **Your scripts are compiled as C++20**, one standard behind the engine itself.
+  These files say so, which means your IDE will refuse a C++23 feature here
+  before the compiler gets the chance to.
+
+Working inside the engine's own source tree is the one case this does not
+cover: the root holds a `CMakeLists.txt`, so Visual Studio treats it as a CMake
+project and ignores `CppProperties.json`. It configures IntelliSense from the
+CMake project model there, so what makes a script resolve is that some target
+names it as a source - which is what `game_scripts` in the top-level
+`CMakeLists.txt` is for. That target is also a typecheck nothing in the default
+build performs:
+
+```
+cmake --build build/debug --target game_scripts
+```
+
+For clangd in a source tree it is the exported compile database that matters
+instead, and only the Ninja presets produce one - the Visual Studio generator
+writes none.
+
+---
+
 ## Coming from Unity
 
 The vocabulary is different in two places and the same everywhere else:
@@ -51,14 +110,25 @@ a script that silently does nothing.
 | `void OnCollisionEnter/Stay/Exit(eng::EntityId other)` | A solid contact, where neither side is a trigger. |
 | `void OnCollisionEnter/Stay/Exit(const eng::Collision2D& hit)` | The same, with `hit.normal`, `hit.point` and `hit.relativeVelocity`. |
 | `void OnTriggerEnter/Stay/Exit(eng::EntityId other)` | An overlap where either side has "trigger" ticked. Nothing is pushed apart. |
+| `void OnTriggerEnter/Stay(Collider2D other)` | The same, handed the other **collider** - Unity's form. `other->Owner()` is the entity. |
+| `void OnTriggerEnter/Stay/Exit(const eng::Collision2D& hit)` | The same, with both colliders - `hit.thisCollider` is **yours**, so you can tell which of your triggers fired. |
 | `void OnExpose(eng::ScriptFields&)` | Not an event, and usually not needed - see **Variables** below. |
 
 Nothing takes a delta. Ask `eng::Time::FixedDeltaTime()` in `OnFixedUpdate` and
 `eng::Time::DeltaTime()` in `OnUpdate`.
 
-**A pair sends collision events or trigger events, never both.** A script with
-`OnCollisionEnter` on a trigger collider is never called, and the Console says
-so rather than leaving it silent.
+**A pair of COLLIDERS sends collision events or trigger events, never both.**
+A script with `OnCollisionEnter` on a trigger collider is never called, and the
+Console says so rather than leaving it silent.
+
+**One event per collider pair**, which is Unity's rule. An entity carrying
+three colliders that all touch the same wall gets three `OnCollisionEnter`
+calls, each naming that one wall. And an entity carrying a trigger collider
+*and* a solid one gets both families at once - the solid contact is resolved
+and the trigger is reported, from the same pair of entities.
+
+Two colliders on the **same** entity never report each other, so a compound
+body may overlap itself freely.
 
 ---
 
@@ -716,8 +786,8 @@ something extra about the variable:
 | ------ | -- | ------------ |
 | `[0..10]` | a number | a slider with those ends |
 | `[TypeName]` | an `EntityRef` | narrows the picker to entities carrying that component or script |
-| `[image]` | a `std::string` | the text is an image's path — drawn as a **slot**, not a box |
-| `[animation]` | a `std::string` | the text names an animation stored in a sheet |
+| `[image]` | a `std::string` | an image's path — drawn as a **slot**, not a box. The older spelling of `eng::ImageRef` |
+| `[animation]` | a `std::string` | names an animation stored in a sheet. The older spelling of `eng::AnimationRef` |
 
 An `[image]` or `[animation]` string gets the same slot a Sprite's texture
 does: the file's **name**, a drop target, and a picker. That is the difference
@@ -754,8 +824,57 @@ One comment line, immediately above, starting with the bracket: a blank line or
 a banner line in between breaks it. A marker on the declaration's own line wins.
 
 Supported: `float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color`,
-`eng::EntityRef`, `eng::PrefabRef` — **or a fixed-size array of any of them**.
-Anything else is left out, and the Console says which and why.
+`eng::EntityRef`, `eng::PrefabRef`, `eng::AnimationRef`, `eng::ImageRef` —
+**or a fixed-size array of any of them**. Anything else is left out, and the
+Console says which and why.
+
+### An animation is a type, not a marked string
+
+```cpp
+eng::AnimationRef walkLeft;                    // one slot
+eng::AnimationRef walkAnimations[4];           // four, one per direction
+```
+
+Drag a clip from the Assets panel into the slot — expand a sheet's row to find
+them — or click it to pick from a list. It paints **red** when no sheet holds
+the animation it names, which is what happens when somebody renames a clip in
+the slicer.
+
+**Play takes one directly**, and that is the reason the type exists:
+
+```cpp
+void OnFixedUpdate() {
+    animation->Play(walkLeft);
+}
+```
+
+An `AnimationRef` holds the clip's whole sub-asset path —
+`"textures/hero.png#walk_left"` — and `Play` works out what to do with it: a
+clip in the sheet already playing is the cheap call, another sheet is the
+expensive one. A bare name like `"walk_left"` still works, so nothing that
+used a text box breaks. An **unset** reference does nothing and says nothing,
+because a blank slot is a direction a character does not have.
+
+It also answers the two questions a script used to ask by hand:
+
+| | |
+| --- | --- |
+| `Path()` | the whole thing, as stored — `"textures/hero.png#walk_left"` |
+| `Sheet()` | `"textures/hero.png"`, or **empty** when it holds a bare name |
+| `Clip()` | `"walk_left"` — **always**, whichever shape it holds |
+| `IsSet()` | whether anything has been chosen. Not whether it exists |
+
+`Clip()` differs from `eng::SubAssetNameOf` on purpose: that returns empty for
+a string with no `#`, and a bare name *is* a clip name.
+
+**Changing a `std::string` field to this type costs nothing.** Field values are
+stored as untyped JSON keyed by name, so a scene that already saved a path
+loads straight into the new type — no migration, no version bump. `PrefabRef`
+made the same promise for the same move.
+
+`// [animation]` on a `std::string` still works and is the **older spelling**.
+It is kept because scripts using it are correct today; prefer the type in new
+code — it needs no comment to be guessed at, and it is the one that paints red.
 
 **To hide one, make it `private`.** The name is not consulted: `m_speed` in a
 public section is shown like anything else. It used to be hidden — an `m_`
@@ -765,9 +884,69 @@ report and no way to find out why. `private:` is the language's own way to say
 "not part of the interface" and cannot be arrived at by accident.
 
 Every field that can take a drop does: drag an asset from the Assets panel onto
-a string, an `[image]`/`[animation]` slot or a `PrefabRef`, and an entity from
-the Hierarchy onto an `EntityRef`. A plain string accepts **any** kind of asset,
-because nothing can know which kind it wanted.
+a string, an `ImageRef`, an `AnimationRef`, an `[image]`/`[animation]` slot or a
+`PrefabRef`, and an entity from the Hierarchy onto an `EntityRef`. A plain
+string accepts **any** kind of asset, because nothing can know which kind it
+wanted.
+
+### A picture is a type too
+
+```cpp
+eng::ImageRef portrait;                 // one slot
+eng::ImageRef faces[4];                 // four, one per direction
+```
+
+The same slot a Sprite's texture gets: drag an image from the Assets panel, or
+click to pick from a list that includes every frame of every sliced sheet. It
+paints **red** when the reference does not resolve, and says *which* of the two
+things is wrong underneath — "the file is not there" and "the sheet has no part
+called that" have different fixes.
+
+**`SetTexture` takes one directly:**
+
+```cpp
+sprite->SetTexture(portrait);
+```
+
+That overload is a one-line forwarder and **absorbs nothing** — unlike
+`Play(const AnimationRef&)`, which exists because a clip's *name* and its
+*path* need different calls. `SetTexture` always took either shape. The
+overload is there so a script can pass the type where it used to pass the
+string, instead of writing `.Path()` at every call.
+
+| | |
+| --- | --- |
+| `Path()` | the whole thing, as stored — `"textures/items.png#key"` |
+| `File()` | `"textures/items.png"` — **never empty** once set |
+| `Frame()` | `"key"`, or **empty** when it names a whole picture |
+| `IsSet()` | whether anything has been chosen. Not whether it exists |
+| `IsWholeImage()` | `Frame().empty()`, without building a string to ask |
+
+**`File()` and `Frame()` read the opposite way round from an `AnimationRef`'s
+`Sheet()` and `Clip()`,** and that is why these are two types rather than one
+carrying a kind. A bare string is *complete* for an image — a path with no `#`
+**is** the picture — and *incomplete* for an animation, where a bare name is a
+clip in a sheet it does not name:
+
+| holding `"hero.png"` | holding `"walk_left"` |
+| --- | --- |
+| `ImageRef::File()` → `"hero.png"` | `AnimationRef::Sheet()` → **empty** |
+| `ImageRef::Frame()` → **empty** | `AnimationRef::Clip()` → `"walk_left"` |
+
+On a full sub-asset path the two agree exactly, which is what lets one string
+sit in either slot: a sheet's frames and its animations share one namespace, so
+`"hero.png#walk"` is legitimately both a clip and a picture — an animation
+draws as the first of its frames that still exists.
+
+**Changing a `std::string` field to this type costs nothing**, for the same
+reason it costs nothing for an animation: field values are untyped JSON keyed
+by name.
+
+`// [image]` on a `std::string` still works and is the **older spelling**. It
+is kept because scripts using it are correct; prefer the type in new code.
+Nothing in this project ever used the marker, which is the problem it had — a
+mechanism with no example anywhere, findable only by reading the engine's own
+headers.
 
 ### An array is one row per element
 
@@ -1057,6 +1236,7 @@ why it is built that way, and those comments go further than this page does:
 | The transform | `engine/include/engine/math/Transform2D.h` |
 | Physics and queries | `engine/include/engine/physics/Physics2D.h`, `Collider.h`, `Rigidbody.h` |
 | Entity references | `engine/include/engine/scene/EntityRef.h` |
+| Animation and image references | `engine/include/engine/scene/AnimationRef.h`, `ImageRef.h` |
 | Messages | `engine/include/engine/scene/Messaging.h` |
 | Input | `engine/include/engine/input/InputMap.h`, `Pointer.h` |
 | The frame, and system order | `engine/include/engine/Engine.h`, `scene/SystemOrder.h` |

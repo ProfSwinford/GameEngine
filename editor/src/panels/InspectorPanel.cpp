@@ -1587,7 +1587,27 @@ bool DrawStringField(const eng::ScriptField& field) {
     // ---- an asset path, when the variable says it is one ------------------
     if (AssetSlotKind kind{}; AssetSlotKindForMarker(field.requiredType, kind)) {
         std::string chosen;
-        if (DrawAssetSlot(field.name.c_str(), kind, *text, /*broken=*/false,
+
+        // THIS USED TO PASS false UNCONDITIONALLY, so a marked string NEVER
+        // painted red however broken it was - an image whose file was gone and
+        // a clip renamed in the slicer both looked fine. The component's own
+        // slot has always done better. A typed eng::AnimationRef or
+        // eng::ImageRef is the better answer now, but the older spelling still
+        // has to tell the truth: the two must not disagree about one path.
+        //
+        // AND eng::ImageExists RATHER THAN FileSystem::Exists FOR AN IMAGE.
+        // The picker a few lines below offers every frame of every sliced
+        // sheet, so choosing one puts "sheet.png#frame" in the variable -
+        // which is not a file, so Exists said no and a reference picked from
+        // the engine's own list painted red. ImageExists resolves it the way
+        // the loader does, which is the only answer that cannot disagree with
+        // what you see on screen.
+        const bool broken = !text->empty() &&
+                            (kind == AssetSlotKind::Animation
+                                 ? !eng::SheetHasAnimation(*text)
+                                 : !eng::ImageExists(*text));
+
+        if (DrawAssetSlot(field.name.c_str(), kind, *text, broken,
                           kind == AssetSlotKind::Animation
                               ? "drag an animation here from Assets - expand a "
                                 "sheet's row to find them - or click to choose"
@@ -1937,6 +1957,123 @@ bool DrawPrefabRefField(const eng::ScriptComponent& script,
     return changed;
 }
 
+// ---------------------------------------------------------------------------
+//  AN ANIMATION REFERENCE
+//
+//  IT ADDS NO WIDGET. DrawAssetSlot is the same slot a Sprite Animation
+//  component's own clip gets and the same one a `// [animation]` string has
+//  had all along - the marker was never the problem, being the only way to
+//  ask for it was. So this is a TYPE in front of a widget that existed.
+//
+//  WHAT IS NEW IS THE RED. DrawStringField passes /*broken=*/false
+//  unconditionally, so a clip somebody renamed in the slicer looked exactly
+//  like one that was fine. Reporting the breakage while you are building the
+//  level is the whole argument PrefabRef.h makes for having a type at all, so
+//  a type that did not do it would be a rename and nothing more.
+//
+//  THE TYPE ITSELF IS NOT ASKED. An AnimationRef does not look - a reference
+//  to a clip that does not exist yet is an ordinary state for a half-built
+//  level. Looking is the Inspector's job, exactly as DrawPrefabRefField asks
+//  FileSystem::Exists rather than making PrefabRef answer it.
+//
+//  NO DrawFieldTooltip CALL: the row draws one for every type but Entity, and
+//  the slot sets its own against the button. Two here would fight.
+// ---------------------------------------------------------------------------
+bool DrawAnimationRefField(const eng::ScriptField& field) {
+    eng::AnimationRef* ref = field.AsAnimationRef();
+    if (ref == nullptr) {
+        return false;
+    }
+
+    const bool broken = ref->IsSet() && !eng::SheetHasAnimation(ref->Path());
+
+    std::string chosen;
+    if (DrawAssetSlot(field.name.c_str(), AssetSlotKind::Animation, ref->Path(),
+                      broken,
+                      "drag an animation here from Assets - expand a sheet's row "
+                      "to find them - or click to choose",
+                      chosen)) {
+        ref->Set(chosen);
+        return true;
+    }
+
+    // UNDERNEATH AND IN WORDS, not only as a colour. "Red" does not say
+    // whether the sheet moved or the clip was renamed, and those have
+    // different fixes. The two cases read differently on purpose.
+    if (broken) {
+        const std::string sheet = ref->Sheet();
+        if (sheet.empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                               "'%s' does not say which sheet it is in",
+                               ref->Path().c_str());
+        } else {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                               "%s has no animation called '%s'", sheet.c_str(),
+                               ref->Clip().c_str());
+        }
+    }
+
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+//  AN IMAGE REFERENCE
+//
+//  IT ADDS NO WIDGET EITHER. DrawAssetSlot is the same slot a Sprite
+//  component's texture gets and the same one a `// [image]` string has always
+//  had; this is a TYPE in front of a widget that existed, exactly as
+//  DrawAnimationRefField is.
+//
+//  THE RED IS WHAT IT ADDS, and getting it right needs eng::ImageExists
+//  rather than FileSystem::Exists - the picker offers sliced frames, and a
+//  frame's path is not a file. See the note in DrawStringField, which had
+//  that wrong for both kinds.
+//
+//  AND IT NAMES WHICH OF THE TWO THINGS IS WRONG, because they have different
+//  fixes: a missing file is a move or a delete to undo, and a missing part is
+//  a sheet to re-slice. "Red" says neither. The file is asked about FIRST, so
+//  that a deleted sheet does not report itself as a sheet with no such frame.
+//
+//  NO DrawFieldTooltip CALL: the row draws one for every type but Entity, and
+//  the slot sets its own against the button. Two here would fight.
+// ---------------------------------------------------------------------------
+bool DrawImageRefField(const eng::ScriptField& field) {
+    eng::ImageRef* ref = field.AsImageRef();
+    if (ref == nullptr) {
+        return false;
+    }
+
+    const bool broken = ref->IsSet() && !eng::ImageExists(ref->Path());
+
+    std::string chosen;
+    if (DrawAssetSlot(field.name.c_str(), AssetSlotKind::Image, ref->Path(), broken,
+                      "drag an image here from Assets, or click to choose one",
+                      chosen)) {
+        ref->Set(chosen);
+        return true;
+    }
+
+    if (broken) {
+        const std::string file = ref->File();
+        if (!eng::FileSystem::Exists(file)) {
+            // THE FILE ITSELF IS GONE, whichever part was named. Asked first
+            // for that reason: "items.png has no part called 'key'" would be
+            // true and useless when items.png is what was deleted.
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "'%s' is not there",
+                               file.c_str());
+        } else {
+            // The file is there and the part is not, so it was re-sliced or
+            // the frame was renamed. Frame() cannot be empty here: a whole
+            // picture whose file exists is not broken.
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                               "%s has no part called '%s'", file.c_str(),
+                               ref->Frame().c_str());
+        }
+    }
+
+    return false;
+}
+
 // One variable, drawn with whichever widget suits its type. True on a frame
 // the value was actually changed.
 //
@@ -1989,6 +2126,12 @@ bool DrawFieldWidget(const eng::ScriptComponent& script,
 
         case eng::ScriptFieldType::Prefab:
             return DrawPrefabRefField(script, field);
+
+        case eng::ScriptFieldType::Animation:
+            return DrawAnimationRefField(field);
+
+        case eng::ScriptFieldType::Image:
+            return DrawImageRefField(field);
 
         case eng::ScriptFieldType::Vec2: {
             eng::Vec2* value = field.AsVec2();

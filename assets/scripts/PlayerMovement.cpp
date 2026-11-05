@@ -73,9 +73,23 @@
 //                         is never called - so the engine reports that in the
 //                         Console rather than leaving it silent.
 //
-//                         `other` is an EntityId, not a pointer, and the thing
-//                         it refers to may already be gone. Look it up through
-//                         the scene every time; never keep a pointer to it.
+//                         THREE FORMS, and the richest one you write wins:
+//
+//                             void OnTriggerEnter(eng::EntityId other)
+//                             void OnTriggerEnter(Collider2D other)
+//                             void OnTriggerEnter(const eng::Collision2D& hit)
+//
+//                         The collider is Unity's form and reaches the entity
+//                         in one hop - other->Owner(). The contact also says
+//                         which of YOUR colliders fired, as hit.thisCollider,
+//                         which Unity cannot tell you at all. AN EXIT takes
+//                         the id or the contact and never a bare collider:
+//                         the pair has already ended, so there is nothing
+//                         left to point at.
+//
+//                         An EntityId may name something already gone. Look
+//                         it up through the scene every time; never keep a
+//                         pointer to it.
 //
 //                         These need a collider on BOTH entities, and each
 //                         one's "collides with" list has to include the

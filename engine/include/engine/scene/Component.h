@@ -34,6 +34,7 @@
 #include <engine/render/Renderer.h>
 #include <engine/render/Texture.h>
 #include <engine/scene/Entity.h>
+#include <engine/scene/ImageRef.h>
 
 #include <functional>
 #include <memory>
@@ -223,6 +224,31 @@ public:
     void SetTint(Color tint);
     void SetLayer(int layer);
     void SetTexture(std::string_view virtualPath);
+
+    // ======================================================================
+    //  THE SAME THING, GIVEN THE TYPE A SCRIPT HOLDS.
+    //
+    //  An eng::ImageRef is one virtual path, and the overload above already
+    //  accepts either shape it can hold - a whole image, or one part of a
+    //  sliced sheet, which ResourceManager::LoadTexture splits itself. So
+    //  this is a one-line forwarder and IT ABSORBS NO DECISION.
+    //
+    //  THAT IS WORTH SAYING BECAUSE ITS NEIGHBOUR IS THE OPPOSITE.
+    //  SpriteAnimationComponent::Play(const AnimationRef&) exists because a
+    //  clip NAME and a clip PATH need different calls, so every script
+    //  holding one had to tell them apart - twenty-five lines of it. Nothing
+    //  like that was ever needed here.
+    //
+    //  WHAT IT IS FOR is that a script can pass the type where it used to
+    //  pass the string. Without it, every call site reads
+    //  `SetTexture(icon.Path())` - and a type you have to unwrap at each use
+    //  is a worse answer than the string it replaced.
+    //
+    //  IT DOES NOT MAKE SetTexture("hero.png") AMBIGUOUS: see the note on the
+    //  constructor in ImageRef.h, and the compile-time case in
+    //  tests/src/test_scriptfields.cpp that checks it rather than assuming.
+    // ======================================================================
+    void SetTexture(const ImageRef& image);
 
     // ======================================================================
     //  SHOWS A PICTURE WITHOUT CHANGING THE SAVED PATH.

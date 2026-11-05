@@ -394,9 +394,15 @@ TEST_CASE("every supported type is recognised, however it is spelled") {
     Color          i;
     eng::EntityRef j;
     EntityRef      k;
+    eng::PrefabRef l;
+    PrefabRef      m;
+    eng::AnimationRef n;
+    AnimationRef      o;
+    eng::ImageRef     p;
+    ImageRef          q;
 )CPP"));
 
-    REQUIRE(info.vars.size() == 11);
+    REQUIRE(info.vars.size() == 17);
     CHECK(Var(info, "a")->fieldType == ScriptFieldType::Float);
     CHECK(Var(info, "b")->fieldType == ScriptFieldType::Int);
     CHECK(Var(info, "c")->fieldType == ScriptFieldType::Bool);
@@ -408,6 +414,100 @@ TEST_CASE("every supported type is recognised, however it is spelled") {
     CHECK(Var(info, "i")->fieldType == ScriptFieldType::Color);
     CHECK(Var(info, "j")->fieldType == ScriptFieldType::Entity);
     CHECK(Var(info, "k")->fieldType == ScriptFieldType::Entity);
+
+    // The two reference types that were never in this list. A spelling the
+    // whitelist does not know is a variable that silently vanishes, so the
+    // list being incomplete is the one thing this case exists to prevent.
+    CHECK(Var(info, "l")->fieldType == ScriptFieldType::Prefab);
+    CHECK(Var(info, "m")->fieldType == ScriptFieldType::Prefab);
+    CHECK(Var(info, "n")->fieldType == ScriptFieldType::Animation);
+    CHECK(Var(info, "o")->fieldType == ScriptFieldType::Animation);
+    CHECK(Var(info, "p")->fieldType == ScriptFieldType::Image);
+    CHECK(Var(info, "q")->fieldType == ScriptFieldType::Image);
+}
+
+TEST_CASE("an array of AnimationRef is exposed, one slot per element") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    eng::AnimationRef walkAnimations[4];"));
+
+    const ScriptVarDecl* var = Var(info, "walkAnimations");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::Animation);
+    CHECK(var->isArray);
+
+    // Four ordinary variables with four names, which is what makes the type
+    // need to know nothing about arrays. See ScriptVars.h.
+    const std::string unit = GenerateExposerUnit(info, "scripts/T.cpp");
+    CHECK(unit.find("::std::size(s->walkAnimations)") != std::string::npos);
+    CHECK(unit.find("f.Var(") != std::string::npos);
+}
+
+TEST_CASE("a leftover [animation] marker on an AnimationRef is dropped, not carried") {
+    // ======================================================================
+    //  THE FILTER THAT MAKES THE OLD SPELLING SAFE TO LEAVE BEHIND.
+    //
+    //  Somebody changing `std::string x; // [animation]` to
+    //  `eng::AnimationRef x; // [animation]` will not always delete the
+    //  comment, and they should not have to. requiredType is cleared for
+    //  every type that is neither Entity nor String, so the marker becomes
+    //  ordinary prose and the tooltip keeps the rest of the line.
+    //
+    //  WITHOUT THAT FILTER THE FIELD WOULD VANISH. The generator chooses Ref
+    //  when a requiredType survives on a non-string, so it would emit
+    //  f.Ref(name, AnimationRef&, "animation") - ill-formed, swallowed by the
+    //  `if constexpr (requires ...)` guard around every generated call, and
+    //  therefore silent. A clean build, a Console line saying the variable
+    //  was exposed, and nothing in the Inspector.
+    // ======================================================================
+    const ScriptSourceInfo info = ScanScriptSource(
+        Wrap("    eng::AnimationRef walkLeft;   // [animation] which clip to play"));
+
+    const ScriptVarDecl* var = Var(info, "walkLeft");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::Animation);
+    CHECK(var->requiredType.empty());
+    CHECK(var->tooltip == "which clip to play");
+
+    const std::string unit = GenerateExposerUnit(info, "scripts/T.cpp");
+    CHECK(unit.find("f.Var(\"walkLeft\"") != std::string::npos);
+    CHECK(unit.find("f.Ref(") == std::string::npos);
+    CHECK(unit.find("f.Asset(") == std::string::npos);
+}
+
+TEST_CASE("an array of ImageRef is exposed, one slot per element") {
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    eng::ImageRef faces[4];"));
+
+    const ScriptVarDecl* var = Var(info, "faces");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::Image);
+    CHECK(var->isArray);
+
+    const std::string unit = GenerateExposerUnit(info, "scripts/T.cpp");
+    CHECK(unit.find("::std::size(s->faces)") != std::string::npos);
+    CHECK(unit.find("f.Var(") != std::string::npos);
+}
+
+TEST_CASE("a leftover [image] marker on an ImageRef is dropped, not carried") {
+    // The same filter that makes a leftover [animation] safe, and the same
+    // silent failure without it: a requiredType surviving on a non-string
+    // makes the generator choose Ref, so it would emit
+    // f.Ref(name, ImageRef&, "image") - ill-formed, swallowed by the
+    // `if constexpr (requires ...)` guard around every generated call, and
+    // therefore invisible. A clean build and nothing in the Inspector.
+    const ScriptSourceInfo info = ScanScriptSource(
+        Wrap("    eng::ImageRef icon;   // [image] shown when carried"));
+
+    const ScriptVarDecl* var = Var(info, "icon");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::Image);
+    CHECK(var->requiredType.empty());
+    CHECK(var->tooltip == "shown when carried");
+
+    const std::string unit = GenerateExposerUnit(info, "scripts/T.cpp");
+    CHECK(unit.find("f.Var(\"icon\"") != std::string::npos);
+    CHECK(unit.find("f.Ref(") == std::string::npos);
+    CHECK(unit.find("f.Asset(") == std::string::npos);
 }
 
 TEST_CASE("a variable with no initialiser is still a variable") {

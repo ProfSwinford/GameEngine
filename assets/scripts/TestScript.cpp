@@ -70,9 +70,13 @@
 //  slider; a [TypeName] narrows a reference to entities carrying that
 //  component or script.
 //
-//  float, int, bool, std::string, Vec2, Color and eng::EntityRef. A `static
-//  constexpr` constant cannot be changed, so it is left out - the Console says
-//  which and why. To hide one, make it private or name it m_something.
+//  float, int, bool, std::string, Vec2, Color, eng::EntityRef, eng::PrefabRef,
+//  eng::AnimationRef and eng::ImageRef - or a FIXED-SIZE ARRAY of any of them,
+//  which becomes one row per element. The last three are references rather
+//  than values: a prefab to spawn, a clip to play, a picture to draw, each
+//  drawn as a slot you drag onto. A `static constexpr` constant cannot be
+//  changed, so it is left out - the Console says which and why. To hide one,
+//  make it private.
 //
 //  Orbiter.cpp is the worked example, and GameRules.cpp the one for references.
 //  HOW IT WORKS: the editor reads this file when it builds it, because C++
@@ -102,9 +106,23 @@
 //                         is never called - so the engine reports that in the
 //                         Console rather than leaving it silent.
 //
-//                         `other` is an EntityId, not a pointer, and the thing
-//                         it refers to may already be gone. Look it up through
-//                         the scene every time; never keep a pointer to it.
+//                         THREE FORMS, and the richest one you write wins:
+//
+//                             void OnTriggerEnter(eng::EntityId other)
+//                             void OnTriggerEnter(Collider2D other)
+//                             void OnTriggerEnter(const eng::Collision2D& hit)
+//
+//                         The collider is Unity's form and reaches the entity
+//                         in one hop - other->Owner(). The contact also says
+//                         which of YOUR colliders fired, as hit.thisCollider,
+//                         which Unity cannot tell you at all. AN EXIT takes
+//                         the id or the contact and never a bare collider:
+//                         the pair has already ended, so there is nothing
+//                         left to point at.
+//
+//                         An EntityId may name something already gone. Look
+//                         it up through the scene every time; never keep a
+//                         pointer to it.
 //
 //                         These need a collider on BOTH entities, and each
 //                         one's "collides with" list has to include the

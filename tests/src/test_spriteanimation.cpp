@@ -545,6 +545,99 @@ TEST_CASE("Play by name finds an animation in the sheet this component already k
     CHECK(animation.Problem().find("nope") != std::string::npos);
 }
 
+TEST_CASE("Play through an AnimationRef absorbs the name-or-path decision") {
+    const Sandbox box("play-by-ref");
+    GiveSlicedSheet(box);
+
+    SpriteAnimationComponent animation;
+    std::string              error;
+    REQUIRE(LoadFrom(animation, R"({ "animation": "textures/hero.png#walk" })", error));
+    REQUIRE(animation.ResolvedFrames().size() == 3);
+
+    // ---- A PATH NAMING THIS SHEET takes the cheap branch ------------------
+    //
+    // The same work Play("die") does - the frames already cut are kept and
+    // the clip is pre-validated - and a script no longer has to know that.
+    REQUIRE(animation.Play(eng::AnimationRef{"textures/hero.png#die"}));
+    CHECK(animation.AnimationPath() == "textures/hero.png#die");
+    CHECK(animation.ResolvedFrames().size() == 1);
+
+    // ---- A BARE NAME still works -----------------------------------------
+    //
+    // Which is what the text box this type replaces produced, and what a
+    // scene saved before the type existed still holds.
+    REQUIRE(animation.Play(eng::AnimationRef{"walk"}));
+    CHECK(animation.AnimationPath() == "textures/hero.png#walk");
+    CHECK(animation.ResolvedFrames().size() == 3);
+
+    // ---- AN UNSET REFERENCE DOES NOTHING, AND SAYS NOTHING ---------------
+    //
+    // Deliberately unlike a missing prefab, which is always a mistake. A
+    // blank animation slot is a direction a character does not have - a
+    // side-on sprite has no up or down - so the clip that was playing is
+    // left alone and no problem is recorded.
+    const std::string before = animation.Problem();
+    CHECK_FALSE(animation.Play(eng::AnimationRef{}));
+    CHECK(animation.AnimationPath() == "textures/hero.png#walk");
+    CHECK(animation.Problem() == before);
+
+    // ---- A CLIP THE SHEET DOES NOT HAVE is refused, by name --------------
+    CHECK_FALSE(animation.Play(eng::AnimationRef{"textures/hero.png#nope"}));
+    CHECK(animation.AnimationPath() == "textures/hero.png#walk");
+    CHECK(animation.Problem().find("nope") != std::string::npos);
+
+    // ---- ANOTHER SHEET pays for the whole path, and is asked to play -----
+    //
+    // SetAnimationPath honours the "play on start" tick, which is the
+    // authored intent for the FIRST clip and not for this one, so the
+    // overload asks it to play straight after. Without that an entity set
+    // not to play on start would change direction and stand still.
+    box.Write("textures/boss.png", "not really pixels");
+    TextureImport other;
+    other.sheet.cellWidth  = 16;
+    other.sheet.cellHeight = 16;
+    other.sheet.frames     = {SheetFrame{"g0", 0, 0, 16, 16}};
+    other.sheet.animations = {
+        SheetAnimation{"roar", {"g0"}, 6.0f, true, /*resume=*/false}};
+    REQUIRE(ImportLibrary::Save("textures/boss.png", other, error));
+
+    REQUIRE(animation.Play(eng::AnimationRef{"textures/boss.png#roar"}));
+    CHECK(animation.AnimationPath() == "textures/boss.png#roar");
+    CHECK(animation.IsPlaying());
+}
+
+TEST_CASE("Play through an AnimationRef needs no resolve to know its own sheet") {
+    // ======================================================================
+    //  THE BUG THIS OVERLOAD EXISTS TO STOP BEING WRITTEN AGAIN.
+    //
+    //  SheetPath() is EMPTY until something has asked ResolvedFrames(), and
+    //  on an entity that is not playing nothing has - Step returns before it.
+    //  A caller comparing a wanted path against SheetPath() therefore always
+    //  missed, and took the expensive re-read-the-whole-sheet branch on every
+    //  single call. assets/scripts/TilemapWalker.cpp did exactly that, under
+    //  a comment explaining that it was avoiding that cost.
+    //
+    //  This overload compares against SheetPathOf(AnimationPath()) instead.
+    //  AnimationPath() is a plain member, so it is answerable with no resolve
+    //  and no side effect at all.
+    // ======================================================================
+    const Sandbox box("play-by-ref-unresolved");
+    GiveSlicedSheet(box);
+
+    SpriteAnimationComponent animation;
+    std::string              error;
+    REQUIRE(LoadFrom(animation, R"({ "animation": "textures/hero.png#walk" })", error));
+
+    // THE STATE THE BUG NEEDED: loaded, knows its path, has resolved nothing.
+    CHECK(animation.SheetPath().empty());
+    CHECK(animation.AnimationPath() == "textures/hero.png#walk");
+
+    // Same sheet, so this must be the CHEAP branch even from here.
+    REQUIRE(animation.Play(eng::AnimationRef{"textures/hero.png#die"}));
+    CHECK(animation.AnimationPath() == "textures/hero.png#die");
+    CHECK(animation.ResolvedFrames().size() == 1);
+}
+
 // ---------------------------------------------------------------------------
 //  Playback - the state machine, driven on a real entity
 // ---------------------------------------------------------------------------

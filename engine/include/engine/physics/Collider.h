@@ -227,6 +227,16 @@ public:
     // almost every 2D setup. For a compound body - several colliders making up
     // one physical object - put each collider on the entity that has the
     // rigidbody rather than on children.
+    //
+    // TWO THINGS TO KNOW ABOUT A COMPOUND BODY, both of them Unity's rules:
+    //
+    //   ITS COLLIDERS DO NOT COLLIDE WITH EACH OTHER. They may overlap freely
+    //   and nothing is reported between them.
+    //
+    //   EVENTS ARE PER COLLIDER PAIR. Three of its colliders touching one
+    //   wall is three OnCollisionEnter calls, each naming the same entity -
+    //   so a script counting them needs the collider, not the entity, to tell
+    //   them apart. ActivePairCount counts the same way.
     Rigidbody2DComponent* AttachedRigidbody() const;
 
     // The point on this collider nearest `worldPoint`. Unity's
@@ -518,7 +528,10 @@ public:
     static void Clear();
 
     static std::size_t ColliderCount();
-    static std::size_t ActivePairCount();   // how many pairs are touching now
+    // How many COLLIDER pairs are touching now - not entity pairs. One entity
+    // with three colliders against one wall counts three, which is also how
+    // many events go out. See the note on ColliderId in Collider.cpp.
+    static std::size_t ActivePairCount();
 
     // How many pairs the narrow phase actually had to look at this step, and
     // how many it would have looked at without a broad phase. The editor shows
@@ -531,6 +544,18 @@ public:
     // dispatcher turns a bus message into a Collision2D without the contact
     // data having to travel through the message itself.
     static const Collision2D* FindContact(EntityId a, EntityId b);
+
+    // THE SAME FOR A TRIGGER PAIR, and a separate function rather than a flag
+    // because the two must not be confusable: a collision hook handed a
+    // trigger's record would read a contact that was never solved, and a
+    // trigger hook handed a solid one would name the wrong collider. An
+    // entity carrying both kinds against one neighbour has BOTH, at once, and
+    // each lookup answers only for its own.
+    //
+    // A trigger pair does carry a real normal, point and separation: the
+    // narrow phase does not look at IsTrigger, and only the solver skips
+    // them. That is more than Unity's trigger callbacks get.
+    static const Collision2D* FindTriggerContact(EntityId a, EntityId b);
 
     // Every collider currently attached, for the queries in Physics2D.
     static const std::vector<ColliderComponent*>& All();

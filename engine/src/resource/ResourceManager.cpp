@@ -316,23 +316,12 @@ TextureRef CreateSubAssetTexture(std::string_view path, const TextureImport& set
     const std::string sheetPath = SheetPathOf(path);
     const std::string name      = SubAssetNameOf(path);
 
-    const SheetFrame* frame = settings.sheet.FindFrame(name);
-    if (frame == nullptr) {
-        // AN ANIMATION RESOLVES TO ITS FIRST FRAME. Frames and animations share
-        // one namespace, so "hero.png#walk" is a path somebody will type or
-        // drag, and the useful answer to "draw this animation as an image" is
-        // the picture it starts on rather than the magenta square. The first
-        // frame that still EXISTS, because an animation holds names and a frame
-        // it lists may since have been renamed away.
-        if (const SheetAnimation* animation = settings.sheet.FindAnimation(name)) {
-            for (const std::string& frameName : animation->frames) {
-                frame = settings.sheet.FindFrame(frameName);
-                if (frame != nullptr) {
-                    break;
-                }
-            }
-        }
-    }
+    // A FRAME OR AN ANIMATION, decided by the sheet. THE RULE USED TO BE
+    // WRITTEN OUT HERE - frame, else the animation's first surviving frame -
+    // and it now lives on SheetSlice, because eng::ImageExists has to answer
+    // the same question for the Inspector's red and two copies that drifted
+    // would mark a picture broken while it drew perfectly well.
+    const SheetFrame* frame = settings.sheet.FindImage(name);
     if (frame == nullptr) {
         outError = settings.sheet.IsSliced()
                        ? "'" + sheetPath + "' has no part called '" + name + "'"

@@ -57,12 +57,14 @@ set(ENGINE_SOURCES
     src/resource/ResourceManager.cpp  # loading images
     src/resource/StbImage.cpp         # compiles the .png/.jpg decoder, once
 
+    src/scene/AnimationRef.cpp        # one script variable naming one clip
     src/scene/BuildScenes.cpp         # which scenes ship, and in what order
     src/scene/Component.cpp           # components, the factory, sprites
     src/scene/CameraComponent.cpp     # the game camera, as an entity
     src/scene/DeferredOps.cpp         # safe create and destroy
     src/scene/Entity.cpp
     src/scene/EntityRef.cpp            # one entity referring to another
+    src/scene/ImageRef.cpp            # one script variable naming one picture
     src/scene/Messaging.cpp           # entities talking to each other
     src/scene/Prefab.cpp              # saved entities, and the link back to them
     src/scene/Scene.cpp               # loading and saving levels
@@ -118,11 +120,13 @@ set(ENGINE_HEADERS
     include/engine/render/Texture.h
     include/engine/resource/ImportSettings.h
     include/engine/resource/ResourceManager.h
+    include/engine/scene/AnimationRef.h
     include/engine/scene/Component.h
     include/engine/scene/DeferredOps.h
     include/engine/scene/Entity.h
     include/engine/scene/EntityId.h
     include/engine/scene/EntityRef.h
+    include/engine/scene/ImageRef.h
     include/engine/scene/Messaging.h
     include/engine/scene/Prefab.h
     include/engine/scene/PrefabRef.h

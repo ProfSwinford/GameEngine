@@ -973,6 +973,11 @@ either side is a trigger   ->  OnTriggerEnter / Stay / Exit
 neither side is a trigger  ->  OnCollisionEnter / Stay / Exit
 ```
 
+That is decided per **pair of colliders**, not per pair of entities, and one
+event goes out per pair - so an entity carrying a trigger collider *and* a
+solid one gets both families from the same neighbour. Two colliders on the
+same entity never report each other.
+
 A script with `OnCollisionEnter` on a trigger collider never runs. The hook is
 real and spelled correctly - it is just not the event being sent. The Console
 reports it the first time it happens, naming the entity and the hook to use
@@ -1255,6 +1260,16 @@ you like, save it, and switch back to the editor window - it notices, rebuilds,
 and reloads. You never rebuild the editor itself, and you do not need this
 project's source code to do any of it.
 
+**Make that text editor understand the engine.** `File -> Set Up IDE
+IntelliSense` writes `CppProperties.json` and `compile_commands.json` into the
+project folder, which is what lets Visual Studio - or anything built on clangd,
+such as VS Code - resolve `#include <engine/Engine.h>` and complete `eng::`
+names. `File -> Open Project in Visual Studio` then opens the FOLDER, which is
+the only thing Visual Studio will read `CppProperties.json` for; open a lone
+script instead and you get no IntelliSense at all. What the two files are, and
+why neither is worth committing, is in
+[docs/scripting-reference.md](scripting-reference.md#making-your-editor-understand-that-include).
+
 There is a **Build Scripts** button in the Assets panel too, for building
 without alt-tabbing - which is what you want after fixing a compile error.
 
@@ -1416,6 +1431,7 @@ start is left alone as ordinary prose.
 | `// [Rigidbody2DComponent] what to push` | on an `EntityRef`, narrows the picker |
 | `// [animation] the walk cycle` | on a `std::string`, an animation **slot** instead of a box |
 | `// [image] shown on the HUD` | on a `std::string`, an image slot |
+| | both markers are the older spelling of `eng::AnimationRef` / `eng::ImageRef` |
 | `// see [1] for why` | a drag box; the bracket is not at the start |
 
 Use a range only when the ends are part of what the number means — a 0-to-1
@@ -1424,10 +1440,17 @@ one.
 
 ##### `[image]` and `[animation]`: a slot instead of a text box
 
-This is the marker worth knowing about, because without it a string that names
-an asset is a path you have to type correctly from memory. With it you get the
-same slot a Sprite's texture gets: the asset's **name**, a drop target, and a
-picker.
+**Both of these have their own type now** — `eng::AnimationRef` and
+`eng::ImageRef` — and that is the better answer: neither needs a comment to be
+guessed at, `Play` and `SetTexture` take them directly, and both paint red when
+what they name is gone. See the scripting reference.
+
+The markers below still work and are the **older spelling**, kept because the
+scripts using them are correct. Prefer the types in new code.
+
+Without a marker a string that names an asset is a path you have to type
+correctly from memory. With it you get the same slot a Sprite's texture gets:
+the asset's **name**, a drop target, and a picker.
 
 **It is completely general.** Nothing anywhere knows the name of a particular
 variable. `[animation]` on *any* public `std::string`, or on *any fixed-size
@@ -1499,7 +1522,7 @@ Reach for it when the list is not a fixed set of declarations — a variable
 exposed only in some builds, a name worked out at run time, or a declaration
 the parser cannot see through. Nothing in `assets/scripts` needs it.
 
-Seven types, and only ordinary members:
+Ten types, and only ordinary members:
 
 | | drawn as |
 | --- | --- |
@@ -1509,6 +1532,9 @@ Seven types, and only ordinary members:
 | `eng::Vec2` | two numbers |
 | `eng::Color` | a colour picker |
 | `eng::EntityRef` | another entity — drag one from the Hierarchy |
+| `eng::PrefabRef` | a prefab — drag one from Assets. Red when the file is gone |
+| `eng::AnimationRef` | an animation — drag a clip from Assets. Red when no sheet has it |
+| `eng::ImageRef` | a picture — drag an image or a sliced frame from Assets. Red when it is gone |
 
 **Only the values you change are saved.** A variable you leave alone is absent
 from the scene file and takes whatever the code says — so editing that default

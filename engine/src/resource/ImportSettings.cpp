@@ -483,6 +483,38 @@ std::string SubAssetNameOf(std::string_view path) {
     return std::string(path.substr(path.find_last_of(kSubAssetSeparator) + 1));
 }
 
+bool SheetHasAnimation(std::string_view subAssetPath) {
+    // A BARE NAME CANNOT BE ANSWERED, not "is not one" - see the header.
+    if (!IsSubAsset(subAssetPath)) {
+        return false;
+    }
+    const TextureImport settings =
+        ImportLibrary::ForTexture(SheetPathOf(subAssetPath));
+    return settings.sheet.FindAnimation(SubAssetNameOf(subAssetPath)) != nullptr;
+}
+
+bool ImageExists(std::string_view path) {
+    // NOTHING CHOSEN IS NOT BROKEN. Asked first so that neither branch below
+    // has to treat "" as a file it could go looking for.
+    if (path.empty()) {
+        return false;
+    }
+
+    if (IsSubAsset(path)) {
+        const TextureImport settings = ImportLibrary::ForTexture(SheetPathOf(path));
+        if (settings.sheet.FindImage(SubAssetNameOf(path)) != nullptr) {
+            return true;
+        }
+        // AND THEN FALL THROUGH TO THE DISK, which is the loader's own escape
+        // hatch rather than a second guess: '#' is a legal filename character,
+        // so a file genuinely called "a.png#b" can exist and is read as
+        // itself once the sub-asset reading has failed. See the note on the
+        // fallback in ResourceManager::LoadTexture.
+    }
+
+    return FileSystem::Exists(path);
+}
+
 std::string AssetDisplayName(std::string_view path) {
     if (path.empty()) {
         return {};
@@ -575,6 +607,27 @@ const SheetAnimation* SheetSlice::FindAnimation(std::string_view name) const {
     for (const SheetAnimation& animation : animations) {
         if (animation.name == name) {
             return &animation;
+        }
+    }
+    return nullptr;
+}
+
+const SheetFrame* SheetSlice::FindImage(std::string_view name) const {
+    // A FRAME FIRST, because that is what the name usually is and because a
+    // frame and an animation may share a name - IsLegalSubAssetName does not
+    // forbid it, and the frame is the more specific answer.
+    if (const SheetFrame* frame = FindFrame(name)) {
+        return frame;
+    }
+
+    // AN ANIMATION RESOLVES TO ITS FIRST SURVIVING FRAME. See the note in the
+    // header for why that is the useful answer rather than a refusal, and why
+    // this rule lives here instead of being written out twice.
+    if (const SheetAnimation* animation = FindAnimation(name)) {
+        for (const std::string& frameName : animation->frames) {
+            if (const SheetFrame* frame = FindFrame(frameName)) {
+                return frame;
+            }
         }
     }
     return nullptr;

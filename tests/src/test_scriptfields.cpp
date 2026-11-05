@@ -2020,6 +2020,340 @@ TEST_CASE("the message listing the kinds cannot under-report what the code takes
     }
 }
 
+// ===========================================================================
+//  eng::AnimationRef - an animation as a TYPE rather than a marked string
+// ===========================================================================
+
+TEST_CASE("an AnimationRef answers the sheet and the clip, whichever shape it holds") {
+    const AnimationRef path{"textures/hero.png#walk_left"};
+    CHECK(path.IsSet());
+    CHECK(path.Path() == "textures/hero.png#walk_left");
+    CHECK(path.Sheet() == "textures/hero.png");
+    CHECK(path.Clip() == "walk_left");
+
+    // ======================================================================
+    //  A BARE NAME, which is what the text box this type replaces produced
+    //  and what a scene saved before the type existed still holds.
+    //
+    //  Clip() ANSWERS IT, and that is the one place this type's contract
+    //  deliberately differs from eng::SubAssetNameOf - which returns empty
+    //  for anything without a '#'. A bare name IS a clip name. Answering ""
+    //  would hand the caller the raw string back together with the branch
+    //  that goes with it, which is most of what the twenty-five lines in
+    //  TilemapWalker::Show were.
+    // ======================================================================
+    const AnimationRef name{"walk_left"};
+    CHECK(name.IsSet());
+    CHECK(name.Sheet().empty());          // it does not say WHICH sheet...
+    CHECK(name.Clip() == "walk_left");    // ...but it does say which clip
+
+    const AnimationRef nothing;
+    CHECK_FALSE(nothing.IsSet());
+    CHECK(nothing.Sheet().empty());
+    CHECK(nothing.Clip().empty());
+
+    AnimationRef edited;
+    edited.Set("textures/boss.png#roar");
+    CHECK(edited.Clip() == "roar");
+    CHECK(edited.Sheet() == "textures/boss.png");
+    edited.Clear();
+    CHECK_FALSE(edited.IsSet());
+}
+
+TEST_CASE("an AnimationRef is a field type, drawn and stored as its own thing") {
+    AnimationRef walk{"textures/hero.png#walk_left"};
+
+    const ScriptField field = Bind(walk);
+    CHECK(field.type == ScriptFieldType::Animation);
+    CHECK(field.AsAnimationRef() == &walk);
+
+    // The accessors are a tag test and nothing more, so every other one has
+    // to refuse - handing a std::string* back for this would reinterpret the
+    // object rather than report the mistake.
+    CHECK(field.AsString() == nullptr);
+    CHECK(field.AsPrefabRef() == nullptr);
+    CHECK(field.AsEntityRef() == nullptr);
+
+    CHECK(std::string(ScriptFieldTypeName(ScriptFieldType::Animation)) == "animation");
+}
+
+TEST_CASE("a value saved from a std::string field loads into an AnimationRef") {
+    // ======================================================================
+    //  THE WHOLE COMPATIBILITY STORY, PINNED DOWN.
+    //
+    //  Script field values are stored as UNTYPED JSON keyed by name - there
+    //  is no type tag anywhere in a scene file - so a value saved from a text
+    //  box before this type existed is exactly what it expects. That is what
+    //  makes changing a script member from std::string to AnimationRef cost
+    //  nothing, and it is the same promise PrefabRef.h made for the same
+    //  move. If this case ever fails, somebody's levels have lost their
+    //  animations.
+    // ======================================================================
+    std::string  asText = "textures/hero.png#walk_left";
+    AnimationRef asType;
+
+    const ScriptField stringField = Bind(asText);
+    const ScriptField animField   = Bind(asType);
+
+    // What the old field wrote...
+    const Json saved = FieldToJson(stringField);
+    REQUIRE(saved.is_string());
+
+    // ...is what the new one reads, with no migration step in between.
+    std::string error;
+    REQUIRE(ReadFieldFromJson(animField, saved, error));
+    CHECK(error.empty());
+    CHECK(asType.Path() == "textures/hero.png#walk_left");
+
+    // ...and writes back byte for byte, so a round trip through a scene file
+    // cannot quietly rewrite it either.
+    CHECK(FieldToJson(animField) == saved);
+}
+
+TEST_CASE("every field type survives the JSON round trip, and none of them writes null") {
+    // ======================================================================
+    //  THE GUARD THAT WAS MISSING, and the reason it earns its own case.
+    //
+    //  FieldToJson's switch falls through to `return Json()` - a JSON null -
+    //  so a type whose arm somebody forgot does not fail to compile and does
+    //  not fail any other test in this file. It writes null into the scene.
+    //  And a null is what a prefab instance reads as "ERASE THIS FIELD", so
+    //  one click in the Inspector would delete the value from every instance
+    //  of that prefab.
+    //
+    //  THE FOUR SWEEPS ALREADY HERE WOULD NOT HAVE CAUGHT IT. Each is
+    //  hand-enumerated over the six VALUE types and omits Entity and Prefab
+    //  entirely, so no existing test asserts anything at all about either.
+    //  The only other guard is C4062 on the switches, and warnings are not
+    //  errors in this build.
+    //
+    //  ADD A NEW TYPE TO THIS LIST when you add one to ScriptFieldType.
+    // ======================================================================
+    float        number  = 1.5f;
+    int          count   = 7;
+    bool         enabled = true;
+    std::string  label   = "hello";
+    Vec2         offset  = Vec2{3.0f, -4.0f};
+    Color        tint    = Color{10, 20, 30, 40};
+    EntityRef    target{"Player"};
+    PrefabRef    bullet{"prefabs/bullet.oprefab"};
+    AnimationRef walk{"textures/hero.png#walk_left"};
+    ImageRef     icon{"textures/ui/key.png"};
+
+    const ScriptField everyField[] = {
+        Bind(number),  Bind(count),  Bind(enabled),
+        Bind(label),   Bind(offset), Bind(tint),
+        Bind(target),  Bind(bullet), Bind(walk),
+        Bind(icon),
+    };
+
+    for (const ScriptField& field : everyField) {
+        const char* what = ScriptFieldTypeName(field.type);
+        CAPTURE(what);
+
+        // The fallback name means a missing arm in ScriptFieldTypeName, which
+        // is the harmless one - but it is also the cheapest signal that a
+        // type was added without visiting this file.
+        CHECK(std::string(what) != "unknown");
+
+        const Json written = FieldToJson(field);
+        CHECK_FALSE(written.is_null());
+        CHECK(JsonFitsFieldType(field.type, written));
+
+        std::string error;
+        CHECK(ReadFieldFromJson(field, written, error));
+        CHECK(error.empty());
+    }
+
+    // ======================================================================
+    //  AND THE LIST IS CHECKED FOR COMPLETENESS rather than trusted, because
+    //  a hand-written sweep is exactly the thing that goes stale - the four
+    //  above it did, which is how Entity and Prefab ended up asserted about
+    //  nowhere. Every type ScriptFieldTypeName has a name for has to appear.
+    //
+    //  SO APPENDING A TYPE FAILS THIS CASE until it is swept too, which is
+    //  the only guard that does not depend on somebody reading a comment.
+    //
+    //  LOOKING PAST THE LAST ENUMERATOR IS DEFINED HERE. ScriptFieldType has
+    //  no fixed underlying type, so its valid range is the smallest bit-field
+    //  that holds every enumerator - four bits for ten of them - and a cast
+    //  inside that range is legal. 15 is the top of it.
+    // ======================================================================
+    constexpr int kSwept = static_cast<int>(sizeof(everyField) / sizeof(everyField[0]));
+    int           named  = 0;
+    for (int value = 0; value <= 15; ++value) {
+        if (std::string(ScriptFieldTypeName(static_cast<ScriptFieldType>(value))) !=
+            "unknown") {
+            ++named;
+        }
+    }
+    CHECK(named == kSwept);
+}
+
+TEST_CASE("the AnimationRef conversion does not swallow Play's other overloads") {
+    // ======================================================================
+    //  THE RISK A NON-explicit CONVERTING CONSTRUCTOR CREATES, checked rather
+    //  than argued.
+    //
+    //  `eng::AnimationRef walk{"hero.png#walk"}` is how a script writes a
+    //  default in its own code, which is why the constructor is not explicit -
+    //  PrefabRef and EntityRef do the same. The danger is that
+    //  Play("walk_left") becomes ambiguous between Play(std::string_view) and
+    //  Play(const AnimationRef&).
+    //
+    //  It does not, because arriving at AnimationRef from a const char* or a
+    //  std::string needs TWO user-defined conversions and an implicit
+    //  conversion sequence allows one. An ambiguous call is ill-formed in the
+    //  immediate context, so each requires-expression below would be false
+    //  and the static_assert would fire. This is a compile-time case: if it
+    //  is in the build at all, it passed.
+    // ======================================================================
+    using Anim = SpriteAnimationComponent;
+
+    static_assert(requires(Anim& a) { a.Play("walk_left"); },
+                  "Play(const char*) must still resolve, unambiguously, to the "
+                  "string_view overload");
+    static_assert(requires(Anim& a, std::string s) { a.Play(s); },
+                  "and so must Play(std::string)");
+    static_assert(requires(Anim& a, AnimationRef r) { a.Play(r); },
+                  "and the AnimationRef overload must be reachable");
+    static_assert(requires(Anim& a) { a.Play(); },
+                  "and Play() with no argument is still its own thing");
+
+    CHECK(true);   // doctest wants an assertion; the four above are the test
+}
+
+// ===========================================================================
+//  eng::ImageRef - a picture as a TYPE rather than a marked string
+// ===========================================================================
+
+TEST_CASE("an ImageRef answers the file and the part, whichever shape it holds") {
+    const ImageRef whole{"textures/ui/key.png"};
+    CHECK(whole.IsSet());
+    CHECK(whole.Path() == "textures/ui/key.png");
+    CHECK(whole.File() == "textures/ui/key.png");   // the path IS the file
+    CHECK(whole.Frame().empty());                    // and names no part of it
+    CHECK(whole.IsWholeImage());
+
+    const ImageRef part{"textures/ui/items.png#key"};
+    CHECK(part.File() == "textures/ui/items.png");
+    CHECK(part.Frame() == "key");
+    CHECK_FALSE(part.IsWholeImage());
+
+    const ImageRef nothing;
+    CHECK_FALSE(nothing.IsSet());
+    CHECK(nothing.File().empty());
+    CHECK(nothing.Frame().empty());
+    // "nothing chosen" is a whole image in the only sense that matters here:
+    // it names no part. IsSet is the question about emptiness.
+    CHECK(nothing.IsWholeImage());
+
+    ImageRef edited;
+    edited.Set("textures/boss.png#head");
+    CHECK(edited.File() == "textures/boss.png");
+    CHECK(edited.Frame() == "head");
+    edited.Clear();
+    CHECK_FALSE(edited.IsSet());
+}
+
+TEST_CASE("an ImageRef and an AnimationRef read the same string in opposite ways") {
+    // ======================================================================
+    //  THE REASON THESE ARE TWO TYPES AND NOT ONE CARRYING A KIND, pinned.
+    //
+    //  A BARE STRING IS COMPLETE FOR ONE AND INCOMPLETE FOR THE OTHER: a
+    //  path with no '#' IS a picture, and a name with no '#' is a clip in a
+    //  sheet it does not name. So the two accessors that look like each other
+    //  have opposite contracts, and a single type would need a flag plus
+    //  every caller remembering to check it.
+    // ======================================================================
+    const ImageRef     picture{"textures/hero.png"};
+    const AnimationRef clip{"walk_left"};
+
+    CHECK(picture.File() == "textures/hero.png");   // NEVER empty once set
+    CHECK(picture.Frame().empty());                  // ...and nothing inside
+
+    CHECK(clip.Sheet().empty());                     // EMPTY - it cannot say
+    CHECK(clip.Clip() == "walk_left");               // ...but never this one
+
+    // AND ON A SUB-ASSET PATH THEY AGREE EXACTLY, which is what lets the same
+    // string be dragged onto either slot. A sheet's frames and its animations
+    // share one namespace, so "hero.png#walk" is legitimately both.
+    const ImageRef     frame{"textures/hero.png#walk"};
+    const AnimationRef anim{"textures/hero.png#walk"};
+    CHECK(frame.File() == anim.Sheet());
+    CHECK(frame.Frame() == anim.Clip());
+}
+
+TEST_CASE("an ImageRef is a field type, drawn and stored as its own thing") {
+    ImageRef icon{"textures/ui/key.png"};
+
+    const ScriptField field = Bind(icon);
+    CHECK(field.type == ScriptFieldType::Image);
+    CHECK(field.AsImageRef() == &icon);
+
+    // The accessors are a tag test and nothing more, so every other one has
+    // to refuse - and AnimationRef is the dangerous neighbour here, because
+    // the two types are layout-identical. A cast that went through would read
+    // perfectly and mean the wrong thing.
+    CHECK(field.AsAnimationRef() == nullptr);
+    CHECK(field.AsString() == nullptr);
+    CHECK(field.AsPrefabRef() == nullptr);
+    CHECK(field.AsEntityRef() == nullptr);
+
+    CHECK(std::string(ScriptFieldTypeName(ScriptFieldType::Image)) == "image");
+}
+
+TEST_CASE("a value saved from a std::string field loads into an ImageRef") {
+    // The same compatibility promise the AnimationRef case above pins, and
+    // for the same reason: script field values are UNTYPED JSON keyed by
+    // name, so a path saved from a `// [image]` text box is exactly what this
+    // expects. If this fails, somebody's levels have lost their pictures.
+    std::string asText = "textures/ui/items.png#key";
+    ImageRef    asType;
+
+    const ScriptField stringField = Bind(asText);
+    const ScriptField imageField  = Bind(asType);
+
+    const Json saved = FieldToJson(stringField);
+    REQUIRE(saved.is_string());
+
+    std::string error;
+    REQUIRE(ReadFieldFromJson(imageField, saved, error));
+    CHECK(error.empty());
+    CHECK(asType.Path() == "textures/ui/items.png#key");
+
+    // ...and writes back byte for byte, so a round trip through a scene file
+    // cannot quietly rewrite it either.
+    CHECK(FieldToJson(imageField) == saved);
+}
+
+TEST_CASE("the ImageRef conversion does not swallow SetTexture's other overload") {
+    // ======================================================================
+    //  THE RISK A NON-explicit CONVERTING CONSTRUCTOR CREATES, checked rather
+    //  than argued - the same case the AnimationRef one above makes for Play.
+    //
+    //  Arriving at ImageRef from a const char* or a std::string needs TWO
+    //  user-defined conversions and an implicit conversion sequence allows
+    //  one, so the new overload is not a candidate for either call. An
+    //  ambiguous call would be ill-formed in the immediate context, so the
+    //  requires-expression would be false and the static_assert would fire.
+    //  This is a compile-time case: if it is in the build, it passed.
+    // ======================================================================
+    using Sprite = SpriteComponent;
+
+    static_assert(requires(Sprite& s) { s.SetTexture("textures/hero.png"); },
+                  "SetTexture(const char*) must still resolve, unambiguously, to "
+                  "the string_view overload");
+    static_assert(requires(Sprite& s, std::string p) { s.SetTexture(p); },
+                  "and so must SetTexture(std::string)");
+    static_assert(requires(Sprite& s, std::string_view p) { s.SetTexture(p); },
+                  "and SetTexture(std::string_view) itself");
+    static_assert(requires(Sprite& s, ImageRef r) { s.SetTexture(r); },
+                  "and the ImageRef overload must be reachable");
+
+    CHECK(true);   // doctest wants an assertion; the four above are the test
+}
+
 TEST_CASE("a marked string stores the CANONICAL kind, however it was spelled") {
     // So that everything downstream compares against one word rather than
     // six, and a tooltip reads the same whichever synonym was typed.

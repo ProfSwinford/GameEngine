@@ -145,7 +145,9 @@ void ToolbarPanel::Draw() {
                 static_cast<double>(clock.RealDeltaSeconds() * 1000.0f));
 
     ImGui::SameLine();
-    ImGui::TextDisabled("|   %zu entities, %zu colliders touching",
+    // "collider pairs" and not "colliders": ActivePairCount counts PAIRS,
+    // and has done all along - the label was simply wrong.
+    ImGui::TextDisabled("|   %zu entities, %zu collider pairs touching",
                         engine.GetScene().EntityCount(),
                         eng::CollisionSystem::ActivePairCount());
 }

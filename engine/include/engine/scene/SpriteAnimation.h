@@ -90,6 +90,7 @@
 
 #include <engine/render/Texture.h>
 #include <engine/resource/ImportSettings.h>
+#include <engine/scene/AnimationRef.h>
 #include <engine/scene/Component.h>
 #include <engine/scene/SystemOrder.h>
 
@@ -237,6 +238,50 @@ public:
     //  second of internal state is the thing the rule at the top forbids.
     // ======================================================================
     bool Play(std::string_view animationName);
+
+    // ======================================================================
+    //  THE SAME, THROUGH AN EXPOSED AnimationRef - which is how a script
+    //  should choose a clip, because then it is chosen by dragging in the
+    //  Inspector instead of typed into the code.
+    //
+    //  IT ABSORBS THE DECISION EVERY CALLER WAS MAKING BY HAND. A reference
+    //  holds a WHOLE sub-asset path; this component is already playing from
+    //  one sheet. The two cases want different calls and are not
+    //  interchangeable:
+    //
+    //    a path naming THIS sheet is reduced to Play(name), which keeps the
+    //    frames already cut, pre-validates the clip and honours the clip's
+    //    own `resume` flag;
+    //
+    //    a path naming ANOTHER sheet pays for SetAnimationPath and is then
+    //    asked to play, because SetAnimationPath honours the component's
+    //    "play on start" tick - which is the authored intent for the FIRST
+    //    clip and not for this one. Getting that half wrong leaves an entity
+    //    changing direction and standing still.
+    //
+    //  A BARE NAME IS STILL HONOURED, because the text box this type replaces
+    //  took one and scenes saved before the type existed may still hold one.
+    //
+    //  AND IT DOES NOT ASK SheetPath(), which is the bug it exists to stop
+    //  being repeated. SheetPath() is empty until something has called
+    //  ResolvedFrames(), and on an entity that is not playing yet nothing
+    //  has - Step returns before it. A script comparing against it therefore
+    //  always missed, and every change of direction re-read the sheet and
+    //  re-loaded every frame. assets/scripts/TilemapWalker.cpp did exactly
+    //  that, under a comment explaining that it was avoiding the cost. This
+    //  compares against SheetPathOf(m_path) instead, which is answerable with
+    //  no resolve at all because m_path is a plain member.
+    //
+    //  AN UNSET REFERENCE DOES NOTHING AND SAYS NOTHING - deliberately
+    //  unlike a missing prefab. A blank animation slot is a direction a
+    //  character does not have; a side-on sprite has no up or down, and
+    //  walking up should keep whatever was already playing. Warning would
+    //  log once per such entity per change of direction.
+    //
+    //  False when nothing could be played, with Problem() set by whichever
+    //  call refused. The clip that was playing is left alone.
+    // ======================================================================
+    bool Play(const AnimationRef& animation);
 
     void Play();      // resume; rewinds first only if it had finished
     void Restart();   // back to the first frame, playing

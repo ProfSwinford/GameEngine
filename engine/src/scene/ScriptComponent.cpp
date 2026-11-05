@@ -892,7 +892,19 @@ void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId
     //  trigger is data in a scene file, and the same script may be correct on
     //  one entity and wrong on another.
     // ======================================================================
+    //  AND NOT WHILE THE COLLISION HOOKS ARE ALSO FIRING, which became
+    //  possible when contacts started being keyed per COLLIDER pair. One
+    //  entity can carry a trigger collider and a solid one, so a script with
+    //  only OnCollision hooks can legitimately be sent a trigger event by one
+    //  of them while its own hooks run perfectly well from the other. Saying
+    //  "none of them will ever run" would then be flatly false, and a false
+    //  error in the Console is worse than no error at all.
+    //
+    //  FindContact is SOLID-ONLY, so a non-null answer means exactly "there
+    //  is a solid contact with this entity this step" - which is to say the
+    //  collision hooks are about to run.
     if (isTrigger && !m_hooks.AnyTrigger() && m_hooks.AnyCollision() &&
+        CollisionSystem::FindContact(OwnerId(), other) == nullptr &&
         !m_warnedAboutTriggerMismatch) {
         m_warnedAboutTriggerMismatch = true;
 
@@ -907,44 +919,88 @@ void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId
                          owner != nullptr ? owner->Name() : "<unknown>");
     }
 
-    if (isTrigger) {
-        if (messageType == MessageTypes::kTriggerEnter) {
-            if (m_hooks.triggerEnter != nullptr) {
-                m_hooks.triggerEnter(m_behaviour.get(), other);
-            }
-        } else if (messageType == MessageTypes::kTriggerStay) {
-            if (m_hooks.triggerStay != nullptr) {
-                m_hooks.triggerStay(m_behaviour.get(), other);
-            }
-        } else if (m_hooks.triggerExit != nullptr) {
-            m_hooks.triggerExit(m_behaviour.get(), other);
-        }
-        return;
-    }
-
-    // ---- a solid collision, which carries the contact data ---------------
+    // ---- the contact, for a trigger exactly as for a solid collision -----
     //
     // The contact is looked up rather than carried in the message. A Message
     // has room for two floats and an entity by design - see Messaging.h - and
-    // a contact needs five numbers. Widening the message for this would make
-    // every message in the engine bigger, so the collision system keeps the
-    // contact for the current step and it is fetched here.
+    // a contact needs five numbers and two colliders. Widening the message for
+    // this would make every message in the engine bigger, so the collision
+    // system keeps the current step's contacts and the event fetches one here.
+    //
+    // COLLISION RUNS AT STAGE 400 AND THIS AT 500, with nothing able to run in
+    // between: Engine::Simulate calls MessageBus::Dispatch() directly rather
+    // than through the scheduler. So the table still holds this step's contacts
+    // and both colliders are still alive.
+    //
+    // A TRIGGER PAIR HAS A FULL CONTACT. The narrow phase never looks at
+    // IsTrigger - it fills in the normal, the point and the separation for
+    // every touching pair, and only the SOLVER skips the trigger ones. So a
+    // trigger hook is handed a real contact normal, which is more than Unity's
+    // OnTriggerEnter2D gets.
+    // ======================================================================
+    //  AN EXIT IS NOT LOOKED UP AT ALL, and that is correctness rather than a
+    //  saved map lookup.
+    //
+    //  An exit pair is BY DEFINITION one that was touching last step and is
+    //  not now. While contacts were keyed by ENTITY pair there was therefore
+    //  never an entry to find, and `info` stayed empty on its own - which is
+    //  what physics/Contact.h promises at the separation and relativeVelocity
+    //  fields, and what the note further down this function already states.
+    //
+    //  KEYED PER COLLIDER PAIR THAT IS NO LONGER AUTOMATIC, and getting it
+    //  wrong would be invisible. A compound body can have ONE collider stop
+    //  touching while a SIBLING goes on touching the same entity - and
+    //  FindContact answers per ENTITY pair, so the lookup would come back
+    //  holding the sibling's LIVE contact: a real normal, a real separation,
+    //  handed to a handler for a pair that has just ended. Every number in it
+    //  would look plausible.
+    //
+    //  So the question is not asked. Both kinds of exit, because the trigger
+    //  family reaches this point too once its hooks can take a contact.
+    // ======================================================================
+    const bool isExit = messageType == MessageTypes::kCollisionExit ||
+                        messageType == MessageTypes::kTriggerExit;
+
     Collision2D info;
     info.other = other;
 
-    if (const Collision2D* found = CollisionSystem::FindContact(OwnerId(), other);
-        found != nullptr) {
-        info = *found;
+    if (!isExit) {
+        // THE INDEX FOR THE KIND BEING DELIVERED. Asking the wrong one finds
+        // nothing at all for a compound body carrying both kinds, which is
+        // how this was caught: the trigger hooks were handed an empty contact
+        // because FindContact answers only for solid pairs.
+        const Collision2D* found = isTrigger
+                                       ? CollisionSystem::FindTriggerContact(OwnerId(), other)
+                                       : CollisionSystem::FindContact(OwnerId(), other);
+        if (found != nullptr) {
+            info = *found;
 
-        // The stored copy is oriented for whichever entity sorted first in the
-        // pair. When that is not the one receiving this event, everything with
-        // a direction has to be turned round.
-        if (info.other != other) {
-            std::swap(info.thisCollider, info.otherCollider);
-            info.other            = other;
-            info.normal           = -info.normal;
-            info.relativeVelocity = -info.relativeVelocity;
+            // The stored copy is oriented for whichever collider sorted first
+            // in the pair. When that is not the one receiving this event,
+            // everything with a direction has to be turned round. THIS IS WHAT
+            // MAKES thisCollider MEAN MY COLLIDER IN MY HANDLER.
+            if (info.other != other) {
+                std::swap(info.thisCollider, info.otherCollider);
+                info.other            = other;
+                info.normal           = -info.normal;
+                info.relativeVelocity = -info.relativeVelocity;
+            }
         }
+    }
+
+    if (isTrigger) {
+        if (messageType == MessageTypes::kTriggerEnter) {
+            if (m_hooks.triggerEnter != nullptr) {
+                m_hooks.triggerEnter(m_behaviour.get(), info);
+            }
+        } else if (messageType == MessageTypes::kTriggerStay) {
+            if (m_hooks.triggerStay != nullptr) {
+                m_hooks.triggerStay(m_behaviour.get(), info);
+            }
+        } else if (m_hooks.triggerExit != nullptr) {
+            m_hooks.triggerExit(m_behaviour.get(), info);
+        }
+        return;
     }
 
     if (messageType == MessageTypes::kCollisionEnter) {

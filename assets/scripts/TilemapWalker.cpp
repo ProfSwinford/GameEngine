@@ -28,17 +28,23 @@
 //  AND IT PLAYS AN ANIMATION FOR THE DIRECTION IT IS GOING
 //
 //  `walkAnimations` is an ARRAY INDEXED BY DIRECTION, and the Inspector shows
-//  it as four boxes:
+//  it as four slots:
 //
 //      walkAnimations[0]   going right
 //      walkAnimations[1]   going left
 //      walkAnimations[2]   going up
 //      walkAnimations[3]   going down
 //
-//  Put the name of an animation in each. They are names of animations stored
-//  in the SHEET the entity's Sprite Animation component is already playing
-//  from - so if that sheet holds "walk_left", that is what goes in the box.
-//  Leave one blank for a direction your art does not have.
+//  Drag a clip from the Assets panel into each - expand a sheet's row to find
+//  them - or click a slot to pick from a list. Leave one blank for a
+//  direction your art does not have.
+//
+//  THEY ARE eng::AnimationRef AND NOT std::string, and that is the whole of
+//  why this script no longer reasons about paths. The type says what they
+//  are, so the Inspector gives them a slot with no comment marker to know
+//  about, paints one red when the clip has been renamed away, and Play takes
+//  one directly. The twenty-five lines that used to tell a name from a path
+//  live in the engine now. See engine/scene/AnimationRef.h.
 //
 //  WITH NO INPUT IT FREEZES ON THE FRAME IT IS SHOWING. Let go half way
 //  through a stride and the character stands there mid-stride, which is what a
@@ -81,9 +87,15 @@
 
 #include <engine/Engine.h>
 
-// SheetPathOf and SubAssetNameOf: the two functions that know how a path
-// names one animation inside a sheet. Engine.h does not reach them.
-#include <engine/resource/ImportSettings.h>
+// THERE WAS AN #include <engine/resource/ImportSettings.h> HERE, for
+// SheetPathOf and SubAssetNameOf - the two functions this script used to need
+// to tell a clip's NAME from its PATH. It does not tell them apart any more:
+// eng::AnimationRef holds one and SpriteAnimationComponent::Play takes it.
+//
+// (Its comment was also wrong. It said "Engine.h does not reach them", and
+// Engine.h includes SpriteAnimation.h, which includes ImportSettings.h - so
+// every script already had them and the line was redundant before it was
+// unnecessary.)
 
 #include <cmath>
 #include <string>
@@ -142,76 +154,48 @@ public:
     // ======================================================================
     //  THE ANIMATIONS, ONE PER DIRECTION.
     //
-    //  PUBLIC AND AN ARRAY, which is what puts four boxes in the Inspector:
+    //  PUBLIC AND AN ARRAY, which is what puts four slots in the Inspector:
     //  the exposer turns a fixed-size array into one row per element, named
     //  walkAnimations[0] to walkAnimations[3]. The order is the Facing enum
     //  above - right, left, up, down - which is what makes indexing it by a
     //  direction legal rather than lucky.
     //
-    //  ----------------------------------------------------------------------
-    //  NAMES, NOT PATHS, AND THAT IS THE COMPONENT'S DESIGN RATHER THAN A
-    //  SHORTCUT.
-    //
-    //  SpriteAnimationComponent::Play takes the NAME of an animation stored in
-    //  the sheet it is already playing from, so "walk_left" is the whole of
-    //  what identifies one. Writing "textures/hero.png#walk_left" here would
-    //  repeat the sheet's path in all four boxes and break the day the sheet
-    //  was renamed - which is exactly why Play does not accept one.
-    //
-    //  It is also the cheaper call by a wide margin. Play keeps the frames it
-    //  has already cut and restarts the clip; setting a PATH re-reads the
-    //  sheet and re-loads every frame, which is not something to do each time
-    //  somebody changes direction.
-    //
-    //  See engine/include/engine/scene/SpriteAnimation.h.
-    //  ----------------------------------------------------------------------
-    //
-    //  A BLANK BOX MEANS "nothing for that direction", which is left alone
+    //  A BLANK SLOT MEANS "nothing for that direction", which is left alone
     //  rather than treated as a mistake: a side-on character has no up or
     //  down, and walking up should then keep whatever was already playing.
+    //  Play(AnimationRef) does nothing with an unset one and says nothing
+    //  about it, so there is no check to write here.
     //
     //  ----------------------------------------------------------------------
-    //  WHAT MAKES THEM PICKERS AND NOT TEXT BOXES IS THE `[animation]` AT THE
-    //  END OF THE DECLARATION BELOW.
+    //  THESE WERE `std::string` WITH A `// [animation]` COMMENT ON THEM, and
+    //  what is gone with that is worth recording, because it is most of this
+    //  file's old weight:
     //
-    //  Worth saying here, because it is the one thing about these four boxes
-    //  that the rest of this comment block does not mention - and it was read
-    //  as hand-wiring, which is a fair conclusion to reach when the marker
-    //  sits at the far right of a line thirty lines below where the
-    //  explanation starts.
+    //    the marker, which was the only way to designate an animation and
+    //    therefore the one nobody could guess - a second array added beside
+    //    the first silently came out as four text boxes;
     //
-    //  IT IS A GENERAL MARKER AND HAS NOTHING TO DO WITH THIS SCRIPT.
-    //  `// [animation]` on any public std::string - or on any fixed-size
-    //  array of them, in any script - gets the slot: the clip's name, a drop
-    //  target and a picker. `[image]` does the same for a picture. Case does
-    //  not matter, `[anim]` and `[clip]` also mean an animation, and the
-    //  marker may sit on the comment line DIRECTLY ABOVE the declaration
-    //  instead - which is where a variable with this much to explain wants
-    //  it. See eng::AssetFieldKind in engine/scene/ScriptFields.h.
+    //    forty-six lines of comment explaining that these held NAMES and not
+    //    PATHS, which was never quite true - dragging a clip from the Assets
+    //    panel always produced a path;
     //
-    //  WITHOUT IT A STRING IS JUST A STRING and you get a box to type a path
-    //  into. That is not a lesser version of this - a label's text is not a
-    //  file, and a file picker on it would be wrong - but it is what a second
-    //  array of animation names added without the marker comes out as.
+    //    and the twenty-five lines in Show() that told the two apart, which
+    //    were subtly WRONG and could not have been found from inside a
+    //    script. See the note on the old code in AnimationRef.h.
+    //
+    //  The type carries all of it. What is left below is the part a type
+    //  cannot know: which slot means which direction.
     //  ----------------------------------------------------------------------
     // ======================================================================
-    std::string walkAnimations[kFacingCount];   // [animation] right, left, up, down
+    eng::AnimationRef walkAnimations[kFacingCount];   // right, left, up, down
 
-    // ======================================================================
-    //  AND THE SAME THING AGAIN, WHICH IS THE POINT OF IT BEING HERE.
-    //
-    //  THE MARKER IS ON THE LINE ABOVE THE DECLARATION this time rather than
-    //  at the end of it. That is the other place it is allowed, and the
-    //  reason that form exists: a variable with a comment block over it has
-    //  nowhere good to put a trailing marker. Neither of these two arrays is
-    //  known to the engine or to the editor by name.
-    //
-    //  NOTHING READS THESE YET. There is no attack in this script, so the
-    //  four rows they add to the Inspector drive nothing - they are here
-    //  because "can I add another one the same way?" was worth answering in
-    //  the file that asked it. Delete them once it stops being useful.
-    // ======================================================================
-    std::string attackAnimations[4]; // [animation] one per direction, as above
+    // One per direction, as above, and NOTHING READS THESE YET - there is no
+    // attack in this script, so the four rows they add to the Inspector drive
+    // nothing. They are here because "can I add another one the same way?"
+    // was worth answering in the file that asked it, and the answer is now
+    // that there is nothing to add: a declaration of the type is the whole of
+    // it. Delete them once that stops being useful.
+    eng::AnimationRef attackAnimations[4];
 
     void OnStart() {
         m_body = Find<eng::Rigidbody2DComponent>();
@@ -307,7 +291,42 @@ public:
         //}
     }
 
+    //void OnCollisionEnter(const eng::Collision2D& collision) {
+    //    ENGINE_LOG_INFO(eng::Channels::kGame, "TilemapWalker collided with '{}'",
+    //                    NameOf(collision.otherCollider));
+    //}
+
+    // ======================================================================
+    //  WHAT TOUCHED ME, and there are three ways to ask for it now.
+    //
+    //  This takes the whole contact, which is the richest: as well as the
+    //  partner it carries BOTH colliders, so `collision.thisCollider` would
+    //  say which of this entity's colliders was the one entered - the question
+    //  Unity has no answer for. Two shorter forms also work:
+    //
+    //      void OnTriggerEnter(Collider2D other)        // Unity's own
+    //      void OnTriggerEnter(eng::EntityId other)     // just the partner
+    //
+    //  otherCollider is a DATA MEMBER and not a function, and it names a
+    //  COLLIDER - so the entity's name is one more hop away, through Owner().
+    // ======================================================================
+    void OnTriggerEnter(const eng::Collision2D& collision) {
+        ENGINE_LOG_INFO(eng::Channels::kGame, "TilemapWalker triggered by '{}'",
+                        NameOf(collision.otherCollider));
+    }
+
 private:
+    // The name of whatever a collider belongs to, for a log line. Either
+    // pointer can be null - a collider pointer is null on an EXIT event, and
+    // an entity may already have been destroyed this step - so neither is
+    // assumed.
+    static std::string_view NameOf(const eng::ColliderComponent* collider) {
+        if (collider == nullptr || collider->Owner() == nullptr) {
+            return "<nothing>";
+        }
+        return collider->Owner()->Name();
+    }
+
     // Which slot of the array a pair of axes is asking for, or kStill.
     //
     // A DEAD ZONE RATHER THAN != 0. A stick at rest reads a little off centre,
@@ -388,53 +407,30 @@ private:
             return;
         }
 
-        // THE ARRAY, INDEXED BY THE DIRECTION. The bounds are the enum's own,
-        // so there is nothing to check: FacingFor returns one of the four or
-        // kStill, and kStill was handled above.
-        const std::string& wanted = walkAnimations[facing];
-        if (wanted.empty()) {
-            // Nothing set for this direction. The clip that was playing is
-            // LEFT ALONE rather than stopped, so a side-on character walking
-            // up keeps its sideways walk instead of freezing.
-            return;
-        }
-
         // ==================================================================
-        //  A NAME *OR* A PATH, because both are things that end up in the box.
+        //  THE ARRAY, INDEXED BY THE DIRECTION, AND THAT IS THE WHOLE OF IT.
         //
-        //  Dragging an animation out of the Assets panel gives a full path -
-        //  "textures/hero.png#walk_left" - and typing gives a bare name.
-        //  Accepting only one of them would make the other silently do
-        //  nothing, which is exactly how this was reported.
+        //  The bounds are the enum's own, so there is nothing to check:
+        //  FacingFor returns one of the four or kStill, and kStill was handled
+        //  above.
         //
-        //  A PATH NAMING THE SHEET ALREADY PLAYING IS REDUCED TO ITS NAME,
-        //  because Play is far cheaper: it keeps the frames it has already cut
-        //  and restarts the clip, where setting a path re-reads the sheet and
-        //  re-loads every frame. Only a DIFFERENT sheet needs the whole path.
+        //  TWENTY-FIVE LINES USED TO STAND HERE, deciding whether the box held
+        //  a clip's NAME or its full PATH and calling Play or SetAnimationPath
+        //  accordingly. All of it is in the engine now, in
+        //  SpriteAnimationComponent::Play(const AnimationRef&), where it is
+        //  written once and where a test can reach it - and where it is
+        //  CORRECT, which it was not here. It compared against SheetPath(),
+        //  which is empty until something has asked ResolvedFrames(); on an
+        //  entity that was not playing yet nothing had, so the comparison
+        //  always missed and every change of direction re-read the whole
+        //  sheet. The comment above it said it was avoiding exactly that.
+        //
+        //  A BLANK SLOT NEEDS NO GUARD EITHER: Play does nothing with an unset
+        //  reference and says nothing about it, which leaves the clip that was
+        //  playing alone - a side-on character walking up keeps its sideways
+        //  walk instead of freezing.
         // ==================================================================
-        const std::string inside = eng::SubAssetNameOf(wanted);
-
-        if (inside.empty()) {
-            // Not a path at all, so it is a name. Play reports a name no sheet
-            // has - once, in the Console, with the Sprite Animation row in the
-            // Inspector saying the same thing.
-            animation->Play(wanted);
-            return;
-        }
-
-        if (eng::SheetPathOf(wanted) == animation->SheetPath()) {
-            animation->Play(inside);
-            return;
-        }
-
-        // ANOTHER SHEET. SetAnimationPath honours the component's "play when
-        // the scene starts" tick box, which is the authored intent for the
-        // FIRST clip and not for this one - so it is asked to play straight
-        // after, or an entity set not to play on start would change direction
-        // and stand still.
-        if (animation->SetAnimationPath(wanted)) {
-            animation->Play();
-        }
+        animation->Play(walkAnimations[facing]);
     }
 
     // A short ray straight down from just inside the feet.

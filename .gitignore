@@ -31,6 +31,21 @@ _deps/
 CMakeUserPresets.json
 IntelGraphicsProfiles/
 
+# What "File -> Set Up IDE IntelliSense" writes into a project folder, which
+# for this repository is the repository root. Both name absolute paths to
+# wherever the engine headers are on one machine, so a committed copy is wrong
+# on the next rather than merely out of date - and both are rewritten by one
+# menu item, or by `editor --write-ide-files`.
+#
+# BOTH are ignored HERE, including the Visual Studio one, because this root
+# holds a CMakeLists.txt: Visual Studio treats the folder as a CMake project
+# and takes its IntelliSense from the CMake project model, never from
+# CppProperties.json - so that file is pure untracked noise in this one
+# repository. A project folder without a CMakeLists.txt is the opposite case:
+# see the .gitignore the editor writes for a new project.
+/CppProperties.json
+/compile_commands.json
+
 # ---- Compiler and linker artefacts -----------------------------------------
 *.o
 *.obj

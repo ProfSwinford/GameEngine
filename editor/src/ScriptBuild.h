@@ -117,6 +117,111 @@ public:
     static const std::string& CompilerDescription();
     static bool               HasCompiler();
 
+
+    // ========================================================================
+    //  WHAT A SCRIPT IS COMPILED WITH, IN ONE PLACE.
+    //
+    //  The flags and include directories the editor hands the compiler. They
+    //  were written inline in six places - the precompiled header, the
+    //  compile step, the same pair again in the export path, and both POSIX
+    //  equivalents - which was harmless while nothing else wanted them.
+    //
+    //  SOMETHING ELSE WANTS THEM NOW. The IDE files in ScriptIde.h describe
+    //  this exact compile to Visual Studio and to clangd, and a description
+    //  that disagrees with the real build is worse than none at all: it
+    //  reports errors in code that compiles, and stays quiet about code that
+    //  does not. Both failures teach the wrong thing, and neither looks like
+    //  a stale config. One source, six consumers.
+    // ========================================================================
+    struct CompileSettings {
+        // True when the switches use MSVC's spelling - /std:, /I - rather than
+        // the GNU one. Windows is always MSVC here: the script the editor
+        // writes on Windows invokes cl.exe by name.
+        bool msvc = false;
+
+        // What that script invokes: "cl.exe" on Windows, otherwise whatever
+        // compiler was found.
+        //
+        // A CONSTANT ON WINDOWS, AND NOT THE COMPILER THAT WAS FOUND. Those
+        // are not the same thing: the compiler search has a branch that
+        // accepts clang++ off PATH when there is no usable cl.exe, while the
+        // build script written on Windows invokes cl.exe regardless. Taking
+        // the found compiler here would let the description say "clang++" and
+        // then hand it /EHsc and /std:c++20 - and a compile database is read
+        // by a tool that picks MSVC-versus-GNU parsing FROM THAT NAME, so it
+        // would silently drop every switch and parse every script against
+        // the wrong standard. It travels beside `msvc` so the two cannot
+        // disagree.
+        std::string driver;
+
+        // Just "c++20": no leading /std: or -std=.
+        //
+        // NOT the engine's standard, which is C++23. A project's scripts are
+        // held one standard back deliberately, which is the reason every
+        // public header has to stay C++20-clean.
+        std::string standard;
+
+        // /EHsc, the C runtime switch and the warning level - or -fPIC and
+        // -Wall.
+        //
+        // THE C RUNTIME SWITCH IS NOT A PREFERENCE. It has to match the one
+        // the engine was built with, and which one that is was decided when
+        // the editor itself was compiled, not by the project. The warning
+        // level is deliberately modest: this is somebody's game code, and an
+        // unused parameter in a half-written script should not produce a wall
+        // of output.
+        std::vector<std::string> switches;
+
+        // Absolute, forward slashes. Two in a source tree - the engine's
+        // headers and nlohmann/json's, because every component's Deserialize
+        // takes a Json - and exactly ONE beside a released editor.
+        //
+        // The two cases are not a superset of each other: IncludeDirectories
+        // in the .cpp returns early when it finds a shipped include folder, so
+        // a config generated against one install is wrong against the other.
+        // That is the reason these files are generated on request rather than
+        // written once and committed.
+        std::vector<std::string> includeDirs;
+
+        // The header every generated translation unit includes BEFORE it
+        // includes the script: "engine/Engine.h".
+        //
+        // WHY THIS IS PART OF THE COMPILE RATHER THAN A HABIT OF THE SCRIPTS.
+        // The compiler never sees a project's .cpp. It sees a generated unit
+        // whose first line includes this and whose last includes the script,
+        // so a script naming no headers at all still compiles. Anything
+        // describing the compile has to say so too - /FI for a compiler,
+        // forcedInclude for Visual Studio - or the description is stricter
+        // than the build and squiggles working code.
+        std::string forcedInclude;
+
+        // The standard and the switches, spelled for the compiler in
+        // question: {"/std:c++20", "/EHsc", "/MDd", "/W3"}.
+        //
+        // WITHOUT the include directories, because that is the part no two
+        // consumers spell alike - one /I argument each in a compile database,
+        // a separate "includePath" array for Visual Studio, one quoted -I
+        // each in a shell script. The standard and the switches are the part
+        // they all write identically, so that is the part worth handing out
+        // ready-made rather than letting each one rebuild.
+        std::vector<std::string> ParseArguments() const;
+    };
+
+    // The settings above, as they stand for this editor on this machine.
+    // Cheap, but it asks the filesystem whether a shipped include directory
+    // exists, so it is not a constant and must not be cached across installs.
+    static CompileSettings Settings();
+
+    // Where Visual Studio is installed, or empty - and always empty off
+    // Windows.
+    //
+    // The same question the compiler search already asks vswhere, exposed
+    // because opening a project in the IDE needs devenv.exe, which lives
+    // beside the compiler rather than on PATH. Asking vswhere beats guessing
+    // at a path, and guessing is what every hard-coded "Program Files
+    // (x86)\Microsoft Visual Studio\2019" eventually becomes.
+    static std::string VisualStudioPath();
+
     // True when a script under assets/ has been added, changed or removed since
     // the library was last built. Cheap - it only looks at timestamps.
     //

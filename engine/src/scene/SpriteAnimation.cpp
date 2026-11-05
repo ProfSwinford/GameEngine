@@ -247,6 +247,43 @@ bool SpriteAnimationComponent::Play(std::string_view animationName) {
     return true;
 }
 
+bool SpriteAnimationComponent::Play(const AnimationRef& animation) {
+    if (!animation.IsSet()) {
+        return false;   // a direction this character does not have
+    }
+
+    // ALWAYS THE CLIP'S NAME, whichever shape the reference holds - that is
+    // AnimationRef::Clip's contract and the reason it is not SubAssetNameOf.
+    const std::string clip = animation.Clip();
+
+    // EMPTY WHEN THE REFERENCE IS A BARE NAME, which is what the text box
+    // this type replaces produced. Then this component's own sheet is the
+    // only sheet it could mean, and Play(name) is exactly that call.
+    const std::string wantedSheet = animation.Sheet();
+    if (wantedSheet.empty()) {
+        return Play(std::string_view(clip));
+    }
+
+    // NO RESOLVE FORCED, and not SheetPath(): see the header. SheetPathOf is
+    // documented to return its input unchanged rather than empty for a path
+    // with no '#', so the IsSubAsset guard is what keeps "we have no sheet"
+    // from comparing equal to a sheet of the same name.
+    const std::string ourSheet =
+        IsSubAsset(m_path) ? SheetPathOf(m_path) : std::string{};
+
+    if (!ourSheet.empty() && ourSheet == wantedSheet) {
+        return Play(std::string_view(clip));
+    }
+
+    // ANOTHER SHEET, or none yet. This is the expensive branch and it should
+    // be reached once per sheet change rather than once per direction change.
+    if (!SetAnimationPath(animation.Path())) {
+        return false;
+    }
+    Play();
+    return true;
+}
+
 void SpriteAnimationComponent::Play() {
     // A CLIP THAT HAD FINISHED STARTS AGAIN; one that was merely paused picks
     // up where it was. Those are the two things "play" can mean, and which one

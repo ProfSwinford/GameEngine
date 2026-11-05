@@ -57,6 +57,15 @@ project(Engine2D
 #    * a field added to or removed from a struct a script holds by value
 #    * a virtual function added to ScriptBehaviour, or its order changed
 #    * an enum's values reordered or renumbered
+#    * the SIGNATURE of a function pointer in a table a script fills in and
+#      the engine calls - ScriptHooks, most of all. Strictly read, the bullets
+#      above do not cover that: every function pointer is eight bytes, so
+#      sizeof(ScriptHooks) and every member offset can be identical while the
+#      CALLING CONVENTION of one of them has changed. Nothing compares sizeof,
+#      the mangled name of ScriptRegistry::Register encodes only the class
+#      name, and the editor's header-mtime rebuild hides it on the machine
+#      that made the change - so this number really is the only thing between
+#      a stale script DLL and reading one type as another.
 #    * anything else that changes the layout of something crossing the DLL
 #      boundary
 #
@@ -83,7 +92,19 @@ project(Engine2D
 #       the base of every script class changed. Nothing in ScriptAbi.h compares
 #       sizeof or alignof; this number is the only thing standing between a
 #       stale script DLL and reading the wrong offsets at run time.
-set(ENGINE_SCRIPT_ABI 2)
+#    3  the three trigger slots in ScriptHooks were retyped from
+#       void(*)(ScriptBehaviour*, EntityId) to
+#       void(*)(ScriptBehaviour*, const Collision2D&), so that OnTriggerEnter
+#       and OnTriggerStay can take a collider and all three can take the whole
+#       contact. The struct's size and every offset in it are UNCHANGED - only
+#       what those three pointers may be called with - which is exactly the
+#       case the new bullet above was added for. A script DLL built against
+#       the old header installs a function expecting an EntityId where the
+#       engine now passes a const Collision2D&: the id's index would be read
+#       out of the low half of a pointer and its generation out of the high
+#       half, so the hook would silently never match anything rather than
+#       crashing. Nothing but this number catches it.
+set(ENGINE_SCRIPT_ABI 3)
 
 # --- which version of C++ ----------------------------------------------------
 # C++23 is used for std::format (see core/Log.h) and a handful of other
@@ -136,4 +157,130 @@ endif()
 if(ENGINE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# =============================================================================
+#  game_scripts - THE PROJECT'S OWN SCRIPTS, TYPE-CHECKED AND NOTHING ELSE.
+#
+#  Read the note at the top of this file first: there was briefly a CMake
+#  target for the scripts, and it was removed because two build systems
+#  writing the same file disagree. One builder, one output.
+#
+#  THAT RULE IS INTACT. This target produces no library, no DLL and nothing
+#  under assets/ or .build/ - only object files in the build tree, which
+#  nothing loads and nothing looks for. The editor is still the only thing
+#  that builds the scripts anybody runs.
+#
+#  So what is it for? Two things that cost nothing once the sources are named:
+#
+#  INTELLISENSE IN A SOURCE TREE. Visual Studio treats any folder holding a
+#  CMakeLists.txt as a CMake project, configures IntelliSense from the CMake
+#  project model, and ignores the CppProperties.json the editor can write for
+#  a plain project folder - so in here the thing that makes
+#  <engine/Engine.h> resolve inside a script is that some target names it as a
+#  source. EXCLUDE_FROM_ALL does not hide a target from that model.
+#
+#  For clangd it is the exported compile database that matters instead, and
+#  that is a NINJA feature: the Visual Studio generator ignores
+#  CMAKE_EXPORT_COMPILE_COMMANDS, so a tree configured with it has no database
+#  at all. The presets here name no generator, so which one you get depends on
+#  how you configured.
+#
+#  A TYPECHECK WORTH HAVING. Nothing in `all` ever compiles assets/, so a
+#  script can sit broken in the tree beside a completely green test suite -
+#  which has happened. `cmake --build . --target game_scripts` is a one-line
+#  answer to "do the scripts in this checkout still compile?".
+#
+#  EXCLUDE_FROM_ALL, so it is never built unless asked. That is deliberate:
+#  these are game scripts, and a warning in somebody's half-written behaviour
+#  must not fail the engine's build - least of all under the strict preset.
+# =============================================================================
+file(GLOB_RECURSE GAME_SCRIPT_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.cc"
+     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.cxx")
+
+# A SCRIPT CAN BE WRITTEN ENTIRELY IN A HEADER, and the editor compiles those
+# too - it pulls every .h under assets/ that contains ENGINE_REGISTER_SCRIPT
+# through a generated unit of its own (ScriptBuild::Sources::headers). Taking
+# only .cpp here would make "do the scripts in this checkout compile?" answer
+# yes for a checkout where one of them does not, which is worse than not
+# asking.
+#
+# The same content test the editor uses, so the two source sets agree. A
+# header WITHOUT a registration is left alone, for the editor's reason: a
+# helper written to be included in one particular place can easily fail to
+# compile on its own.
+#
+# One honest limit: this test runs at CONFIGURE time, so adding
+# ENGINE_REGISTER_SCRIPT to a header that already exists is picked up on the
+# next configure rather than the next build. CONFIGURE_DEPENDS catches a
+# header being added or removed, not one being edited.
+file(GLOB_RECURSE GAME_SCRIPT_HEADERS CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.hpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.hxx")
+
+foreach(header IN LISTS GAME_SCRIPT_HEADERS)
+    file(STRINGS "${header}" registers REGEX "ENGINE_REGISTER_SCRIPT" LIMIT_COUNT 1)
+    if(registers)
+        # LANGUAGE CXX, or CMake files a .h away as a header and compiles
+        # nothing. It also gets /TP from the C++ rule, which is what stops a
+        # .h being read as C.
+        set_source_files_properties("${header}" PROPERTIES LANGUAGE CXX)
+        list(APPEND GAME_SCRIPT_SOURCES "${header}")
+    endif()
+endforeach()
+
+if(GAME_SCRIPT_SOURCES)
+    # OBJECT, so there is no library to disagree with the editor's.
+    add_library(game_scripts OBJECT EXCLUDE_FROM_ALL ${GAME_SCRIPT_SOURCES})
+
+    # C++20, NOT the engine's C++23, because that is what the editor compiles
+    # a project's scripts at - the reason every public header has to stay
+    # C++20-clean. It has to be the target PROPERTY: CMAKE_CXX_STANDARD above
+    # already made this target 23, and cxx_std_20 as a compile FEATURE would
+    # be taken as a floor and lose to it.
+    #
+    # CXX_SCAN_FOR_MODULES is off because this target only ever type-checks.
+    # Ninja scans every C++20-or-later target for module dependencies, and
+    # there is nothing here to find.
+    set_target_properties(game_scripts PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        CXX_SCAN_FOR_MODULES OFF)
+
+    # The engine's headers and, through it, nlohmann/json's - the same two
+    # directories the editor passes a script, and linking is the way to get
+    # both without naming either. Nothing is linked: an OBJECT library stops
+    # at the objects.
+    target_link_libraries(game_scripts PRIVATE engine)
+
+    # THE FORCED INCLUDE IS NOT OPTIONAL, and leaving it out is the one way
+    # this target can be WRONG rather than merely narrow. The editor never
+    # hands a project's .cpp to the compiler: it compiles a generated unit
+    # whose first line is #include <engine/Engine.h> and whose last includes
+    # the script. So a script naming no headers at all still compiles, and
+    # anything claiming to describe that compile has to say so too - exactly
+    # the argument CompileSettings::forcedInclude makes in
+    # editor/src/ScriptBuild.h, and exactly what the editor writes into a
+    # compile database as /FI. Without it this target, and the database CMake
+    # exports for it, are both stricter than the build and report errors in
+    # scripts that build perfectly.
+    #
+    # /W3 matches what the editor really uses on a project's scripts, and
+    # engine_set_warnings is deliberately NOT called: it would add /W4
+    # /permissive-, report warnings the real script build never shows, and
+    # turn them into errors under the strict preset.
+    if(MSVC)
+        target_compile_options(game_scripts PRIVATE /W3 /FIengine/Engine.h)
+    else()
+        target_compile_options(game_scripts PRIVATE -Wall -include engine/Engine.h)
+    endif()
+
+    list(LENGTH GAME_SCRIPT_SOURCES GAME_SCRIPT_COUNT)
+    message(STATUS
+        "game_scripts: ${GAME_SCRIPT_COUNT} project script(s) available to type-check "
+        "(not built by default)")
 endif()
