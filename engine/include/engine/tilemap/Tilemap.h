@@ -146,8 +146,21 @@ public:
     TileId FindInPalette(std::string_view otilePath) const;
 
     // Drops palette entries no cell uses any more, and renumbers the cells
-    // that remain. Called when a map is saved, so a map edited for an hour
-    // does not carry a palette of everything that was ever tried in it.
+    // that remain.
+    //
+    // A MANUAL ACTION, not part of saving. Two buttons call it - the
+    // Inspector's "Drop unused entries" and the Tile Palette's "Tidy
+    // palette" - and nothing on the save path does.
+    //
+    // It used to claim it was called on save, which it never was: Serialize
+    // writes the palette verbatim and is const, so it could not compact even
+    // if it wanted to. The promise is the wrong way round to keep, too -
+    // compaction RENUMBERS every cell, and a save that silently renumbers
+    // your data is a worse surprise than a palette with a few abandoned
+    // entries in it.
+    //
+    // IT PINS THE CELL SIZE when that size was being derived; see the note in
+    // the implementation for the resize this prevents.
     std::size_t CompactPalette();
 
     // ---- geometry ----------------------------------------------------------

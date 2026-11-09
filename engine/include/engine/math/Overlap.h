@@ -184,8 +184,19 @@ struct ConvexShape {
 struct Contact {
     bool  touching   = false;
     Vec2  normal{};
+
+    // NEGATIVE WHEN THEY OVERLAP, by that much. When they do not, it is the
+    // LARGEST gap over every separating axis - which is the real distance
+    // between them, and not merely the first gap found.
     float separation = 0.0f;
-    Vec2  point{};
+
+    // THE MIDDLE OF THE REGION THE TWO SHAPES SHARE, which is what the
+    // contact solver applies its impulse at - so it decides how much of that
+    // impulse becomes spin. Exact for a circle; the middle rather than the
+    // deepest part of a face or a corner, which is all "roughly where" needs
+    // to mean. See ContactPoint in Overlap.cpp for what this cost when it was
+    // merely the average of two support vertices.
+    Vec2 point{};
 };
 
 // What a ray found.

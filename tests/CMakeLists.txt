@@ -31,6 +31,7 @@ set(TEST_SOURCES
     src/test_prefab.cpp
     src/test_scriptapi.cpp
     src/test_spriteanimation.cpp
+    src/test_debug.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

@@ -181,6 +181,19 @@ void TilemapColliderComponent::EnsureBuilt() const {
     }
 }
 
+Vec2 TilemapColliderComponent::LocalSize() const {
+    EnsureBuilt();
+    if (m_boxes.empty()) {
+        return Vec2{0.0f, 0.0f};
+    }
+    AABB bounds = m_boxes.front();
+    for (const AABB& box : m_boxes) {
+        bounds.Encapsulate(box.min);
+        bounds.Encapsulate(box.max);
+    }
+    return bounds.Size();
+}
+
 int TilemapColliderComponent::WorldShapeCount() const {
     EnsureBuilt();
     return static_cast<int>(m_boxes.size());
@@ -214,10 +227,14 @@ int TilemapColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
 float TilemapColliderComponent::Area() const {
     EnsureBuilt();
 
+    // The boxes are in the map's own space, so the entity's scale has to be
+    // put back - the same correction every other collider's Area() makes.
+    const Vec2 scale = OwnerWorldScale();
+
     float total = 0.0f;
     for (const AABB& box : m_boxes) {
         const Vec2 size = box.Size();
-        total += size.x * size.y;
+        total += size.x * scale.x * size.y * scale.y;
     }
     return total;
 }

@@ -85,8 +85,29 @@ eng::AABB ScenePanel::EntityWorldBounds(eng::Entity& entity) {
     // would have quietly made a capsule, polygon or edge collider impossible
     // to click on, because neither lookup would match and it would fall
     // through to the sprite.
+    // ======================================================================
+    //  AND ONLY IF IT HAS ANY GEOMETRY, which is the half this skipped.
+    //
+    //  A collider that produces no world shapes - a tilemap with nothing
+    //  painted, or every tile marked "collision": "None"; an edge or polygon
+    //  collider cut down to too few points - makes WorldBounds fall into its
+    //  degenerate branch and return a ZERO-SIZE box at the entity origin. The
+    //  click test below is then true only when the cursor is at exactly
+    //  (0,0), so the entity became impossible to select in the view at any
+    //  zoom: visible in the Hierarchy, unreachable in the Scene. The Tile
+    //  Palette's "New Tilemap entity" button produces one of these every
+    //  time.
+    //
+    //  So an empty collider falls through to the sprite box, and failing that
+    //  to the fixed one below - which is the chain this function's own
+    //  comment promises.
+    // ======================================================================
     if (auto* collider = eng::FindCollider(entity); collider != nullptr) {
-        return collider->WorldBounds();
+        const eng::AABB bounds = collider->WorldBounds();
+        const eng::Vec2 size   = bounds.Size();
+        if (size.x > 0.0f && size.y > 0.0f) {
+            return bounds;
+        }
     }
 
     const eng::Vec2 position = entity.Transform().WorldPosition();
@@ -1091,6 +1112,27 @@ void ScenePanel::RenderView() {
                               eng::GizmoCategory::Bounds);
         });
     }
+
+    // ======================================================================
+    //  THE COLLIDERS, WHICH THE COLLISION SYSTEM USED TO DRAW ITSELF.
+    //
+    //  It drew them from the end of its own Update, and an Update only runs
+    //  when the clock asks for a fixed step - which a PAUSED clock never
+    //  does, and a paused clock is what the editor sits in for the entire
+    //  time you are building a scene. So the one view whose whole job is to
+    //  show you what is really there showed no colliders at all until Play
+    //  was pressed, and a collider you had just added looked like it had not
+    //  worked.
+    //
+    //  Asking from here fixes both halves of that: the Scene view gets the
+    //  outlines whether anything is simulating or not, and a shipped game -
+    //  which renders this same queue - no longer draws them at all.
+    //
+    //  THE TOUCHING COLOUR IS ONLY CLAIMED WHILE PLAYING. Outside play mode
+    //  nothing has been tested, so there is no honest answer to "is this
+    //  touching something" and none is given. See CollisionSystem::DrawGizmos.
+    // ======================================================================
+    eng::CollisionSystem::DrawGizmos(eng::Engine::Get().IsInPlayMode());
 
     eng::Engine::Get().RenderWorld(m_camera, /*includeGizmos=*/true,
                                    /*editorTints=*/true);

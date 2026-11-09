@@ -117,7 +117,8 @@ public:
     //   "angularDrag":   0.05
     //   "gravityScale":  1.0
     //   "freezeRotation": false
-    //   "velocity":      [0, 0]
+    //   "velocity":        [0, 0]
+    //   "angularVelocity": 0.0      radians per second
     bool Deserialize(const Json& node, std::string& outError) override;
     bool Serialize(Json& out) const override;
 
@@ -272,6 +273,21 @@ private:
     Vec2 m_moveTarget{0.0f, 0.0f};
     bool m_hasRotateTarget = false;
     float m_rotateTarget = 0.0f;
+
+    // WHETHER THE VELOCITY THIS BODY IS CARRYING IS A CATCH-UP VELOCITY that a
+    // target put there, and WHAT THAT VELOCITY WAS. It has to live through the
+    // collision stage so the solver can push things with it, and be gone by
+    // the next step so one call to MovePosition does not move the body
+    // forever.
+    //
+    // THE VALUE IS KEPT AS WELL AS THE FLAG, so that a script which calls
+    // MovePosition once and then switches to SetVelocity is not silently
+    // robbed of a step: the wipe only fires when the velocity is still the
+    // one the target produced. See IntegrateVelocity.
+    bool m_spentMoveTarget   = false;
+    bool m_spentRotateTarget = false;
+    Vec2 m_spentVelocity{0.0f, 0.0f};
+    float m_spentAngularVelocity = 0.0f;
 };
 
 // ---------------------------------------------------------------------------

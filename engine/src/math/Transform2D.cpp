@@ -162,6 +162,27 @@ void Transform2D::SetWorldPosition(Vec2 world) {
     m_position = m_parent->WorldMatrix().Inverse().TransformPoint(world);
 }
 
+void Transform2D::TranslateWorld(Vec2 delta) {
+    if (m_parent == nullptr) {
+        // With no parent, local and world are the same thing.
+        m_position += delta;
+        return;
+    }
+
+    const Mat3 parentWorld = m_parent->WorldMatrix();
+
+    // ASKED BEFORE INVERTING, so a flattened parent costs a comparison
+    // instead of a warning. See the note on the declaration.
+    if (std::fabs(parentWorld.Determinant()) < 1e-12f) {
+        m_position += delta;
+        return;
+    }
+
+    // A VECTOR and not a point: the parent's translation is the same before
+    // and after the move, so it cancels and only the 2x2 part matters.
+    m_position += parentWorld.Inverse().TransformVector(delta);
+}
+
 void Transform2D::SetWorldRotation(float radians) {
     if (m_parent == nullptr) {
         m_rotation = radians;

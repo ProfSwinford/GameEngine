@@ -117,6 +117,27 @@ public:
     // position that corresponds to under the current parent.
     void SetWorldPosition(Vec2 world);
 
+    // ======================================================================
+    //  MOVE BY A WORLD-SPACE DELTA.
+    //
+    //  SetWorldPosition(WorldPosition() + delta) says the same thing and is
+    //  the wrong way to say it in a per-step loop: it transforms a point
+    //  twice and inverts the parent chain every call. This converts the
+    //  delta as a VECTOR, which is one matrix and no point arithmetic.
+    //
+    //  AND IT SURVIVES A PARENT SCALED FLAT. A parent at scale (1, 0) -
+    //  "usually one frame of an animation", as the note at the top of this
+    //  file puts it - cannot be inverted, and asking anyway makes
+    //  Mat3::Inverse warn and hand back the identity: the child teleports to
+    //  the parent's origin, once per body per step, with a line in the log
+    //  each time. There is no local delta that produces the requested world
+    //  one in that case, so the delta is applied locally and nothing is said.
+    //
+    //  The physics integrator and the contact solver both move bodies through
+    //  this; see Rigidbody2DComponent::IntegrateVelocity.
+    // ======================================================================
+    void TranslateWorld(Vec2 delta);
+
     // The other two, which were missing - and their absence was not symmetric
     // with SetWorldPosition, it was just a gap. "Point this at the player" is
     // a world-space statement, and under a rotating parent there is no way to

@@ -149,6 +149,13 @@ public:
     void OnAttach() override;
     void OnDetach() override;
 
+    // SEVERAL COLLIDERS ON ONE ENTITY IS A COMPOUND BODY, which is the answer
+    // this file gives twice already: once for a shape that is not convex, and
+    // once for a character whose feet and head want different shapes. The
+    // rules are in the note on AttachedRigidbody below - they do not collide
+    // with each other, and events are per collider pair.
+    bool AllowsSeveral() const override { return true; }
+
     virtual ColliderShape Shape() const = 0;
 
     // THE ONE THING THE COLLISION SYSTEM ASKS FOR: this collider as geometry,
@@ -170,10 +177,42 @@ public:
     // only the two that can produce more override it.
     virtual int WorldShapeCount() const { return 1; }
 
-    // The area of the shape, for a rigidbody working its mass out from a
-    // density. Approximate for a capsule, which is close enough for a number
-    // whose job is to make heavy things feel heavy.
+    // ======================================================================
+    //  THE AREA OF THE SHAPE **IN WORLD UNITS**, for a rigidbody working its
+    //  mass out from a density. Approximate for a capsule, which is close
+    //  enough for a number whose job is to make heavy things feel heavy.
+    //
+    //  IN WORLD UNITS, and it used to be in the collider's own. So a crate
+    //  scaled up four times weighed exactly what the unscaled one weighed -
+    //  sixteen times too little - and the two of them bounced off each other
+    //  as equals. The giveaway was that the SAME collider's other mass
+    //  property disagreed: the inertia beside it has always read the scaled
+    //  geometry, so scaling an entity changed how hard it was to spin without
+    //  changing how hard it was to push.
+    //
+    //  It is the area of what WorldShapes() produces - rounding included,
+    //  which is the same rule WorldBounds() follows, so the two cannot drift
+    //  apart. An EDGE chain is the stated exception: a line has no area and
+    //  gets none, so a body whose only collider is one falls back to its
+    //  stated mass.
+    // ======================================================================
     virtual float Area() const = 0;
+
+    // ======================================================================
+    //  HOW BIG THIS COLLIDER IS IN ITS OWN SPACE: a width and a height, with
+    //  no rotation and no scale in it.
+    //
+    //  FOR A RIGIDBODY WORKING OUT HOW HARD IT IS TO SPIN, and that is the
+    //  only caller. It used to take the collider's WORLD BOUNDS instead,
+    //  which is the upright box AROUND the rotated shape - so a 100x100 box
+    //  reported 100x100 at zero degrees and 141x141 at forty-five, and its
+    //  inertia doubled and halved once a revolution. Inertia is a constant
+    //  property of a body; it cannot depend on where the body is pointing.
+    //
+    //  Rotation-free, so the caller multiplies by the entity's world SCALE
+    //  and gets an answer that holds at every angle.
+    // ======================================================================
+    virtual Vec2 LocalSize() const = 0;
 
     // The upright box this collider occupies in the world. Built from
     // WorldShapes, so a collider cannot have bounds that disagree with its own
@@ -253,6 +292,11 @@ protected:
     // Every collider needs it and nobody should re-derive the null check.
     Mat3 OwnerWorldMatrix() const;
 
+    // How much the entity stretches this collider, per axis, never negative.
+    // Area() and the world-shape builders all need it and none of them should
+    // decide on their own what a mirrored scale means.
+    Vec2 OwnerWorldScale() const;
+
     std::string              m_layer = "Default";
     std::vector<std::string> m_collidesWith{kCollisionLayerAll};
     Vec2                     m_offset{0.0f, 0.0f};
@@ -299,8 +343,33 @@ public:
     float EdgeRadius() const { return m_edgeRadius; }
     void  SetEdgeRadius(float radius);
 
+    // The rounding counts: a box with a large edgeRadius really is that much
+    // wider, and the capsule it becomes at the limit says so too.
+    Vec2 LocalSize() const override {
+        return (m_halfExtents + Vec2{m_edgeRadius, m_edgeRadius}) * 2.0f;
+    }
+
 private:
-    Vec2  m_halfExtents{0.5f, 0.5f};
+    // ======================================================================
+    //  IN PIXELS, LIKE EVERYTHING ELSE HERE.
+    //
+    //  These were Unity's metre-scale figures - half-extents of 0.5, a radius
+    //  of 0.5, a capsule of 1x2 - in an engine whose units are pixels. So
+    //  "Add component -> BoxColliderComponent" on a 32x32 sprite gave a
+    //  collider ONE PIXEL across, a thousandth of the sprite's area, with the
+    //  Inspector offering to drag it in steps of half a pixel. It also
+    //  collapsed the entity's click box in the Scene view, because that box
+    //  comes from the collider when there is one.
+    //
+    //  config/engine.json already states the rule for this project - "Unity's
+    //  -9.81 is metres per second squared; this project works in PIXELS, so
+    //  -981 is the same real-world gravity at roughly 100 pixels to the
+    //  metre". Gravity was rescaled by that hundred and these were not.
+    //
+    //  32 pixels across, which is this project's tile and sprite size, so a
+    //  new collider lands roughly on the thing it was added to.
+    // ======================================================================
+    Vec2  m_halfExtents{16.0f, 16.0f};
     float m_edgeRadius = 0.0f;
 };
 
@@ -330,8 +399,10 @@ public:
     float Radius() const { return m_radius; }
     void  SetRadius(float radius) { m_radius = radius; }
 
+    Vec2 LocalSize() const override { return Vec2{m_radius, m_radius} * 2.0f; }
+
 private:
-    float m_radius = 0.5f;
+    float m_radius = 16.0f;   // pixels; see the note on BoxCollider's default
 };
 
 // ---------------------------------------------------------------------------
@@ -368,8 +439,14 @@ public:
     CapsuleDirection Direction() const { return m_direction; }
     void SetDirection(CapsuleDirection direction) { m_direction = direction; }
 
+    // Already a width and a height, which is the whole point of describing a
+    // capsule Unity's way.
+    Vec2 LocalSize() const override { return m_size; }
+
 private:
-    Vec2             m_size{1.0f, 2.0f};
+    // Pixels; see the note on BoxCollider's default. Taller than it is wide,
+    // which is the character shape a capsule is usually for.
+    Vec2             m_size{32.0f, 64.0f};
     CapsuleDirection m_direction = CapsuleDirection::Vertical;
 };
 
@@ -411,6 +488,8 @@ public:
     // assumes both, and a shape that fails this collides as its convex hull
     // rather than as drawn - so the editor shows the answer.
     bool IsConvex() const;
+
+    Vec2 LocalSize() const override;
 
     // A square, as a starting point for a new collider. A polygon collider
     // with no points at all cannot be dragged into shape.
@@ -465,6 +544,8 @@ public:
 
     bool Loop() const { return m_loop; }
     void SetLoop(bool loop) { m_loop = loop; }
+
+    Vec2 LocalSize() const override;
 
     static std::vector<Vec2> DefaultLine();
 
@@ -545,6 +626,24 @@ public:
     // data having to travel through the message itself.
     static const Collision2D* FindContact(EntityId a, EntityId b);
 
+    // ======================================================================
+    //  THE CONTACT ONE EVENT WAS SENT FOR, by the token that event carries in
+    //  its payload - or null for an exit, which has no contact.
+    //
+    //  THIS IS THE ONE THAT KEEPS THE PROMISE ABOVE. The two lookups below
+    //  are keyed by ENTITY pair and can therefore hold only one contact per
+    //  entity pair, the deepest. For a compound body that is not enough:
+    //  three of its colliders touching one wall is three events, and each has
+    //  to be handed ITS OWN contact or `thisCollider` names the wrong
+    //  collider in two of the three handlers and two of the three contacts
+    //  are unreachable.
+    //
+    //  The token is only valid within the step the event was sent in, which
+    //  is the same lifetime the contact has. Stage 400 fills them and stage
+    //  500 delivers them, with nothing able to run in between.
+    // ======================================================================
+    static const Collision2D* ContactForEvent(int pairToken);
+
     // THE SAME FOR A TRIGGER PAIR, and a separate function rather than a flag
     // because the two must not be confusable: a collision hook handed a
     // trigger's record would read a contact that was never solved, and a
@@ -565,6 +664,47 @@ public:
     // a floor. Clamped to a sane range.
     static void SetSolverIterations(int iterations);
     static int  SolverIterations();
+
+    // ======================================================================
+    //  EVERY COLLIDER, DRAWN AS THE SHAPE THE SOLVER ACTUALLY USES.
+    //
+    //    green   a solid collider
+    //    cyan    a trigger
+    //    grey    disabled, so taking part in nothing
+    //    red     touching something, and only ever when `liveContacts`
+    //
+    //  WHOEVER WANTS TO SEE THEM CALLS THIS, and that is the whole reason it
+    //  is a function rather than the tail of Update, which is where it used
+    //  to be. That one placement was wrong in both directions at once:
+    //
+    //    IN THE EDITOR NOTHING WAS DRAWN. A paused clock asks for no fixed
+    //    steps, and a paused clock is exactly what the editor sits in while
+    //    you are editing - so Update never ran, and a collider you had just
+    //    added to an entity was invisible until you pressed Play. It is the
+    //    same trap CameraSystem::Apply and DeferredOps::Apply are called
+    //    outside the step loop to avoid; see the end of Engine::Simulate.
+    //
+    //    IN A SHIPPED GAME EVERYTHING WAS DRAWN. The player renders the gizmo
+    //    queue, every category is on by default and nothing switched this one
+    //    off, so a built game drew its own collision outlines over itself.
+    //
+    //  The Scene view calls it once a frame - see ScenePanel::RenderView,
+    //  beside the grid and the camera outline - and the Game view does not,
+    //  which is the whole difference between the two panels.
+    //
+    //  `liveContacts` IS WHETHER THE TOUCHING SET IS WORTH BELIEVING. After a
+    //  step it is, so red means red. With the clock paused in the editor
+    //  nothing has been tested and the set holds whatever the last play
+    //  session left, so the Scene view passes false: no collider is then
+    //  claimed to be touching anything, and green there means "a collider"
+    //  rather than "clear".
+    //
+    //  A STANDALONE GAME CAN STILL ASK FOR THEM. A script calling this from
+    //  OnUpdate gets the outlines back, which is the debugging escape hatch
+    //  the old placement provided by accident and this one provides on
+    //  purpose.
+    // ======================================================================
+    static void DrawGizmos(bool liveContacts = true);
 
     static void RegisterComponentTypes();
 };

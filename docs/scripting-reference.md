@@ -3,6 +3,12 @@
 Everything a script can call, arranged by what you are trying to do rather than
 by which header it lives in.
 
+> **Looking for one particular function?** [`docs/api/index.html`](api/index.html)
+> is the browsable API reference - every public type reachable from
+> `<engine/Engine.h>`, a page per class, with a search box. Open it in a
+> browser; it needs no server. This page is the narrative; that one is the
+> index.
+
 A script is a C++ class that inherits `eng::ScriptBehaviour`, writes only the
 lifecycle functions it actually wants, and ends with
 `ENGINE_REGISTER_SCRIPT(YourClass)`. `assets/scripts/TestScript.cpp` is the
@@ -74,6 +80,30 @@ For clangd in a source tree it is the exported compile database that matters
 instead, and only the Ninja presets produce one - the Visual Studio generator
 writes none.
 
+**If `ENGINE_REGISTER_SCRIPT` on its own looks like an error, the CMake cache
+is stale.** It is worth knowing the shape of this one, because the symptom
+points nowhere near the cause. A cache configured before `game_scripts`
+existed has no target claiming `assets/scripts/*.cpp`, so Visual Studio falls
+back to a default configuration for those files - and the default standard is
+below C++20. `ScriptHooks.h` then stops parsing at its first `concept`, on
+line 64, while the macro is defined at line 503. It is never reached, so the
+one line in your script that uses it is the one line that goes red. Meanwhile
+the heuristic include scan still resolves enough `eng::` names that nothing
+else looks especially wrong.
+
+In Visual Studio: **Project -> Configure Cache**, or close the folder and open
+it again. Anywhere else: reconfigure the preset.
+
+**If instead `std::` and every `#include` look like errors, the files were
+written by an editor older than this paragraph.** Visual Studio inherits no
+toolchain environment for a folder, so `CppProperties.json` has to name the
+directories where the compiler keeps `<algorithm>` and `<windows.h>` as well
+as the engine's. The first versions of it named only the engine, and a
+`<algorithm>` that cannot be found is a *fatal* error - the file stops being
+parsed there, so everything in it goes red at once rather than one line of it.
+Run **File -> Set Up IDE IntelliSense** again and the include path will have
+them.
+
 ---
 
 ## Coming from Unity
@@ -87,6 +117,7 @@ The vocabulary is different in two places and the same everywhere else:
 | `MonoBehaviour` | `eng::ScriptBehaviour` | You inherit it and write only the hooks you want. |
 | `GetComponent<T>()` | `Find<T>()` | House rule: a lookup that can come back empty is `Find`, never `Get`. |
 | `Instantiate` | `Instantiate` | The same name, because it is the same thing. |
+| `Debug.Log`, `Debug.DrawLine` | `eng::Debug` | The same class under the same name, minus the channel the engine's own macros require. See **Drawing and logging**. |
 | `transform`, `gameObject`, `name`, `tag` | the same, spelled the same | Bare names on the base class, reached with `->`. See the next section. |
 
 Everything else keeps its Unity name where there is one. The full mapping is at
@@ -990,26 +1021,116 @@ default in the code reaches every entity that never overrode it.
 
 ## Drawing and logging
 
-```cpp
-eng::Gizmos::Line(a, b, colour)
-eng::Gizmos::Circle(centre, radius, colour)
-eng::Gizmos::Box(eng::AABB::FromCenterHalfExtents(centre, size * 0.5f), colour)
-eng::Gizmos::Text(position, "42", colour)
-```
+This is Unity's `Debug` class, with Unity's names. `eng::Debug` is one include
+away like everything else, and it is the whole of what a script needs for
+either job.
 
-The fourth argument of each is `lifetimeSeconds`, and **it defaults to 0, which
-means one frame** - so call them every step from the thing they describe. Pass a
-longer life for something that should linger, such as marking where a bullet
-went.
+### Logging
 
 ```cpp
-ENGINE_LOG_INFO(eng::Channels::kGame, "collected '{}' ({} left)", name, count);
-ENGINE_LOG_WARN(eng::Channels::kGame, "...");
-ENGINE_LOG_ERROR(eng::Channels::kGame, "...");
+Debug::Log("collected '{}' ({} left)", name, count);
+Debug::LogWarning("no target to shoot at");
+Debug::LogError("scene failed to load: {}", why);
 ```
 
-`config/engine.json` ships with the threshold at `Error`, so `Info` and
-`Warning` do not appear until you lower it.
+**No channel.** The three `ENGINE_LOG_*` macros still exist and still demand
+one - that is what the Console's filter buttons are made of, and engine code
+that says `Physics` or `Resource` earns it. A game script has one channel it
+could possibly mean, so `Debug::Log` uses `Game` and does not ask. When you
+want another:
+
+```cpp
+Debug::In("AI").LogWarning("no path from {} to {}", from, to);
+```
+
+There are **three shapes** of each, and the difference matters once:
+
+```cpp
+Debug::Log("ready");                      // text, printed exactly as written
+Debug::Log("hp {} of {}", hp, maxHp);     // a format and its values
+Debug::Log(transform->WorldPosition());   // one value, printed as {}
+```
+
+The format shape is checked against its arguments **at compile time**, which is
+why it needs a literal. The first shape takes any string, including one built a
+moment ago, and prints it verbatim - so braces in it stay braces. The third is
+Unity's `Debug.Log(object)`: any single value `std::format` can print, which
+includes `Vec2` and `EntityId`.
+
+Two mistakes the compiler cannot catch, because the first shape is a legitimate
+call: `Debug::Log("x={}")` prints `x={}`, and `Debug::Log("{}", 1, 2)` prints
+`1`.
+
+A message from `OnUpdate` arrives sixty times a second, so:
+
+```cpp
+Debug::LogErrorOnce("no Rigidbody2D on '{}'", name);   // once per play session
+Debug::LogEvery(0.5f, "pos {}", transform->WorldPosition());
+```
+
+Both are **keyed by the format string, not by the finished message**, which is
+what makes the second one throttle at all.
+
+```cpp
+Debug::Assert(hp >= 0, "hp went negative: {}", hp);
+```
+
+`Assert` **logs an error and carries on** - Unity's behaviour, and the opposite
+of `<cassert>`. It is not compiled out of a release build either.
+
+`config/engine.json` ships with `logging.threshold` at `Info`, so all three
+levels appear. Raise it to `Warning` or `Error` while hunting something
+specific - and remember afterwards, because a raised threshold is the usual
+answer to "my `Debug::Log` does nothing". `Debug::WillLog()` says.
+
+### Shapes in the world
+
+```cpp
+Debug::DrawLine(from, to);                       // white, this frame
+Debug::DrawLine(from, to, Color::Red(), 2.0f);   // red, lasts two seconds
+Debug::DrawRay(origin, velocity * 0.2f);         // a point and an OFFSET
+Debug::DrawArrow(from, to, Color::Cyan());
+Debug::DrawCircle(centre, radius);
+Debug::DrawBox(centre, size);                    // centre and FULL size
+Debug::DrawCross(hit.point);                     // mark one spot
+Debug::DrawText(position, "hp {}", hp);          // a label in the world
+```
+
+The last argument of each is a lifetime in seconds and **it defaults to 0,
+which means one frame** - so call them every step from the thing they describe.
+Pass a longer life to mark something that happened once, such as where a bullet
+hit.
+
+These are drawn as **gizmos**, which has one consequence worth knowing before
+you report a bug: the **Scene** view draws gizmos and so does a built game, and
+the editor's **Game** view does not, because gizmos are not part of the game.
+Unity works the same way. `eng::Gizmos` is the layer underneath and is still
+there if you want a shape in a specific category or a transformed box.
+
+### Numbers on the screen
+
+```cpp
+void OnUpdate() {
+    Debug::Watch("fps", 1.0f / Time::UnscaledDeltaTime());
+    Debug::Watch("pos", transform->WorldPosition());
+    Debug::Watch("grounded", m_grounded);
+    Debug::ScreenText("step {} of {}", step, total);
+}
+```
+
+One line per call, top-left of the view, rebuilt every frame. Call it from
+`OnUpdate`; from `OnFixedUpdate` it prints twice in a frame that stepped twice.
+It is a **debug overlay and not a UI** - a score or a health bar is
+`UIRectComponent` + `UITextComponent`, and the two are separate on purpose.
+
+### Pausing, and what kind of build this is
+
+```cpp
+Debug::Break();            // stops the editor where it is. Nothing in a built game
+Debug::ClearConsole();     // empties the Console; the log FILE is untouched
+Debug::IsDebugBuild();
+Debug::IsEditorAttached();
+```
 
 ---
 
@@ -1208,7 +1329,7 @@ Said plainly, so that nobody spends an afternoon looking:
 | `enabled`, `isActiveAndEnabled` | **No per-component switch.** `SetActive` / `IsActive` are the *entity's*, and `IsActive()` already means Unity's `activeInHierarchy` - a different thing from `enabled`, so it is left out rather than spelled misleadingly. |
 | `GetComponent<T>`, `CompareTag`, `FindObjectOfType<T>` | The same jobs under house names - `Find<T>`, `HasTag`, `FindFirstComponent<T>`. The *properties* are spelled Unity's way; the *methods* are not, and there are no Unity-spelled aliases for them. |
 | `SendMessage`, `BroadcastMessage` | Different model: `eng::MessageBus` is queued and typed rather than a reflective call by method name. See **Talking to other scripts**. |
-| `print`, `Debug.Log` | `ENGINE_LOG_INFO` and friends. `print` is deliberately absent: a log line should say which channel and which level it is, and `print` says neither. |
+| `print` | Deliberately absent. `eng::Debug::Log` is the one to use - it keeps the level, which `print` throws away, and fills in the channel so you do not have to. `ENGINE_LOG_INFO` and friends are still there for engine code, which means a different channel on almost every line. |
 | `LateUpdate` | None. Stage 700 already runs after all gameplay and movement; see `SystemOrder.h`. |
 | `Input.GetKey(KeyCode)` | Deliberately absent - use named actions. |
 | Gamepad, analog axes | Not wired up. `GetAxis` is currently Unity's `GetAxisRaw`. |
@@ -1244,3 +1365,7 @@ why it is built that way, and those comments go further than this page does:
 [docs/engine-tour.md](engine-tour.md) is the map of the whole engine.
 [docs/editor-guide.md](editor-guide.md) covers the editor, including prefabs and
 the script build.
+[docs/physics-playground.md](physics-playground.md) is a scene that exercises
+every physics interaction, with what a failure looks like at each one - and the
+seven scripts it is built from are plain scripts you can drop into your own
+project.

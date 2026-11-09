@@ -816,6 +816,14 @@ public:
     void OnAttach() override;
     void OnDetach() override;
 
+    // ONE ENTITY, SEVERAL BEHAVIOURS. The Inspector already names a script
+    // header after the script rather than after this class, for exactly this
+    // reason - "so that several scripts on one entity are tellable apart".
+    //
+    // Find<ScriptComponent>() still answers with the FIRST, which is the same
+    // rule every other component follows and the same one Unity follows.
+    bool AllowsSeveral() const override { return true; }
+
     const std::string& ScriptName() const { return m_scriptName; }
 
     // Switches to a different script. Any running behaviour gets its OnDestroy
@@ -923,7 +931,12 @@ public:
     // it wants, and gets the right answer for whichever of these it is in.
     void FixedTick();
     void FrameTick();
-    void DispatchCollision(const std::string& messageType, EntityId other);
+    // `pairToken` names WHICH COLLIDER PAIR the event is for; see
+    // CollisionSystem::ContactForEvent. It defaults to "none", which falls
+    // back to looking the contact up by entity pair - right for a caller that
+    // only has two entity ids, and what a hand-made call in a test wants.
+    void DispatchCollision(const std::string& messageType, EntityId other,
+                           int pairToken = 0);
 
     // Used when the compiled scripts are being reloaded.
     //

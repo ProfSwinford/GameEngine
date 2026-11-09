@@ -220,6 +220,37 @@ std::wstring QuotedArgument(const std::wstring& text) {
 #endif
 
 // ---------------------------------------------------------------------------
+//  THE FORCED INCLUDE, AS A PATH RATHER THAN AS A NAME.
+//
+//  CompileSettings::forcedInclude is the name the build scripts hand to the
+//  compiler - "engine/Engine.h" - and a compiler searches its include
+//  directories for it. AN IDE CONFIG FILE IS NOT A COMPILER. Visual Studio
+//  documents forcedInclude entries as paths, resolvable with ${workspaceRoot}
+//  and environment variables, and says nothing anywhere about searching
+//  includePath for them; a project folder has no engine/Engine.h of its own,
+//  so a relative entry is one Visual Studio may simply never find.
+//
+//  An absolute path is correct under either rule, so that is what both files
+//  get. What it buys is the script that names no headers at all: legal, it
+//  compiles, and the forced include is the ONLY thing making eng:: mean
+//  anything in it.
+//
+//  The bare name is kept when it is under no include directory. That is a
+//  broken install rather than something to paper over, and the relative form
+//  does at least still work for the tools that search.
+// ---------------------------------------------------------------------------
+std::string ForcedIncludePath(const ScriptBuild::CompileSettings& settings) {
+    std::error_code ec;
+    for (const std::string& dir : settings.includeDirs) {
+        const fs::path candidate = fs::path(dir) / settings.forcedInclude;
+        if (fs::exists(candidate, ec)) {
+            return candidate.generic_string();
+        }
+    }
+    return settings.forcedInclude;
+}
+
+// ---------------------------------------------------------------------------
 //  CppProperties.json - what Visual Studio reads in Open Folder mode.
 // ---------------------------------------------------------------------------
 bool WriteCppProperties(const fs::path& root,
@@ -256,13 +287,52 @@ bool WriteCppProperties(const fs::path& root,
     text << "      \"name\": \"Game scripts\",\n";
     text << "      \"intelliSenseMode\": "
          << Quoted(settings.msvc ? "windows-msvc-x64" : "linux-gcc-x64") << ",\n";
+
+    if (settings.msvc) {
+        text << "\n";
+        text << "      // WITHOUT THIS, THE LAST includePath ENTRY IS EMPTY. An Open\n";
+        text << "      // Folder configuration starts with no toolchain environment at\n";
+        text << "      // all; this is the name of the one Visual Studio ships for\n";
+        text << "      // 64-bit MSVC on a 64-bit host, and the name its own CMake\n";
+        text << "      // templates use.\n";
+        text << "      \"inheritEnvironments\": [ \"msvc_x64_x64\" ],\n";
+    }
+
+    // EVERY DIRECTORY IntelliSense WILL HAVE, because it inherits none of
+    // them. The engine and nlohmann first, since those are the interesting
+    // ones; then the compiler's own, which no switch names and which a build
+    // script gets through INCLUDE for free.
+    std::vector<std::string> paths = settings.includeDirs;
+    paths.insert(paths.end(), settings.toolchainIncludeDirs.begin(),
+                 settings.toolchainIncludeDirs.end());
+    if (settings.msvc) {
+        // LAST, AND A SAFETY NET RATHER THAN THE MECHANISM. The absolute
+        // paths above are this machine's toolchain as the editor found it,
+        // which is the one the scripts are really compiled with; this entry
+        // is what still resolves if a Visual Studio update moves it and
+        // nobody has regenerated. Harmless when it duplicates them, because
+        // a repeated include directory is just a repeated lookup.
+        paths.push_back("${env.INCLUDE}");
+    }
+
     text << "\n";
-    text << "      // The engine's headers, and nlohmann/json's - every component's\n";
-    text << "      // Deserialize takes a Json, so a script needs both.\n";
+    text << "      // EVERY HEADER DIRECTORY, THE COMPILER'S OWN INCLUDED.\n";
+    text << "      //\n";
+    text << "      // The engine's headers come first, and nlohmann/json's - every\n";
+    text << "      // component's Deserialize takes a Json, so a script needs both.\n";
+    text << "      // The rest are where cl.exe keeps <algorithm> and <windows.h>.\n";
+    text << "      //\n";
+    text << "      // THOSE ARE NOT PADDING. A compiler is told about them through the\n";
+    text << "      // INCLUDE environment variable rather than through any switch, and\n";
+    text << "      // inherits it; IntelliSense inherits nothing. Listing only the\n";
+    text << "      // engine resolves engine/Engine.h and then stops dead on the\n";
+    text << "      // <algorithm> inside it - a FATAL error, so the file ends there and\n";
+    text << "      // every std:: name, every eng:: name and every include in your\n";
+    text << "      // script goes red at once.\n";
     text << "      \"includePath\": [\n";
-    for (std::size_t i = 0; i < settings.includeDirs.size(); ++i) {
-        text << "        " << Quoted(settings.includeDirs[i])
-             << (i + 1 < settings.includeDirs.size() ? "," : "") << "\n";
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        text << "        " << Quoted(paths[i])
+             << (i + 1 < paths.size() ? "," : "") << "\n";
     }
     text << "      ],\n";
     text << "\n";
@@ -270,8 +340,11 @@ bool WriteCppProperties(const fs::path& root,
     text << "      // file that includes this first and then includes your script. So a\n";
     text << "      // script that names no headers at all still compiles, and this is\n";
     text << "      // what says so.\n";
+    text << "      //\n";
+    text << "      // Absolute, because this is the one entry Visual Studio resolves\n";
+    text << "      // as a path rather than by searching includePath above.\n";
     text << "      \"forcedInclude\": [\n";
-    text << "        " << Quoted(settings.forcedInclude) << "\n";
+    text << "        " << Quoted(ForcedIncludePath(settings)) << "\n";
     text << "      ],\n";
     text << "\n";
     text << "      \"compilerSwitches\": " << Quoted(switches.str()) << "\n";
@@ -331,11 +404,27 @@ void AppendEntry(std::ostream& out, const fs::path& root,
         arguments.push_back((settings.msvc ? "/I" : "-I") + dir);
     }
 
+    // AND THE COMPILER'S OWN HEADERS. Redundant for cl.exe itself, which
+    // reads INCLUDE and already has them - but this file is meant to be read
+    // by tools that never ran vcvars64.bat, and a parser that cannot find
+    // <algorithm> does not report a missing toolchain. It reports the engine
+    // as broken. /I rather than a system-include spelling because every
+    // consumer understands /I, and clangd shows diagnostics for the file
+    // being edited rather than for the headers it pulls in.
+    for (const std::string& dir : settings.toolchainIncludeDirs) {
+        arguments.push_back((settings.msvc ? "/I" : "-I") + dir);
+    }
+
+    // Absolute here too. clang-cl does search the include directories for a
+    // /FI, so the name would work - but a database is read by more than one
+    // tool and only one of them has to disagree for a script with no includes
+    // of its own to lose every name in the engine.
+    const std::string forced = ForcedIncludePath(settings);
     if (settings.msvc) {
-        arguments.push_back("/FI" + settings.forcedInclude);
+        arguments.push_back("/FI" + forced);
     } else {
         arguments.push_back("-include");
-        arguments.push_back(settings.forcedInclude);
+        arguments.push_back(forced);
     }
 
     // A HEADER HAS TO BE TYPED EXPLICITLY. Clang reads a .h as C unless told
@@ -412,6 +501,33 @@ bool WriteIdeFiles(std::string& outSummary, std::string& outError) {
         outError = "the engine's headers could not be located, so there is no "
                    "include path to write";
         return false;
+    }
+
+    // SAID OUT LOUD, because this is the one failure these files cannot
+    // report themselves. Without the compiler's own include directories the
+    // configuration resolves engine/Engine.h and then stops dead on the
+    // <algorithm> inside it, and what reaches the person is every name in
+    // their script underlined at once - a symptom that points at the engine,
+    // at Visual Studio, at anything except a short list missing from a
+    // generated file. It is still written: inheritEnvironments and
+    // ${env.INCLUDE} may well carry it, and a configuration with the right
+    // standard and the engine on its include path is worth more than none.
+    if (settings.msvc && settings.toolchainIncludeDirs.empty()) {
+        // THE REMEDY IS THE ONE THE CODE CAN HONOUR. "Build the scripts
+        // once" was the obvious thing to say and could never have worked:
+        // the adoption latch is set BEFORE the attempt and is never reset, so
+        // once it has failed in this process nothing retries it, a build
+        // included. Starting from a developer prompt is different in kind -
+        // the compiler search then finds a cl.exe whose environment is
+        // already set up and this list is read straight out of it, with no
+        // adoption involved.
+        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                        "the compiler's own include directories are not known, so "
+                        "{} names only the engine's. If std:: names and #include "
+                        "lines look like errors in your editor, that is why - start "
+                        "the editor from an x64 Native Tools Command Prompt and set "
+                        "this up again",
+                        kCppPropertiesFile);
     }
 
     const fs::path root(projectRoot);

@@ -30,6 +30,7 @@
 #include <engine/core/LogBuffer.h>
 #include <engine/core/Subsystem.h>
 #include <engine/core/Time.h>
+#include <engine/debug/Debug.h>
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/input/InputMap.h>
@@ -459,6 +460,30 @@ private:
     bool        m_hasSceneRequest = false;
 
     void ApplyPendingSceneRequest();
+
+    // ======================================================================
+    //  THROWS AWAY EVERYTHING THE SCENE THAT HAS JUST GONE LEFT BEHIND.
+    //
+    //  CALLED AFTER EVERY REPLACEMENT, and it has to be, because the UNLOAD
+    //  ITSELF is what queues most of it: taking a scene apart detaches every
+    //  collider, and unregistering one that is still touching something
+    //  queues two exit events for the pair. Clearing before the load cannot
+    //  reach those.
+    //
+    //  And they do not land harmlessly. Unloading resets the slot list, so
+    //  the next scene hands out entity ids from index 0 again - the old
+    //  player's id is the new scene's first entity. The symptom was an
+    //  OnCollisionExit on the first frame of a level, naming a pair that had
+    //  never entered, which is the one thing "every enter has a matching
+    //  exit" is supposed to rule out.
+    //
+    //  THREE PATHS REPLACE A SCENE: LoadScene, the deferred request a script
+    //  makes, and ExitPlayMode putting the snapshot back. The clear went into
+    //  one of them first, and pressing Stop still leaked the play session's
+    //  exits into the restored scene - so it lives here instead, where no
+    //  future caller can forget it.
+    // ======================================================================
+    void ForgetTheOldScene();
 };
 
 } // namespace eng

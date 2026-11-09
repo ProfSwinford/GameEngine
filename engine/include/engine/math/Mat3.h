@@ -82,6 +82,12 @@ struct Mat3 {
     // the identity and logs a warning rather than producing NaNs.
     Mat3 Inverse() const;
 
+    // The determinant of the 2x2 part - how much the matrix scales an area,
+    // and ZERO when it squashes the world flat onto a line. Inverse() warns
+    // and returns the identity in that case, so a caller that would rather
+    // take another route than be warned at can ask first.
+    float Determinant() const;
+
     // Pulls the individual pieces back out of a finished matrix. The Inspector
     // uses these to show position/rotation/scale boxes.
     Vec2  GetTranslation() const;

@@ -28,6 +28,9 @@
 //  pointing at the first entity in the scene.
 // ============================================================================
 
+#include <format>
+#include <string>
+
 namespace eng {
 
 struct EntityId {
@@ -62,3 +65,32 @@ struct EntityId {
 };
 
 } // namespace eng
+
+// ---------------------------------------------------------------------------
+//  So that "{}" prints an EntityId.
+//
+//      void OnCollisionEnter(eng::EntityId other) {
+//          Debug::Log("hit by {}", other);          // hit by #12:3
+//      }
+//
+//  An id is what every collision event and every physics query hands a
+//  script, so it is the value most likely to be printed while working out why
+//  something touched something else. It prints as `#index:generation`, and
+//  BOTH NUMBERS ARE SHOWN ON PURPOSE: an id whose generation does not match
+//  the slot's is the one failure this type exists to catch, and it is
+//  invisible if only the index is printed.
+//
+//  A null id prints as `#null` rather than `#-1:0`, because -1 is an
+//  implementation detail and "nothing" is the thing being said.
+// ---------------------------------------------------------------------------
+template <>
+struct std::formatter<eng::EntityId> : std::formatter<std::string> {
+    auto format(const eng::EntityId& id, std::format_context& context) const {
+        if (id.IsNull()) {
+            return std::formatter<std::string>::format(std::string{"#null"}, context);
+        }
+        return std::formatter<std::string>::format(
+            "#" + std::to_string(id.index) + ":" + std::to_string(id.generation),
+            context);
+    }
+};

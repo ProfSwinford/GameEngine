@@ -570,8 +570,16 @@ std::set<std::string> GatherLayerNames(eng::Scene& scene) {
 //  checked and clamped - so the panel cannot produce a shape the collision
 //  system refuses.
 // ---------------------------------------------------------------------------
+// `minPoints` IS PER TYPE and it is not decoration. A polygon needs three -
+// Deserialize already refuses fewer - and an edge chain needs two. This used
+// to hard-code the edge chain's two for both, so a polygon could be cut to a
+// pair of points: SetPoints accepts them, WorldShapes then produces nothing
+// at all, and the collider sits there Enabled while colliding with nothing,
+// firing no events, invisible to every query and drawing no gizmo, under a
+// panel reading "NOT CONVEX". It does not even round-trip - reload the scene
+// and Deserialize refuses the file.
 template <typename T>
-void DrawPointList(T& collider, int maxPoints) {
+void DrawPointList(T& collider, int maxPoints, int minPoints) {
     std::vector<eng::Vec2> points = collider.Points();
     bool                   changed = false;
 
@@ -595,7 +603,8 @@ void DrawPointList(T& collider, int maxPoints) {
         ImGui::PopID();
     }
 
-    if (removeAt >= 0 && points.size() > 2) {
+    if (removeAt >= 0 &&
+        points.size() > static_cast<std::size_t>(std::max(minPoints, 1))) {
         points.erase(points.begin() + removeAt);
         changed = true;
     }
@@ -609,7 +618,8 @@ void DrawPointList(T& collider, int maxPoints) {
         changed = true;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("%d of %d points", static_cast<int>(points.size()), maxPoints);
+    ImGui::TextDisabled("%d of %d points (minimum %d)",
+                        static_cast<int>(points.size()), maxPoints, minPoints);
 
     if (changed) {
         collider.SetPoints(std::move(points));
@@ -830,6 +840,30 @@ void DrawTilemap(eng::TilemapComponent& map) {
                 }
             }
             map.RefreshPalette();
+
+            // ==========================================================
+            //  AND THE COLLIDER HAS TO BE TOLD, which is the whole point
+            //  of pressing this.
+            //
+            //  TilemapColliderComponent rebuilds itself when the map's
+            //  REVISION changes or its cell size does. Reloading a .otile
+            //  changes neither: no cell was painted, and the tile is the
+            //  same size. So the collider kept its cache and a tile
+            //  changed from "collision": "None" to "Grid" left every cell
+            //  using it walk-through - and the reverse left a field of
+            //  invisible walls.
+            //
+            //  TilemapCollider.h documents Invalidate() as existing for
+            //  precisely this: "the editor calls it after a .otile is
+            //  edited, because a tile changing from decoration to solid
+            //  changes which cells are solid without any cell changing."
+            //  Nothing called it.
+            // ==========================================================
+            if (eng::Entity* owner = map.Owner(); owner != nullptr) {
+                if (auto* solid = owner->Find<eng::TilemapColliderComponent>()) {
+                    solid->Invalidate();
+                }
+            }
         }
     }
 
@@ -944,7 +978,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
 
         case eng::ColliderShape::Polygon: {
             auto& polygon = static_cast<eng::PolygonColliderComponent&>(collider);
-            DrawPointList(polygon, eng::ConvexShape::kMaxPoints);
+            DrawPointList(polygon, eng::ConvexShape::kMaxPoints, 3);
 
             // SAID OUT LOUD, because a dented outline still collides - as its
             // convex hull - and the shape on screen then differs from the
@@ -996,7 +1030,7 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
 
         case eng::ColliderShape::Edge: {
             auto& edge = static_cast<eng::EdgeColliderComponent&>(collider);
-            DrawPointList(edge, eng::EdgeColliderComponent::kMaxEdgePoints);
+            DrawPointList(edge, eng::EdgeColliderComponent::kMaxEdgePoints, 2);
 
             float radius = edge.EdgeRadius();
             if (ImGui::DragFloat("Edge radius", &radius, 0.1f, 0.0f, 1000.0f)) {
@@ -4722,8 +4756,24 @@ void InspectorPanel::Draw() {
     // The list of buttons is generated from the factory, so a component type
     // registered anywhere appears here with no edit to this file.
     eng::ComponentFactory::ForEachType([&](const char* typeName) {
-        if (entity->FindComponent(typeName) != nullptr) {
-            return;   // it already has one
+        // ======================================================================
+        //  ONE IS USUALLY ALL THERE IS, AND SOMETIMES IT IS NOT.
+        //
+        //  This used to skip any type the entity already had, full stop. That
+        //  is right for a transform, a sprite, a rigidbody or a camera, and
+        //  WRONG for a collider and for a script: a compound body is several
+        //  colliders on one entity, physics/Collider.h recommends it, the
+        //  collision system reports one event per collider pair so that it
+        //  works, and a scene file could always do it. Only this menu could
+        //  not, so a compound body was loadable and not buildable.
+        //
+        //  THE EXISTING COMPONENT IS WHAT ANSWERS. There is nothing to ask
+        //  until the entity has one, and the one it has is the right thing to
+        //  ask - see Component::AllowsSeveral.
+        // ======================================================================
+        const eng::Component* existing = entity->FindComponent(typeName);
+        if (existing != nullptr && !existing->AllowsSeveral()) {
+            return;
         }
         char label[96];
         std::snprintf(label, sizeof(label), "+ %s", typeName);

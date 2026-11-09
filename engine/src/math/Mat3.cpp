@@ -81,6 +81,10 @@ Vec2 Mat3::TransformVector(Vec2 direction) const {
                 direction.x * m[0][1] + direction.y * m[1][1]};
 }
 
+float Mat3::Determinant() const {
+    return m[0][0] * m[1][1] - m[0][1] * m[1][0];
+}
+
 Mat3 Mat3::Inverse() const {
     // Every matrix this engine builds has (0, 0, 1) as its third column - that
     // is what "made only of moves, turns and resizes" means. Knowing that

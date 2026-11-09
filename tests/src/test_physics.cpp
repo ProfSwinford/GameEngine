@@ -17,6 +17,7 @@
 
 #include <engine/math/Overlap.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace eng;
@@ -1553,4 +1554,1384 @@ TEST_CASE("a collider turned into a trigger mid-overlap closes the old pairing")
     CHECK(heard.triggerEnter == 1);    // ...and the trigger one opens
     CHECK(heard.triggerStay == 0);     // never a stay with no enter
     CHECK(heard.collisionStay == 0);
+}
+
+// ===========================================================================
+//  THE COLLIDER OUTLINES.
+//
+//  These were drawn from the end of CollisionSystem::Update, and an Update
+//  only happens when the clock asks for a fixed step. A PAUSED clock asks for
+//  none, and a paused clock is exactly what an editor sits in for the whole
+//  time somebody is building a scene - so no collider was ever drawn while
+//  editing, and a collider you had just added looked like it had not worked.
+//
+//  The drawing is now CollisionSystem::DrawGizmos, called by whoever wants to
+//  see it. These cases are here because the bug was invisible to the suite
+//  until Gizmos::QueuedCount existed to ask.
+// ===========================================================================
+
+TEST_CASE("colliders are drawn with no simulation step having run") {
+    SceneFixture fixture;
+
+    eng::Entity* entity = fixture.Add("Box", eng::Vec2{0.0f, 0.0f});
+    AddBox(*entity, eng::Vec2{20.0f, 20.0f});
+
+    eng::Gizmos::Clear();
+    eng::Gizmos::SetCategoryEnabled(eng::GizmoCategory::Colliders, true);
+
+    // A STEP, FIRST, AND IT MUST DRAW NOTHING. The simulation's job is to
+    // simulate; if it also drew, a shipped game would draw its own collision
+    // outlines over itself - which is what used to happen.
+    eng::CollisionSystem collision;
+    collision.Update(1.0f / 60.0f);
+    CHECK(eng::Gizmos::QueuedCount() == 0);
+
+    // And now the thing an editor calls, with no step before it at all.
+    eng::CollisionSystem::DrawGizmos(false);
+    const std::size_t oneBox = eng::Gizmos::QueuedCount();
+    CHECK(oneBox > 0);
+
+    // A SECOND COLLIDER IS MORE DRAWING, which is the cheap way of saying
+    // "every collider, not just the first".
+    eng::Entity* second = fixture.Add("Second", eng::Vec2{100.0f, 0.0f});
+    AddBox(*second, eng::Vec2{20.0f, 20.0f});
+
+    eng::Gizmos::Clear();
+    eng::CollisionSystem::DrawGizmos(false);
+    CHECK(eng::Gizmos::QueuedCount() > oneBox);
+
+    // A DISABLED COLLIDER IS STILL DRAWN - greyed, not left out. "Where did
+    // my collider go" is the question the grey outline answers.
+    eng::FindCollider(*second)->SetEnabled(false);
+    eng::Gizmos::Clear();
+    eng::CollisionSystem::DrawGizmos(false);
+    CHECK(eng::Gizmos::QueuedCount() > oneBox);
+
+    // And the Scene view's Gizmos menu turns the whole lot off.
+    eng::Gizmos::SetCategoryEnabled(eng::GizmoCategory::Colliders, false);
+    eng::Gizmos::Clear();
+    eng::CollisionSystem::DrawGizmos(false);
+    CHECK(eng::Gizmos::QueuedCount() == 0);
+
+    eng::Gizmos::SetCategoryEnabled(eng::GizmoCategory::Colliders, true);
+    eng::Gizmos::Clear();
+}
+
+// ===========================================================================
+//  WHICH COMPONENTS AN ENTITY MAY HAVE SEVERAL OF.
+//
+//  A compound body is several colliders on one entity, and this file already
+//  checks that one works: they do not collide with each other, and each one
+//  reports its own events. What was missing was the EDITOR being able to build
+//  one - its "Add component" list skipped any type the entity already had, so
+//  a compound body was loadable from a scene file and not buildable by hand.
+//
+//  Component::AllowsSeveral is how the list now asks. These checks are the
+//  whole of the engine side of it.
+// ===========================================================================
+
+TEST_CASE("a collider and a script may be had more than once; nothing else may") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Thing", eng::Vec2{0.0f, 0.0f});
+
+    const eng::Component* box = AddBox(*entity, eng::Vec2{10.0f, 10.0f});
+    CHECK(box->AllowsSeveral());
+
+    const eng::Component* body = AddBody(*entity);
+    CHECK_FALSE(body->AllowsSeveral());
+
+    const eng::Component* transform =
+        entity->FindComponent(eng::TransformComponent::kTypeName);
+    REQUIRE(transform != nullptr);
+    CHECK_FALSE(transform->AllowsSeveral());
+
+    const eng::Component* script =
+        entity->AddComponent(eng::ScriptComponent::kTypeName);
+    REQUIRE(script != nullptr);
+    CHECK(script->AllowsSeveral());
+
+    // AND THE SECOND ONE REALLY ATTACHES, which is the behaviour the flag is
+    // claiming. Every shape of collider says yes, not only a box - the flag is
+    // on the base class, so a sixth shape gets it without being edited.
+    auto* second = static_cast<eng::CircleColliderComponent*>(
+        entity->AddComponent(eng::CircleColliderComponent::kTypeName));
+    REQUIRE(second != nullptr);
+    second->SetRadius(20.0f);
+    CHECK(second->AllowsSeveral());
+    CHECK(eng::CollisionSystem::ColliderCount() == 2);
+}
+
+// ===========================================================================
+//  The material, which is the pair of numbers a surface is made of.
+// ===========================================================================
+
+TEST_CASE("friction brings a slide to a stop sooner the higher it is") {
+    // Flat ground rather than a ramp, so the only thing being measured is how
+    // much sideways speed a contact takes away. On a ramp the answer is mixed
+    // up with how much of gravity is along the slope.
+    SceneFixture fixture;
+
+    eng::Entity* ground = fixture.Add("Ground", eng::Vec2{0.0f, -20.0f});
+    AddBox(*ground, eng::Vec2{2000.0f, 20.0f})->SetMaterial({0.6f, 0.0f});
+
+    // STARTED APART, and that is not cosmetic. Two identical bodies created
+    // at the same spot are a degenerate contact: they shove each other out of
+    // the way, one of them leaves the ground, and a test of FRICTION quietly
+    // becomes a test of nothing at all.
+    const auto slide = [&](const char* name, float friction, float startX) {
+        eng::Entity* box = fixture.Add(name, eng::Vec2{startX, 20.5f});
+        AddBox(*box, eng::Vec2{20.0f, 20.0f})->SetMaterial({friction, 0.0f});
+        eng::Rigidbody2DComponent* body = AddBody(*box);
+        body->SetFreezeRotation(true);
+        body->SetVelocity(eng::Vec2{400.0f, 0.0f});
+        return box;
+    };
+
+    eng::Entity* slippery = slide("Slippery", 0.0f, -800.0f);
+    eng::Entity* grippy   = slide("Grippy", 1.0f, 0.0f);
+
+    for (int i = 0; i < 60; ++i) {
+        Step();
+    }
+
+    // DISTANCE TRAVELLED, not final position - they started in different
+    // places on purpose.
+    const float wentFar = slippery->Transform().WorldPosition().x + 800.0f;
+    const float stopped = grippy->Transform().WorldPosition().x;
+
+    CHECK(wentFar > stopped);
+
+    // AND THE FRICTIONLESS ONE KEEPS ALL OF IT. A contact that bleeds speed
+    // away with friction at zero is the bug this pins: it would make every
+    // surface in a game slightly sticky, which reads as sluggish controls and
+    // is very hard to trace back to here.
+    const eng::Rigidbody2DComponent* body =
+        slippery->Find<eng::Rigidbody2DComponent>();
+    REQUIRE(body != nullptr);
+    CHECK(body->Velocity().x == doctest::Approx(400.0f).epsilon(0.02));
+}
+
+TEST_CASE("a bouncier body returns higher, and bounciness of 1 adds nothing") {
+    SceneFixture fixture;
+
+    eng::Entity* ground = fixture.Add("Ground", eng::Vec2{0.0f, -20.0f});
+    AddBox(*ground, eng::Vec2{2000.0f, 20.0f})->SetMaterial({0.3f, 0.0f});
+
+    constexpr float kDropHeight = 300.0f;
+
+    // APART, for the same reason as the friction case above: two balls
+    // dropped down the same line start overlapping and fling each other.
+    const auto drop = [&](const char* name, float bounciness, float x) {
+        eng::Entity* ball = fixture.Add(name, eng::Vec2{x, kDropHeight});
+        auto* collider = static_cast<eng::CircleColliderComponent*>(
+            ball->AddComponent(eng::CircleColliderComponent::kTypeName));
+        collider->SetRadius(20.0f);
+        collider->SetMaterial({0.3f, bounciness});
+        AddBody(*ball)->SetFreezeRotation(true);
+        return ball;
+    };
+
+    eng::Entity* dead   = drop("Dead", 0.0f, -200.0f);
+    eng::Entity* lively = drop("Lively", 1.0f, 200.0f);
+
+    // Long enough to fall, bounce, and come back up. The highest point each
+    // one reaches AFTER its first contact is what is being compared, so it is
+    // recorded as the simulation runs rather than sampled at the end.
+    float deadPeak   = 0.0f;
+    float livelyPeak = 0.0f;
+    bool  landed     = false;
+
+    for (int i = 0; i < 180; ++i) {
+        Step();
+        if (!landed) {
+            landed = dead->Transform().WorldPosition().y < 30.0f;
+            continue;
+        }
+        deadPeak   = std::max(deadPeak, dead->Transform().WorldPosition().y);
+        livelyPeak = std::max(livelyPeak, lively->Transform().WorldPosition().y);
+    }
+
+    CHECK(livelyPeak > deadPeak + 50.0f);
+
+    // NOT HIGHER THAN IT STARTED. Bounciness above 1 would add energy every
+    // contact and the ball would climb out of the level; the clamp on the way
+    // in is what stops that, and 1 exactly is the edge of it.
+    CHECK(livelyPeak <= kDropHeight + 20.0f);
+}
+
+// ===========================================================================
+//  Rotation, which a box collider only gained when it stopped being an AABB.
+// ===========================================================================
+
+TEST_CASE("a push away from the centre of mass spins the body") {
+    SceneFixture fixture;
+
+    eng::Entity* box = fixture.Add("Box", eng::Vec2{0.0f, 0.0f});
+    AddBox(*box, eng::Vec2{10.0f, 60.0f});
+    eng::Rigidbody2DComponent* body = AddBody(*box);
+
+    REQUIRE(body->AngularVelocity() == doctest::Approx(0.0f));
+
+    // Pushed sideways at the TOP of a tall box. The lever arm is 60 units, so
+    // this has to produce spin as well as sideways motion - a solver that
+    // dropped the angular term would move it and leave it upright, and a
+    // tower that slides instead of toppling is the symptom.
+    body->AddForceAtPosition(eng::Vec2{200.0f, 0.0f}, eng::Vec2{0.0f, 60.0f},
+                             eng::ForceMode::Impulse);
+
+    CHECK(body->Velocity().x > 0.0f);
+    CHECK(body->AngularVelocity() != doctest::Approx(0.0f));
+
+    // CLOCKWISE, which is negative. A push to the right applied above the
+    // centre tips the top to the right, so the body turns clockwise - and a
+    // sign error here makes everything in a game topple the wrong way.
+    CHECK(body->AngularVelocity() < 0.0f);
+
+    // AND FREEZING ROTATION REALLY FREEZES IT, which is what a character
+    // controller relies on so that a capsule does not lie down.
+    eng::Entity* frozen = fixture.Add("Frozen", eng::Vec2{200.0f, 0.0f});
+    AddBox(*frozen, eng::Vec2{10.0f, 60.0f});
+    eng::Rigidbody2DComponent* locked = AddBody(*frozen);
+    locked->SetFreezeRotation(true);
+    locked->AddForceAtPosition(eng::Vec2{200.0f, 0.0f}, eng::Vec2{200.0f, 60.0f},
+                               eng::ForceMode::Impulse);
+    CHECK(locked->Velocity().x > 0.0f);
+    CHECK(locked->AngularVelocity() == doctest::Approx(0.0f));
+}
+
+// ===========================================================================
+//  TUNNELLING, which is a PROPERTY OF DISCRETE COLLISION and not a defect.
+//
+//  Every step moves a body first and looks for overlaps afterwards - see
+//  SystemOrder.h. So a body that travels further in one step than the wall is
+//  thick can be on one side at the end of one step and the far side at the end
+//  of the next, with no step in between where the two overlapped.
+//
+//  IT IS PINNED DOWN HERE SO IT IS A DECISION RATHER THAN A SURPRISE. A game
+//  that fires fast things sweeps a CircleCast ahead of them instead - which is
+//  exactly why Physics2D has one.
+// ===========================================================================
+
+TEST_CASE("a slow body is stopped by a thin wall and a fast one goes through") {
+    SceneFixture fixture;
+
+    // Six units thick. At a sixtieth of a second a body doing 120 units a
+    // second moves two units a step and cannot miss it; one doing 2400 moves
+    // forty and cannot see it.
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{0.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{3.0f, 200.0f});
+
+    const auto fire = [&](const char* name, float speed) {
+        eng::Entity* bullet = fixture.Add(name, eng::Vec2{-100.0f, 0.0f});
+        auto* collider = static_cast<eng::CircleColliderComponent*>(
+            bullet->AddComponent(eng::CircleColliderComponent::kTypeName));
+        collider->SetRadius(2.0f);
+        eng::Rigidbody2DComponent* body = AddBody(*bullet);
+        body->SetGravityScale(0.0f);
+        body->SetFreezeRotation(true);
+        body->SetVelocity(eng::Vec2{speed, 0.0f});
+        return bullet;
+    };
+
+    eng::Entity* slow = fire("Slow", 120.0f);
+    eng::Entity* fast = fire("Fast", 2400.0f);
+
+    for (int i = 0; i < 120; ++i) {
+        Step();
+    }
+
+    // The slow one is held on the near side of the wall.
+    CHECK(slow->Transform().WorldPosition().x < 0.0f);
+
+    // The fast one is long past it, with nothing reported on the way.
+    CHECK(fast->Transform().WorldPosition().x > 100.0f);
+}
+
+
+// ===========================================================================
+//  THE RESTING CONTACT, which is the thing everything else stands on.
+//
+//  Every case below existed as a measurement first. The numbers in the
+//  comments are what the engine actually did before the fix beside them, and
+//  they are there because "a box resting on the floor" is the single most
+//  common thing in a 2D game and all of it was wrong.
+// ===========================================================================
+
+TEST_CASE("the contact point is the middle of the shared region, not a far corner") {
+    // =======================================================================
+    //  Collide's point was the average of the two SUPPORT VERTICES along the
+    //  normal, and Support breaks a tie by keeping the first maximum. For a
+    //  narrow box on a wide floor that is the floor's FAR corner and the
+    //  box's NEAR corner, so the point landed (widthA - widthB) / 2 away from
+    //  the contact. Measured: x = 190 for a 40-wide box on an 800-wide floor,
+    //  which is outside the box altogether.
+    //
+    //  Two EQUAL-width boxes cancel exactly, which is why it was never
+    //  noticed and why a hand-built pair of identical boxes looks perfect.
+    // =======================================================================
+    const ConvexShape ground = ToConvex(
+        AABB::FromCenterHalfExtents(Vec2{0.0f, -40.0f}, Vec2{400.0f, 40.0f}));
+    const ConvexShape box = ToConvex(
+        AABB::FromCenterHalfExtents(Vec2{0.0f, 19.9f}, Vec2{20.0f, 20.0f}));
+
+    const Contact c = Collide(ground, box);
+    REQUIRE(c.touching);
+    CHECK(c.normal.y == doctest::Approx(1.0f));
+
+    // CENTRED, and that is the whole fix. A lever arm here is a torque on a
+    // body that is doing nothing but resting.
+    CHECK(c.point.x == doctest::Approx(0.0f));
+
+    // And the equal-width case it used to get right still is.
+    const ConvexShape lower =
+        ToConvex(AABB::FromCenterHalfExtents(Vec2{0.0f, 0.0f}, Vec2{20.0f, 20.0f}));
+    const ConvexShape upper =
+        ToConvex(AABB::FromCenterHalfExtents(Vec2{0.0f, 38.0f}, Vec2{20.0f, 20.0f}));
+    CHECK(Collide(lower, upper).point.x == doctest::Approx(0.0f));
+
+    // A circle is still exact: the point sits halfway between the surfaces.
+    const Contact circles = Collide(ToConvex(Circle{Vec2{0.0f, 0.0f}, 1.0f}),
+                                    ToConvex(Circle{Vec2{1.5f, 0.0f}, 1.0f}));
+    REQUIRE(circles.touching);
+    CHECK(circles.point.x == doctest::Approx(0.75f));
+    CHECK(circles.point.y == doctest::Approx(0.0f));
+}
+
+TEST_CASE("a box resting on flat ground does not start turning") {
+    // =======================================================================
+    //  THE SYMPTOM THAT STARTED ALL OF THIS, and it happened with the DEFAULT
+    //  settings: freezeRotation is false unless somebody sets it.
+    //
+    //  Measured before the contact point was fixed: the box picked up spin on
+    //  the very first step it touched down, reached 13.6 rad/s, turned five
+    //  and a half times and ended up 3471 units BELOW the floor after four
+    //  seconds. Every resting test in this file sets freezeRotation(true),
+    //  which zeroes InverseInertia and hid it completely.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* ground = fixture.Add("Ground", eng::Vec2{0.0f, -40.0f});
+    AddBox(*ground, eng::Vec2{400.0f, 40.0f})->SetMaterial({0.6f, 0.0f});
+
+    eng::Entity* box = fixture.Add("Box", eng::Vec2{0.0f, 22.0f});
+    AddBox(*box, eng::Vec2{20.0f, 20.0f})->SetMaterial({0.6f, 0.0f});
+    eng::Rigidbody2DComponent* body = AddBody(*box);
+    REQUIRE_FALSE(body->FreezeRotation());   // the default, and the point
+
+    for (int step = 0; step < 240; ++step) {
+        Step();
+    }
+
+    // Sitting on the floor, not through it, not on its corner, not moving.
+    CHECK(box->Transform().WorldPosition().y == doctest::Approx(20.0f).epsilon(0.01));
+    CHECK(std::fabs(box->Transform().WorldRotation()) < 0.001f);
+    CHECK(std::fabs(body->AngularVelocity()) < 0.001f);
+    CHECK(std::fabs(body->Velocity().y) < 1.0f);
+}
+
+TEST_CASE("a stack of six boxes settles near its full height") {
+    // =======================================================================
+    //  The position half of the solver was ONE sweep over STALE separations,
+    //  so a chain of contacts could not be satisfied: clearing the overlap at
+    //  the bottom of a tower moves that box up into the one above it, and
+    //  only another pass notices.
+    //
+    //  Measured at the shipped four solver iterations, bottom box upward:
+    //      before   13.07  39.75  68.44   99.61  133.59  170.54
+    //      after    18.41  56.69  95.30  134.28  173.69  213.53
+    //      ideal    20     60     100     140     180     220
+    //
+    //  What is left is the VELOCITY half not fully converging in four passes
+    //  over six contacts, which is what config/engine.json's solverIterations
+    //  is for and what its note already says. At 32 the top box reaches 218.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* ground = fixture.Add("Ground", eng::Vec2{0.0f, -40.0f});
+    AddBox(*ground, eng::Vec2{400.0f, 40.0f})->SetMaterial({0.6f, 0.0f});
+
+    constexpr int kBoxes = 6;
+    eng::Entity*  stack[kBoxes] = {};
+    for (int i = 0; i < kBoxes; ++i) {
+        char name[16];
+        std::snprintf(name, sizeof(name), "Box%d", i);
+        stack[i] = fixture.Add(name,
+                               eng::Vec2{0.0f, 20.0f + static_cast<float>(i) * 42.0f});
+        AddBox(*stack[i], eng::Vec2{20.0f, 20.0f})->SetMaterial({0.6f, 0.0f});
+        AddBody(*stack[i])->SetFreezeRotation(true);
+    }
+
+    for (int step = 0; step < 240; ++step) {
+        Step();
+    }
+
+    // THE TOP BOX IS THE MEASURE OF THE WHOLE TOWER, because every overlap
+    // below it subtracts from where it ends up. 205 is comfortably past the
+    // 170.5 the old solver reached and comfortably short of the ideal 220.
+    CHECK(stack[kBoxes - 1]->Transform().WorldPosition().y > 205.0f);
+
+    // And no two neighbours are deeply inside each other. The old solver left
+    // the bottom pair 13 units into one another out of 40.
+    for (int i = 1; i < kBoxes; ++i) {
+        const float gap = stack[i]->Transform().WorldPosition().y -
+                          stack[i - 1]->Transform().WorldPosition().y;
+        CHECK(gap > 36.0f);
+        CHECK(gap <= 40.5f);
+    }
+
+    // The bottom box is on the floor rather than in it.
+    CHECK(stack[0]->Transform().WorldPosition().y > 17.0f);
+}
+
+TEST_CASE("a compound body resting flat is not fired off what it landed on") {
+    // =======================================================================
+    //  Three colliders on one entity - the compound body Collider.h
+    //  recommends - gave three contacts with the ground, all the same depth,
+    //  and the single stale sweep moved the body the full 80% for each one.
+    //  Total 2.4x its own penetration: it was lifted clear, fell back, and
+    //  repeated forever.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* ground = fixture.Add("Ground", eng::Vec2{0.0f, -40.0f});
+    AddBox(*ground, eng::Vec2{400.0f, 40.0f})->SetMaterial({0.6f, 0.0f});
+
+    eng::Entity* body = fixture.Add("Compound", eng::Vec2{0.0f, 22.0f});
+    for (int i = 0; i < 3; ++i) {
+        eng::BoxColliderComponent* part = AddBox(*body, eng::Vec2{20.0f, 20.0f});
+        part->SetOffset(eng::Vec2{static_cast<float>(i - 1) * 40.0f, 0.0f});
+        part->SetMaterial({0.6f, 0.0f});
+    }
+    eng::Rigidbody2DComponent* rb = AddBody(*body);
+    rb->SetFreezeRotation(true);
+
+    REQUIRE(eng::CollisionSystem::ColliderCount() == 4);   // ground plus three
+
+    for (int step = 0; step < 180; ++step) {
+        Step();
+    }
+
+    // THREE CONTACTS, one per collider, every step - which is the behaviour
+    // the events already promise and is why this is worth checking here.
+    CHECK(eng::CollisionSystem::ActivePairCount() == 3);
+
+    // Resting, and still resting: a body being bounced by its own corrections
+    // shows up as a velocity that never settles.
+    CHECK(body->Transform().WorldPosition().y == doctest::Approx(20.0f).epsilon(0.02));
+    CHECK(std::fabs(rb->Velocity().y) < 2.0f);
+}
+
+TEST_CASE("a body with any bounciness still comes to rest") {
+    // Without a restitution threshold a bouncy body buzzes against the floor
+    // forever: gravity adds a sliver of closing speed each step and the
+    // contact hands a fraction of it back, so "is it standing still?" never
+    // becomes true.
+    SceneFixture fixture;
+
+    eng::Entity* ground = fixture.Add("Ground", eng::Vec2{0.0f, -40.0f});
+    AddBox(*ground, eng::Vec2{400.0f, 40.0f})->SetMaterial({0.5f, 0.0f});
+
+    eng::Entity* ball = fixture.Add("Ball", eng::Vec2{0.0f, 200.0f});
+    auto* collider = static_cast<eng::CircleColliderComponent*>(
+        ball->AddComponent(eng::CircleColliderComponent::kTypeName));
+    collider->SetRadius(20.0f);
+    collider->SetMaterial({0.5f, 0.6f});
+    eng::Rigidbody2DComponent* body = AddBody(*ball);
+    body->SetFreezeRotation(true);
+
+    for (int step = 0; step < 900; ++step) {   // fifteen seconds
+        Step();
+    }
+
+    CHECK(ball->Transform().WorldPosition().y == doctest::Approx(20.0f).epsilon(0.02));
+    CHECK(std::fabs(body->Velocity().y) < 1.0f);
+}
+
+// ===========================================================================
+//  The ray code, which had four separate defects in one function.
+// ===========================================================================
+
+TEST_CASE("a circle cast finds a box, not one of its edges") {
+    // =======================================================================
+    //  CircleCast slides a circle by GROWING THE TARGET'S radius and firing a
+    //  thin ray - and growing the radius is exactly what sent a shape into
+    //  the rounded branch, which tested only the segment
+    //  points[0]..points[count - 1]. For a box that is ONE SIDE of it. So a
+    //  circle cast at a wall could pass straight through it, and the same
+    //  went for every polygon and every tilemap collider in the scene.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{200.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{20.0f, 100.0f});
+
+    // Fired at the MIDDLE of the box's left face, which is the part the old
+    // code could not see: the segment it tested ran corner 0 to corner 3.
+    const eng::RaycastHit2D hit = eng::Physics2D::CircleCast(
+        eng::Vec2{0.0f, 0.0f}, 10.0f, eng::Vec2{1.0f, 0.0f}, 500.0f);
+
+    REQUIRE(hit);
+    CHECK(hit.collider == eng::FindCollider(*wall));
+
+    // It stops a radius short of the face: the face is at x = 180, so a
+    // 10-radius circle's centre stops at 170.
+    CHECK(hit.distance == doctest::Approx(170.0f).epsilon(0.01));
+
+    // And a thin ray at the same target stops at the face itself, which is
+    // the relationship CircleCast's own header promises.
+    const eng::RaycastHit2D thin = eng::Physics2D::Raycast(
+        eng::Vec2{0.0f, 0.0f}, eng::Vec2{1.0f, 0.0f}, 500.0f);
+    REQUIRE(thin);
+    CHECK(thin.distance == doctest::Approx(180.0f).epsilon(0.01));
+}
+
+TEST_CASE("a ray misses a bare segment past its ends") {
+    // A 2-point radius-0 shape - an edge collider at its default edgeRadius -
+    // was clipped as a polygon, and two opposite half-planes intersect in the
+    // INFINITE LINE through the segment. Every ray crossing that line counted
+    // as a hit, however far past either end.
+    const Vec2        points[2] = {Vec2{-50.0f, 0.0f}, Vec2{50.0f, 0.0f}};
+    const ConvexShape segment   = ToConvex(points, 2, 0.0f);
+
+    RaycastHit hit;
+
+    // Straight down through the middle: a real crossing.
+    REQUIRE(Raycast(Ray{Vec2{0.0f, 40.0f}, Vec2{0.0f, -1.0f}, 100.0f}, segment, hit));
+    CHECK(hit.distance == doctest::Approx(40.0f));
+    CHECK(hit.normal.y == doctest::Approx(1.0f));   // faces the ray
+
+    // Straight down 200 units past the end, still crossing the segment's
+    // LINE. This is what used to report a hit.
+    CHECK_FALSE(
+        Raycast(Ray{Vec2{250.0f, 40.0f}, Vec2{0.0f, -1.0f}, 100.0f}, segment, hit));
+
+    // Just inside the end, which must still hit.
+    REQUIRE(Raycast(Ray{Vec2{49.0f, 40.0f}, Vec2{0.0f, -1.0f}, 100.0f}, segment, hit));
+
+    // Along the line: parallel, and no surface to report.
+    CHECK_FALSE(
+        Raycast(Ray{Vec2{-200.0f, 0.0f}, Vec2{1.0f, 0.0f}, 400.0f}, segment, hit));
+}
+
+TEST_CASE("a cast that finishes inside something reports it") {
+    // Both stepping loops advanced in whole steps and stopped once the next
+    // one would pass the end, so the final partial step was never sampled -
+    // and the end of the sweep is the one place a caller asking "can I move
+    // there?" most needs tested.
+    SceneFixture fixture;
+
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{100.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{30.0f, 100.0f});
+
+    // A 20x20 box moved 63 units right ends with its right face at 73, well
+    // inside the wall's left face at 70. 63 is deliberately not a multiple of
+    // the step, which is a quarter of the smaller side: 5.
+    const eng::RaycastHit2D hit = eng::Physics2D::BoxCast(
+        eng::Vec2{0.0f, 0.0f}, eng::Vec2{20.0f, 20.0f}, 0.0f,
+        eng::Vec2{1.0f, 0.0f}, 63.0f);
+
+    REQUIRE(hit);
+    CHECK(hit.collider == eng::FindCollider(*wall));
+}
+
+TEST_CASE("the reported gap between two shapes is the largest one, not the first") {
+    // Collide stopped at the first axis that separated them, which is proof
+    // enough for `touching` and wrong for the gap: the distance between two
+    // shapes is the LARGEST separation over every axis.
+    const ConvexShape a = ToConvex(
+        AABB::FromCenterHalfExtents(Vec2{0.0f, 0.0f}, Vec2{10.0f, 10.0f}));
+
+    // Far away in x, barely clear in y. The x gap is 80, the y gap is 1.
+    const ConvexShape b = ToConvex(
+        AABB::FromCenterHalfExtents(Vec2{100.0f, 21.0f}, Vec2{10.0f, 10.0f}));
+
+    const Contact c = Collide(a, b);
+    CHECK_FALSE(c.touching);
+
+    // AND THE ANSWER IS BETTER THAN THE AXIS-ALIGNED GAP. The axis set
+    // includes the vertex-to-vertex directions, and the largest separation
+    // over all of them is the TRUE corner-to-corner distance:
+    // sqrt(80^2 + 1^2) = 80.00625. Taking the first positive axis gave a
+    // flat 80 at best, and whichever axis happened to be tested first at
+    // worst.
+    CHECK(c.separation == doctest::Approx(80.00625f).epsilon(0.0001));
+
+    // Pointing very nearly along x, as a corner-to-corner direction over
+    // that distance and that offset should.
+    CHECK(c.normal.x == doctest::Approx(1.0f).epsilon(0.001));
+    CHECK(c.normal.y == doctest::Approx(0.0125f).epsilon(0.05));
+}
+
+// ===========================================================================
+//  The rigidbody.
+// ===========================================================================
+
+TEST_CASE("inertia does not change as the body turns") {
+    // It was taken from the collider's WORLD BOUNDS - the upright box AROUND
+    // the rotated shape - so a 100x100 box measured 100x100 at zero degrees
+    // and 141x141 at forty-five. Its inertia doubled and halved once per
+    // revolution, which is not a property any rigid body has.
+    SceneFixture fixture;
+
+    eng::Entity* box = fixture.Add("Box", eng::Vec2{0.0f, 0.0f});
+    AddBox(*box, eng::Vec2{50.0f, 50.0f});
+    eng::Rigidbody2DComponent* body = AddBody(*box);
+
+    const float upright = body->InverseInertia();
+    REQUIRE(upright > 0.0f);
+
+    box->Transform().SetLocalRotation(eng::kPi * 0.25f);
+    CHECK(body->InverseInertia() == doctest::Approx(upright));
+
+    box->Transform().SetLocalRotation(eng::kPi * 0.5f);
+    CHECK(body->InverseInertia() == doctest::Approx(upright));
+
+    // It DOES follow the scale, which is a real change of size.
+    box->Transform().SetLocalRotation(0.0f);
+    box->Transform().SetLocalScale(eng::Vec2{2.0f, 2.0f});
+    CHECK(body->InverseInertia() < upright);
+}
+
+TEST_CASE("a collider offset from its entity is harder to spin") {
+    // A body turns about its TRANSFORM ORIGIN. A collider offset away from it
+    // is correspondingly harder to swing round - the parallel axis theorem -
+    // and that term was missing, so a character whose collider sat at its
+    // feet span like one centred on it.
+    SceneFixture fixture;
+
+    eng::Entity* centred = fixture.Add("Centred", eng::Vec2{0.0f, 0.0f});
+    AddBox(*centred, eng::Vec2{10.0f, 10.0f});
+    const float plain = AddBody(*centred)->InverseInertia();
+
+    eng::Entity*               offset = fixture.Add("Offset", eng::Vec2{200.0f, 0.0f});
+    eng::BoxColliderComponent* far    = AddBox(*offset, eng::Vec2{10.0f, 10.0f});
+    far->SetOffset(eng::Vec2{0.0f, -100.0f});
+    const float lifted = AddBody(*offset)->InverseInertia();
+
+    REQUIRE(plain > 0.0f);
+    REQUIRE(lifted > 0.0f);
+    CHECK(lifted < plain);   // harder to spin, so a SMALLER inverse
+}
+
+TEST_CASE("MovePosition moves a body once, not forever") {
+    // The catch-up velocity has to survive into the collision stage so the
+    // solver can shove what a platform is pushing - and has to be gone by the
+    // next step. It was not, so ONE call moved the body at that speed
+    // forever: a lift told to go up 200 units went up 200 units every step.
+    SceneFixture fixture;
+
+    eng::Entity* lift = fixture.Add("Lift", eng::Vec2{0.0f, 0.0f});
+    AddBox(*lift, eng::Vec2{50.0f, 10.0f});
+    eng::Rigidbody2DComponent* body = AddBody(*lift);
+    body->SetBodyType(eng::RigidbodyType::Kinematic);
+
+    body->MovePosition(eng::Vec2{0.0f, 200.0f});
+
+    Step();
+    CHECK(lift->Transform().WorldPosition().y == doctest::Approx(200.0f));
+
+    // Ten more steps with nothing told to it at all.
+    for (int step = 0; step < 10; ++step) {
+        Step();
+    }
+    CHECK(lift->Transform().WorldPosition().y == doctest::Approx(200.0f));
+    CHECK(body->Velocity().y == doctest::Approx(0.0f));
+
+    // AND IT STILL MOVES WHEN ASKED AGAIN, every step, which is how a
+    // platform is actually driven.
+    for (int step = 0; step < 5; ++step) {
+        body->MovePosition(lift->Transform().WorldPosition() + eng::Vec2{10.0f, 0.0f});
+        Step();
+    }
+    CHECK(lift->Transform().WorldPosition().x == doctest::Approx(50.0f));
+
+    // ======================================================================
+    //  AND IT LANDS EXACTLY ON THE TARGET UNDER A SCALED, ROTATED PARENT,
+    //  which it did not.
+    //
+    //  MovePosition takes a WORLD position: the velocity it sets is
+    //  (target - WorldPosition()) / step, and the integration then moves by
+    //  velocity * step - so the two cancel and the body arrives exactly,
+    //  whatever is above it in the hierarchy. That only holds because the
+    //  move is applied in world space. It used to be applied as a LOCAL
+    //  translation, so under a parent scaled (2,2) the body overshot by the
+    //  parent's scale and never reached where it was told to go.
+    // ======================================================================
+    eng::Entity* room = fixture.Add("Room", eng::Vec2{300.0f, 0.0f});
+    room->Transform().SetLocalScale(eng::Vec2{2.0f, 2.0f});
+    room->Transform().SetLocalRotation(0.5f);
+
+    eng::Entity* inner = fixture.Add("Inner lift", eng::Vec2{0.0f, 0.0f});
+    AddBox(*inner, eng::Vec2{50.0f, 10.0f});
+    eng::Rigidbody2DComponent* innerBody = AddBody(*inner);
+    innerBody->SetBodyType(eng::RigidbodyType::Kinematic);
+    inner->Transform().SetParent(&room->Transform());
+
+    const eng::Vec2 target{377.0f, -123.0f};
+    innerBody->MovePosition(target);
+    Step();
+
+    CHECK(inner->Transform().WorldPosition().x ==
+          doctest::Approx(target.x).epsilon(0.0001));
+    CHECK(inner->Transform().WorldPosition().y ==
+          doctest::Approx(target.y).epsilon(0.0001));
+}
+
+TEST_CASE("a body's spin survives being saved and loaded") {
+    // Deserialize has always read "angularVelocity" and Serialize never wrote
+    // it, so saving a scene destroyed every body's spin while keeping its
+    // linear velocity - and in the editor, Play then Stop goes through the
+    // same snapshot.
+    SceneFixture fixture;
+
+    eng::Entity* spinner = fixture.Add("Spinner", eng::Vec2{0.0f, 0.0f});
+    AddBox(*spinner, eng::Vec2{10.0f, 10.0f});
+    eng::Rigidbody2DComponent* body = AddBody(*spinner);
+    body->SetVelocity(eng::Vec2{3.0f, 4.0f});
+    body->SetAngularVelocity(2.5f);
+
+    eng::Json saved;
+    REQUIRE(body->Serialize(saved));
+
+    eng::Entity* copy = fixture.Add("Copy", eng::Vec2{100.0f, 0.0f});
+    AddBox(*copy, eng::Vec2{10.0f, 10.0f});
+    eng::Rigidbody2DComponent* restored = AddBody(*copy);
+
+    std::string error;
+    REQUIRE(restored->Deserialize(saved, error));
+    CHECK(restored->Velocity().x == doctest::Approx(3.0f));
+    CHECK(restored->AngularVelocity() == doctest::Approx(2.5f));
+}
+
+// ===========================================================================
+//  WHAT A COLLIDER IS ONCE ITS ENTITY HAS BEEN SCALED.
+// ===========================================================================
+
+TEST_CASE("a capsule stretched on one axis does not get fatter") {
+    // =======================================================================
+    //  The radius used to be worked out from the UNSCALED size and then
+    //  multiplied by max(scale.x, scale.y). A character sprite stretched
+    //  vertically - scale (1, 3), an ordinary thing to do - therefore got a
+    //  capsule THREE TIMES TOO WIDE: 60 units across instead of 20, with 20
+    //  units of solid collider hanging off each side, snagging on every
+    //  doorway it walked past.
+    //
+    //  Collider.h states the max() rule for a CIRCLE, where a non-uniform
+    //  scale genuinely has no answer without an ellipse test, and then offers
+    //  the capsule as the fix for when that matters.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* entity = fixture.Add("Character", eng::Vec2{0.0f, 0.0f});
+    auto* capsule = static_cast<eng::CapsuleColliderComponent*>(
+        entity->AddComponent(eng::CapsuleColliderComponent::kTypeName));
+    capsule->SetSize(eng::Vec2{20.0f, 60.0f});
+    capsule->SetDirection(eng::CapsuleDirection::Vertical);
+
+    entity->Transform().SetLocalScale(eng::Vec2{1.0f, 3.0f});
+
+    // Unity's rule: scale the SIZE, then derive. (20,60) * (1,3) = (20,180),
+    // so the radius is 10 and the whole thing is 20 wide and 180 tall.
+    const eng::AABB bounds = capsule->WorldBounds();
+    CHECK(bounds.Size().x == doctest::Approx(20.0f).epsilon(0.01));
+    CHECK(bounds.Size().y == doctest::Approx(180.0f).epsilon(0.01));
+
+    // The other way round, to show it is not a lucky special case.
+    entity->Transform().SetLocalScale(eng::Vec2{4.0f, 1.0f});
+    const eng::AABB wide = capsule->WorldBounds();
+    CHECK(wide.Size().x == doctest::Approx(80.0f).epsilon(0.01));
+    CHECK(wide.Size().y == doctest::Approx(80.0f).epsilon(0.01));   // a circle
+}
+
+TEST_CASE("a scaled-up collider is heavier, and the two mass properties agree") {
+    // Area() was local-space for all six colliders, so auto-mass ignored the
+    // entity's scale: a 64x64 crate weighed exactly what a 16x16 one of the
+    // same material weighed, and the two bounced off each other as equals.
+    // The giveaway was that the SAME collider's other mass property - its
+    // inertia - has always read the scaled geometry.
+    SceneFixture fixture;
+
+    const auto crate = [&](const char* name, float scale) {
+        eng::Entity* e = fixture.Add(name, eng::Vec2{0.0f, 0.0f});
+        AddBox(*e, eng::Vec2{8.0f, 8.0f});
+        e->Transform().SetLocalScale(eng::Vec2{scale, scale});
+        eng::Rigidbody2DComponent* body = AddBody(*e);
+        body->SetUseAutoMass(true);
+        return body;
+    };
+
+    const eng::Rigidbody2DComponent* small = crate("Small", 1.0f);
+    const eng::Rigidbody2DComponent* big   = crate("Big", 4.0f);
+
+    CHECK(small->Mass() == doctest::Approx(256.0f));      // 16 x 16
+    CHECK(big->Mass() == doctest::Approx(4096.0f));       // 64 x 64, 16x more
+
+    // AND THEY AGREE WITH EACH OTHER. Mass goes as the area - the square of
+    // the scale - and inertia as mass times the square of the size again, so
+    // the inverse inertia drops by the fourth power of the scale.
+    CHECK(big->InverseInertia() < small->InverseInertia());
+}
+
+TEST_CASE("auto mass sums each collider's own density, whatever order they are in") {
+    // It used to sum the AREAS and multiply the total by whichever density the
+    // LAST collider happened to carry, so a compound body weighed 1000 or 200
+    // purely according to component order - a five-fold swing from nothing.
+    SceneFixture fixture;
+
+    const auto build = [&](const char* name, float firstDensity,
+                           float secondDensity) {
+        eng::Entity* e = fixture.Add(name, eng::Vec2{0.0f, 0.0f});
+        AddBox(*e, eng::Vec2{5.0f, 5.0f})->SetDensity(firstDensity);
+        AddBox(*e, eng::Vec2{5.0f, 5.0f})->SetDensity(secondDensity);
+        eng::Rigidbody2DComponent* body = AddBody(*e);
+        body->SetUseAutoMass(true);
+        return body->Mass();
+    };
+
+    // 100 at density 1 plus 100 at density 5 is 600, either way round.
+    const float oneThenFive = build("A", 1.0f, 5.0f);
+    const float fiveThenOne = build("B", 5.0f, 1.0f);
+
+    CHECK(oneThenFive == doctest::Approx(600.0f));
+    CHECK(fiveThenOne == doctest::Approx(600.0f));
+}
+
+TEST_CASE("a disabled collider weighs nothing and does not decide the spin") {
+    // Neither loop checked Enabled(), so an attack hitbox that is live for
+    // three frames made its body permanently seven times harder to push - and
+    // because the inertia loop stopped at the FIRST collider it found, a
+    // disabled one attached first defined the body's whole rotational
+    // response. "Switched off, a collider takes part in nothing" is what
+    // Collider.h promises.
+    SceneFixture fixture;
+
+    eng::Entity* entity = fixture.Add("Attacker", eng::Vec2{0.0f, 0.0f});
+
+    // The hitbox is attached FIRST and is the big one, which is what made it
+    // win both loops.
+    eng::BoxColliderComponent* hitbox = AddBox(*entity, eng::Vec2{10.0f, 15.0f});
+    hitbox->SetEnabled(false);
+    AddBox(*entity, eng::Vec2{5.0f, 5.0f});
+
+    eng::Rigidbody2DComponent* body = AddBody(*entity);
+    body->SetUseAutoMass(true);
+
+    CHECK(body->Mass() == doctest::Approx(100.0f));   // was 700
+    const float withHitboxOff = body->InverseInertia();
+
+    // Switching it on changes both, which is the other half of the promise:
+    // the number has to respond to the flag rather than ignoring it.
+    hitbox->SetEnabled(true);
+    CHECK(body->Mass() == doctest::Approx(700.0f));
+    CHECK(body->InverseInertia() != doctest::Approx(withHitboxOff));
+}
+
+// ===========================================================================
+//  A compound body's events, each with its own contact.
+// ===========================================================================
+
+TEST_CASE("each collider of a compound body is handed its own contact") {
+    // =======================================================================
+    //  Collider.h promises "EVENTS ARE PER COLLIDER PAIR ... so a script
+    //  counting them needs the collider, not the entity, to tell them apart".
+    //  The dispatcher re-derived the contact from an ENTITY-keyed index, which
+    //  holds one contact per entity pair - the deepest - so a wall with two
+    //  colliders sent two OnCollisionEnter calls whose contacts were
+    //  byte-identical: `thisCollider` named the same collider both times, and
+    //  the shallower pair's contact was unreachable from any API.
+    //
+    //  The event now carries a token naming its collider pair; see
+    //  CollisionSystem::ContactForEvent.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity*            wall = fixture.Add("Wall", eng::Vec2{0.0f, 0.0f});
+    eng::ColliderComponent* near = AddBox(*wall, eng::Vec2{50.0f, 50.0f});
+    eng::ColliderComponent* far  = AddBox(*wall, eng::Vec2{50.0f, 50.0f});
+    far->SetOffset(eng::Vec2{1.0f, 0.0f});   // one unit deeper into the mover
+
+    eng::Entity* mover = fixture.Add("Mover", eng::Vec2{40.0f, 0.0f});
+    AddBox(*mover, eng::Vec2{20.0f, 20.0f});
+
+    // Collected from inside the handler, which is where a token is valid -
+    // stage 400 fills them and stage 500 delivers them, with nothing able to
+    // run in between.
+    std::vector<const eng::ColliderComponent*> mine;
+    std::vector<float>                         separations;
+
+    // ANYTHING A PREVIOUS CASE QUEUED AND NEVER DELIVERED would land in the
+    // Deliver() below carrying a token from a step that no longer exists -
+    // and entity ids are reused between fixtures, so it can even pass the
+    // target filter. EventLog clears the queue in its constructor for exactly
+    // this reason.
+    eng::MessageBus::ClearQueue();
+
+    const eng::SubscriptionId sub = eng::MessageBus::SubscribeBroadcast(
+        eng::MessageTypes::kCollisionEnter,
+        [&](const eng::Message& message) {
+            if (message.target != wall->Id()) {
+                return;
+            }
+            const eng::Collision2D* contact =
+                eng::CollisionSystem::ContactForEvent(message.i0);
+            if (contact == nullptr) {
+                return;   // no token: not one of ours
+            }
+
+            // Oriented for the RECEIVER, the way the dispatcher orients it.
+            const bool flipped = contact->other != mover->Id();
+            mine.push_back(flipped ? contact->otherCollider : contact->thisCollider);
+            separations.push_back(contact->separation);
+        });
+
+    Deliver();
+    eng::MessageBus::Unsubscribe(sub);
+
+    // Two colliders, two events, TWO DIFFERENT contacts.
+    REQUIRE(mine.size() == 2);
+    CHECK(mine[0] != mine[1]);
+    CHECK(((mine[0] == near && mine[1] == far) ||
+           (mine[0] == far && mine[1] == near)));
+
+    // And they really are different depths - one box reaches a unit further
+    // in, so the two separations must differ by about that unit. They used to
+    // be identical.
+    REQUIRE(separations.size() == 2);
+    CHECK(std::fabs(separations[0] - separations[1]) == doctest::Approx(1.0f).epsilon(0.05));
+}
+
+// ===========================================================================
+//  The closest point, inside as well as out.
+// ===========================================================================
+
+TEST_CASE("the closest point from INSIDE a shape is still on its boundary") {
+    // Collider.h: "For a point inside the collider, the nearest point on the
+    // boundary". Two branches disagreed with that and with each other.
+
+    // A CIRCLE used to return the query point unchanged, so a circle answered
+    // this differently from a box of the same footprint.
+    const ConvexShape circle = ToConvex(Circle{Vec2{0.0f, 0.0f}, 10.0f});
+    const Vec2        inCircle = ClosestPoint(circle, Vec2{3.0f, 0.0f});
+    CHECK(inCircle.x == doctest::Approx(10.0f));
+    CHECK(inCircle.y == doctest::Approx(0.0f));
+
+    // The box of the same footprint, which always got this right.
+    const ConvexShape box =
+        ToConvex(AABB::FromMinMax(Vec2{-10.0f, -10.0f}, Vec2{10.0f, 10.0f}));
+    CHECK(ClosestPoint(box, Vec2{3.0f, 0.0f}).x == doctest::Approx(10.0f));
+
+    // A ROUNDED BOX used to step from the core's surface TOWARD the query
+    // point - which from inside is INWARD. Half-extents 10 with a radius of 5
+    // has its flat surface at |y| = 15; asked about its own centre it
+    // answered (0, -5): ten units inside that surface, and neither a boundary
+    // point nor the query point.
+    const Vec2        corners[4] = {Vec2{-10.0f, -10.0f}, Vec2{10.0f, -10.0f},
+                                    Vec2{10.0f, 10.0f},   Vec2{-10.0f, 10.0f}};
+    const ConvexShape rounded    = ToConvex(corners, 4, 5.0f);
+
+    const Vec2 atCentre = ClosestPoint(rounded, Vec2{0.0f, 0.0f});
+    CHECK(std::fabs(atCentre.y) == doctest::Approx(15.0f));
+
+    // And a point inside the rounded SHELL - past the core, short of the
+    // surface - lands on the surface too rather than on itself.
+    const Vec2 inShell = ClosestPoint(rounded, Vec2{0.0f, -12.0f});
+    CHECK(inShell.y == doctest::Approx(-15.0f));
+    CHECK(inShell.x == doctest::Approx(0.0f));
+}
+
+// ===========================================================================
+//  The queries.
+// ===========================================================================
+
+TEST_CASE("a circle cast reports where it touched, not where its centre stopped") {
+    // `point` was taken from the GROWN shape the ray was fired at, whose
+    // surface is one radius out in the world where nothing is. Unity reports
+    // the surface point as `point` and the centre separately as `centroid`;
+    // RaycastHit2D here has no centroid, so the surface point is the only
+    // thing `point` can mean - and it is what it means for every other query.
+    SceneFixture fixture;
+
+    eng::Entity* ball = fixture.Add("Ball", eng::Vec2{100.0f, 0.0f});
+    auto* collider = static_cast<eng::CircleColliderComponent*>(
+        ball->AddComponent(eng::CircleColliderComponent::kTypeName));
+    collider->SetRadius(10.0f);
+
+    const eng::RaycastHit2D hit = eng::Physics2D::CircleCast(
+        eng::Vec2{0.0f, 0.0f}, 5.0f, eng::Vec2{1.0f, 0.0f}, 500.0f);
+
+    REQUIRE(hit);
+
+    // The centre stops 15 out from the ball's centre: 85. That is `distance`,
+    // which is what a caller moves the circle by.
+    CHECK(hit.distance == doctest::Approx(85.0f).epsilon(0.001));
+
+    // The point they TOUCHED is on the ball, at 90. It used to report 85.
+    CHECK(hit.point.x == doctest::Approx(90.0f).epsilon(0.001));
+    CHECK(hit.point.y == doctest::Approx(0.0f));
+}
+
+TEST_CASE("a circle cast against a box is exact, including at a corner") {
+    // Physics2D.h promises CircleCast is "EXACT ... No stepping, no
+    // approximation", which holds only if the ray code handles a radius on an
+    // n-gon core. It used to collapse the core to one edge; then it stepped.
+    // It now solves the real boundary - each edge pushed out by the radius,
+    // plus an arc round each corner.
+    SceneFixture fixture;
+
+    eng::Entity* wall = fixture.Add("Wall", eng::Vec2{100.0f, 0.0f});
+    AddBox(*wall, eng::Vec2{20.0f, 20.0f});   // x in [80,120], y in [-20,20]
+
+    // Straight at the middle of the left face. The face is at x = 80 and the
+    // circle has radius 10, so its centre stops at exactly 70.
+    const eng::RaycastHit2D face = eng::Physics2D::CircleCast(
+        eng::Vec2{0.0f, 0.0f}, 10.0f, eng::Vec2{1.0f, 0.0f}, 500.0f);
+    REQUIRE(face);
+    CHECK(face.distance == doctest::Approx(70.0f).epsilon(0.0001));
+    CHECK(face.normal.x == doctest::Approx(-1.0f).epsilon(0.0001));
+
+    // AT A CORNER, which is the part a flat-face-only solution cannot do. A
+    // circle sliding along y = -30 toward +x meets the arc round the corner
+    // (80, -20): the centre is 10 from that corner when it touches, and it is
+    // already 10 below it, so it stops with its centre exactly at x = 80.
+    const eng::RaycastHit2D corner = eng::Physics2D::CircleCast(
+        eng::Vec2{0.0f, -30.0f}, 10.0f, eng::Vec2{1.0f, 0.0f}, 500.0f);
+    REQUIRE(corner);
+    CHECK(corner.distance == doctest::Approx(80.0f).epsilon(0.0001));
+
+    // The normal there is RADIAL, pointing out of the corner - which is what
+    // makes a sweep glance off a corner rather than stopping square on it.
+    CHECK(corner.normal.y == doctest::Approx(-1.0f).epsilon(0.0001));
+
+    // And a lane that clears the box entirely still misses.
+    CHECK_FALSE(eng::Physics2D::CircleCast(eng::Vec2{0.0f, -45.0f}, 10.0f,
+                                           eng::Vec2{1.0f, 0.0f}, 500.0f));
+}
+
+// ===========================================================================
+//  World space.
+// ===========================================================================
+
+TEST_CASE("a body under a scaled parent falls at the rate its velocity says") {
+    // A rigidbody's velocity is in WORLD units and was applied as a LOCAL
+    // translation, so under a parent scaled (2,2) the body moved twice as far
+    // as its velocity said: it accelerated through the world at twice gravity
+    // while reporting the right number, and the contact solver - which works
+    // entirely in world space - was resolving a body whose reported velocity
+    // was not the one it had.
+    SceneFixture fixture;
+
+    eng::Entity* room = fixture.Add("Room", eng::Vec2{0.0f, 0.0f});
+    room->Transform().SetLocalScale(eng::Vec2{2.0f, 2.0f});
+
+    eng::Entity* plain = fixture.Add("Plain", eng::Vec2{0.0f, 0.0f});
+    AddBox(*plain, eng::Vec2{5.0f, 5.0f});
+    AddBody(*plain)->SetFreezeRotation(true);
+
+    eng::Entity* child = fixture.Add("Child", eng::Vec2{200.0f, 0.0f});
+    AddBox(*child, eng::Vec2{5.0f, 5.0f});
+    AddBody(*child)->SetFreezeRotation(true);
+    child->Transform().SetParent(&room->Transform());
+    child->Transform().SetWorldPosition(eng::Vec2{200.0f, 0.0f});
+
+    const float startPlain = plain->Transform().WorldPosition().y;
+    const float startChild = child->Transform().WorldPosition().y;
+
+    for (int step = 0; step < 30; ++step) {
+        Step();
+    }
+
+    const float fellPlain = startPlain - plain->Transform().WorldPosition().y;
+    const float fellChild = startChild - child->Transform().WorldPosition().y;
+
+    REQUIRE(fellPlain > 1.0f);
+
+    // THE SAME DISTANCE THROUGH THE WORLD. It used to be twice as far.
+    CHECK(fellChild == doctest::Approx(fellPlain).epsilon(0.001));
+}
+
+// ===========================================================================
+//  The defaults, which were Unity's metres in a pixel engine.
+// ===========================================================================
+
+TEST_CASE("a freshly added collider is big enough to see") {
+    // "Add component -> BoxColliderComponent" on a 32x32 sprite used to give
+    // a collider ONE PIXEL across - a thousandth of the sprite's area - which
+    // also collapsed the entity's click box in the Scene view, because that
+    // box comes from the collider when there is one. config/engine.json
+    // already states the rule: this project works in PIXELS.
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Fresh", eng::Vec2{0.0f, 0.0f});
+
+    const auto spanOf = [&](const char* typeName) {
+        eng::Entity* host = fixture.Add(typeName, eng::Vec2{0.0f, 0.0f});
+        host->AddComponent(typeName);
+        const eng::ColliderComponent* collider = eng::FindCollider(*host);
+        REQUIRE(collider != nullptr);
+        const eng::Vec2 size = collider->WorldBounds().Size();
+        return std::max(size.x, size.y);
+    };
+
+    // Every one of the five, because the defaults were wrong in all of them.
+    CHECK(spanOf(eng::BoxColliderComponent::kTypeName) >= 16.0f);
+    CHECK(spanOf(eng::CircleColliderComponent::kTypeName) >= 16.0f);
+    CHECK(spanOf(eng::CapsuleColliderComponent::kTypeName) >= 16.0f);
+    CHECK(spanOf(eng::PolygonColliderComponent::kTypeName) >= 16.0f);
+    CHECK(spanOf(eng::EdgeColliderComponent::kTypeName) >= 16.0f);
+
+    // And the click box the Scene view builds from it is not a point.
+    entity->AddComponent(eng::BoxColliderComponent::kTypeName);
+    const eng::Vec2 clickable = eng::FindCollider(*entity)->WorldBounds().Size();
+    CHECK(clickable.x > 1.0f);
+    CHECK(clickable.y > 1.0f);
+}
+
+// ===========================================================================
+//  WHAT AN ADVERSARIAL REVIEW FOUND IN THE FIXES THEMSELVES.
+//
+//  Thirteen defects, one of them a REGRESSION that 710 passing cases did not
+//  notice because the case written alongside the fix exercised the one shape
+//  the fix happened to be right for. These are the cases that would have
+//  caught them.
+// ===========================================================================
+
+TEST_CASE("the closest point on a CAPSULE is on the side you asked from") {
+    // =======================================================================
+    //  THE REGRESSION, and the shape of it is worth remembering.
+    //
+    //  A 2-point core - every capsule, and every edge collider with a
+    //  thickness - has TWO outward normals, because its two "edges" are the
+    //  same segment walked both ways. They give an identical foot and an
+    //  identical distance, and the loop that picks the nearest uses a strict
+    //  <, so it keeps only the first. A fix that then consulted that single
+    //  normal answered HALF THE PLANE ON THE WRONG SIDE.
+    //
+    //  Measured: a capsule 20 wide asked about a point 50 to its left
+    //  answered 10 to its RIGHT - 60 units from the query instead of 40.
+    //
+    //  The case written with that fix used a 4-point core, where the kept
+    //  normal really is the nearest edge's, so nothing caught it.
+    // =======================================================================
+    const ConvexShape capsule =
+        ToConvex(Capsule{Vec2{0.0f, -20.0f}, Vec2{0.0f, 20.0f}, 10.0f});
+    REQUIRE(capsule.count == 2);
+
+    // 50 to the left: the answer is on the LEFT.
+    const Vec2 left = ClosestPoint(capsule, Vec2{-50.0f, 0.0f});
+    CHECK(left.x == doctest::Approx(-10.0f));
+    CHECK(left.y == doctest::Approx(0.0f));
+
+    // And to the right, which is the half that always worked.
+    const Vec2 right = ClosestPoint(capsule, Vec2{50.0f, 0.0f});
+    CHECK(right.x == doctest::Approx(10.0f));
+
+    // PAST THE END CAP, where there is no edge interior to be nearest to and
+    // the toward-the-query direction is the only sane answer. This returned
+    // (10, 20) - round the side - at a distance of 31.6 instead of 20.
+    const Vec2 above = ClosestPoint(capsule, Vec2{0.0f, 50.0f});
+    CHECK(above.x == doctest::Approx(0.0f));
+    CHECK(above.y == doctest::Approx(30.0f));
+
+    // AND A THICK EDGE COLLIDER, which is the same shape and the case a
+    // character standing on the ground actually hits: it was told the nearest
+    // point was five pixels UNDER the ground.
+    const ConvexShape ground =
+        ToConvex(Capsule{Vec2{-100.0f, 0.0f}, Vec2{100.0f, 0.0f}, 5.0f});
+    const Vec2 standing = ClosestPoint(ground, Vec2{0.0f, 20.0f});
+    CHECK(standing.y == doctest::Approx(5.0f));
+    CHECK(standing.x == doctest::Approx(0.0f));
+}
+
+TEST_CASE("the closest point directly above a rounded corner is on the top face") {
+    // The gate that decides "is the query point inside the core" was strict,
+    // and the dot product it tests is exactly ZERO on the half-line
+    // extending a core edge past its vertex. So a query straight above a
+    // corner fell through to the side face: 9.999 above the corner was right,
+    // 10.000 was wrong, 10.001 was right again - a discontinuity rather than
+    // a limit.
+    const Vec2        corners[4] = {Vec2{-10.0f, -10.0f}, Vec2{10.0f, -10.0f},
+                                    Vec2{10.0f, 10.0f},   Vec2{-10.0f, 10.0f}};
+    const ConvexShape rounded    = ToConvex(corners, 4, 5.0f);
+
+    // Exactly above the top-right corner. The top surface is at y = 15.
+    const Vec2 above = ClosestPoint(rounded, Vec2{10.0f, 30.0f});
+    CHECK(above.x == doctest::Approx(10.0f));
+    CHECK(above.y == doctest::Approx(15.0f));
+
+    // A point lying exactly ON the surface answers with itself.
+    const Vec2 onIt = ClosestPoint(rounded, Vec2{10.0f, 15.0f});
+    CHECK(onIt.x == doctest::Approx(10.0f));
+    CHECK(onIt.y == doctest::Approx(15.0f));
+
+    // And the neighbours either side, which bracketed the discontinuity.
+    CHECK(ClosestPoint(rounded, Vec2{9.999f, 30.0f}).y == doctest::Approx(15.0f));
+    CHECK(ClosestPoint(rounded, Vec2{10.001f, 30.0f}).y == doctest::Approx(15.0f));
+}
+
+TEST_CASE("a capsule under a sheared world matrix keeps its axis") {
+    // =======================================================================
+    //  A rotated child under a NON-UNIFORMLY SCALED parent composes to a
+    //  matrix that is not scale-then-rotate-then-translate at all: it SHEARS,
+    //  and GetScale() and GetRotation() cannot describe it between them.
+    //
+    //  Deriving the core axis from the EXTRACTED rotation therefore pointed
+    //  it 37 degrees wrong and put both cap centres 32 px out, in a case the
+    //  code it replaced had exactly right. The axis now comes from the matrix
+    //  and only the LENGTH comes from the scaled size.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* parent = fixture.Add("Stretched", eng::Vec2{0.0f, 0.0f});
+    parent->Transform().SetLocalScale(eng::Vec2{1.0f, 3.0f});
+
+    eng::Entity* child = fixture.Add("Turned", eng::Vec2{0.0f, 0.0f});
+    auto* capsule = static_cast<eng::CapsuleColliderComponent*>(
+        child->AddComponent(eng::CapsuleColliderComponent::kTypeName));
+    capsule->SetSize(eng::Vec2{32.0f, 64.0f});
+    capsule->SetDirection(eng::CapsuleDirection::Vertical);
+    child->Transform().SetParent(&parent->Transform());
+    child->Transform().SetLocalRotation(eng::kPi * 0.25f);
+
+    std::vector<eng::ConvexShape> shapes;
+    REQUIRE(eng::GatherWorldShapes(*capsule, shapes) == 1);
+    REQUIRE(shapes[0].count == 2);
+
+    // The composed scale is (sqrt(5), sqrt(5)) = 2.23607, so the scaled size
+    // is (71.554, 143.108): radius 35.777 and a core half-length of 35.777.
+    // The core axis is the local (0,1) through the matrix, normalized:
+    // (-0.31623, 0.94868). So the ends sit at -/+ (11.314, 33.941).
+    CHECK(shapes[0].radius == doctest::Approx(35.777f).epsilon(0.001));
+    CHECK(shapes[0].points[0].x == doctest::Approx(11.314f).epsilon(0.001));
+    CHECK(shapes[0].points[0].y == doctest::Approx(-33.941f).epsilon(0.001));
+    CHECK(shapes[0].points[1].x == doctest::Approx(-11.314f).epsilon(0.001));
+    CHECK(shapes[0].points[1].y == doctest::Approx(33.941f).epsilon(0.001));
+}
+
+TEST_CASE("a rounded box weighs what its rounding makes it") {
+    // Area() promises to be "the area of what WorldShapes() produces", and
+    // WorldShapes hands the solver the core inflated by edgeRadius. A 32x64
+    // box with a radius of 16 is 3876 units of shape and was reported as
+    // 1024, so an auto-mass body was nearly four times too light for the
+    // thing being pushed - while LocalSize() beside it already counted the
+    // same rounding for the inertia.
+    SceneFixture fixture;
+
+    eng::Entity*               entity = fixture.Add("Rounded", eng::Vec2{0.0f, 0.0f});
+    eng::BoxColliderComponent* box    = AddBox(*entity, eng::Vec2{16.0f, 32.0f});
+    box->SetEdgeRadius(16.0f);
+
+    // core 32 x 64 = 2048, plus perimeter 192 x 16 = 3072, plus a disc of
+    // radius 16 = 804.25.
+    CHECK(box->Area() == doctest::Approx(2048.0f + 3072.0f + 804.25f).epsilon(0.001));
+
+    // With no rounding it is just the core, which is what it always was.
+    box->SetEdgeRadius(0.0f);
+    CHECK(box->Area() == doctest::Approx(2048.0f));
+}
+
+TEST_CASE("a body under a parent scaled flat still moves, and says nothing") {
+    // =======================================================================
+    //  A parent at scale (1, 0) - "usually one frame of an animation", as
+    //  Transform2D.h puts it - cannot be inverted. Routing every body's
+    //  motion through SetWorldPosition asked anyway, so Mat3::Inverse handed
+    //  back the identity and warned: the body teleported to the parent's
+    //  origin and wrote a line to the log once per body per step.
+    //
+    //  There is no local delta that produces the requested world one when the
+    //  parent squashes the world onto a line, so the delta is applied
+    //  locally - which is what the code before world-space motion did.
+    // =======================================================================
+    SceneFixture fixture;
+
+    eng::Entity* flat = fixture.Add("Flat", eng::Vec2{500.0f, 300.0f});
+    flat->Transform().SetLocalScale(eng::Vec2{1.0f, 0.0f});
+
+    eng::Entity* child = fixture.Add("Child", eng::Vec2{0.0f, 50.0f});
+    AddBox(*child, eng::Vec2{5.0f, 5.0f});
+    AddBody(*child)->SetFreezeRotation(true);
+    child->Transform().SetParent(&flat->Transform());
+    child->Transform().SetLocalPosition(eng::Vec2{0.0f, 50.0f});
+
+    for (int step = 0; step < 30; ++step) {
+        Step();
+    }
+
+    // IT FELL, in its own space. It used to be pinned at the parent's origin.
+    CHECK(child->Transform().LocalPosition().y < 49.0f);
+    CHECK(child->Transform().LocalPosition().x == doctest::Approx(0.0f));
+}
+
+TEST_CASE("a script can take over from MovePosition without losing a step") {
+    // The wipe that stops one MovePosition moving a body forever used to fire
+    // unconditionally, so a script that called MovePosition once and then
+    // switched to SetVelocity lost exactly one step - silently, with
+    // Velocity() reading zero for the rest of that frame.
+    SceneFixture fixture;
+
+    eng::Entity* lift = fixture.Add("Lift", eng::Vec2{0.0f, 0.0f});
+    AddBox(*lift, eng::Vec2{50.0f, 10.0f});
+    eng::Rigidbody2DComponent* body = AddBody(*lift);
+    body->SetBodyType(eng::RigidbodyType::Kinematic);
+
+    body->MovePosition(eng::Vec2{0.0f, 200.0f});
+    Step();
+    REQUIRE(lift->Transform().WorldPosition().y == doctest::Approx(200.0f));
+
+    // The step after: velocity control, and no MovePosition. 60 units a
+    // second at a sixtieth of a second is one unit.
+    body->SetVelocity(eng::Vec2{0.0f, 60.0f});
+    Step();
+    CHECK(lift->Transform().WorldPosition().y == doctest::Approx(201.0f));
+    CHECK(body->Velocity().y == doctest::Approx(60.0f));
+
+    // And letting go still stops it, which is the behaviour the wipe exists
+    // for: the catch-up velocity from a target must not outlive its step.
+    body->MovePosition(eng::Vec2{0.0f, 300.0f});
+    Step();
+    REQUIRE(lift->Transform().WorldPosition().y == doctest::Approx(300.0f));
+    Step();
+    CHECK(lift->Transform().WorldPosition().y == doctest::Approx(300.0f));
+}
+
+TEST_CASE("a corner hit reports a radial normal however small the radius") {
+    // The corner-arc normal compared a SQUARED length against kTinyLength
+    // itself, so any radius below about a thousandth of a unit fell back to
+    // -ray.direction: a glancing hit on a corner arc reported a head-on
+    // normal, ninety degrees out, which a script sliding or reflecting on it
+    // would follow.
+    //  NEAR THE ORIGIN AND NOT TANGENT, both deliberately. At x = 80 a
+    //  radius of 0.0005 is below float32's resolution of 6400, and a ray
+    //  aimed exactly ALONG the arc's lowest point is the one direction where
+    //  "radial" is genuinely ambiguous - so that arrangement measures
+    //  floating point, not this fix.
+    const Vec2        corners[4] = {Vec2{-2.0f, -2.0f}, Vec2{2.0f, -2.0f},
+                                    Vec2{2.0f, 2.0f},   Vec2{-2.0f, 2.0f}};
+    const ConvexShape rounded    = ToConvex(corners, 4, 0.0008f);
+
+    // STARTED OUTSIDE IN X, which matters: a ray whose origin already lies
+    // between the core and the rounded surface is INSIDE the shape, and the
+    // branch rightly reports that as distance 0 with the normal facing back.
+    // From off to the left, the first piece of boundary it meets is the arc
+    // round the core corner (-2, -2).
+    RaycastHit hit;
+    REQUIRE(
+        Raycast(Ray{Vec2{-2.5f, -2.0005f}, Vec2{1.0f, 0.0f}, 10.0f}, rounded, hit));
+
+    // RADIAL, which here means it has a real downward component. The old code
+    // returned -ray.direction = (-1, 0) exactly, so normal.y was ZERO for
+    // every radius below about a thousandth of a unit.
+    CHECK(std::fabs(hit.normal.y) > 0.3f);
+    CHECK(hit.normal.y < 0.0f);
+    CHECK(hit.normal.x < 0.0f);
+
+    // And a radius comfortably above the old threshold was always fine, which
+    // is what made this hard to notice.
+    const ConvexShape big = ToConvex(corners, 4, 0.5f);
+    RaycastHit        bigHit;
+    REQUIRE(Raycast(Ray{Vec2{-4.0f, -2.3f}, Vec2{1.0f, 0.0f}, 10.0f}, big, bigHit));
+    CHECK(std::fabs(bigHit.normal.y) > 0.3f);
+
+    // The arc round (-2, -2) with a radius of 0.5, met 0.3 below its centre:
+    // the crossing is at x = -2.4 and the normal is (-0.8, -0.6).
+    CHECK(bigHit.normal.x == doctest::Approx(-0.8f).epsilon(0.01));
+    CHECK(bigHit.normal.y == doctest::Approx(-0.6f).epsilon(0.01));
 }

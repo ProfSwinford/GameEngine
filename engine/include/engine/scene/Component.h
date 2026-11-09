@@ -77,6 +77,32 @@ public:
         return false;
     }
 
+    // ======================================================================
+    //  MAY ONE ENTITY CARRY MORE THAN ONE OF THESE?
+    //
+    //  No, for almost everything. One transform, one sprite, one rigidbody,
+    //  one camera - a second of any of them is a mistake with no sensible
+    //  meaning, and the editor should not offer it.
+    //
+    //  YES FOR A COLLIDER, which is how a compound body is built and how a
+    //  concave shape is approximated; physics/Collider.h says so, the
+    //  collision system keys its contacts per COLLIDER pair so that each one
+    //  reports separately, and the solver handles it. YES FOR A SCRIPT, for
+    //  the obvious reason that one entity often does two things.
+    //
+    //  THIS EXISTS BECAUSE THE EDITOR COULD NOT ASK. Its "Add component" list
+    //  skipped any type the entity already had, so a compound body was
+    //  something a scene file could contain and the Inspector could not
+    //  build - and nothing in the engine refused it, which is what made the
+    //  gap so hard to notice.
+    //
+    //  ASKED OF THE EXISTING COMPONENT, not of the type name. There is no
+    //  instance to ask until the entity has one, and by then the one it has
+    //  is exactly the right thing to ask. See the Add component list in
+    //  InspectorPanel.cpp.
+    // ======================================================================
+    virtual bool AllowsSeveral() const { return false; }
+
     // Called once, when the component has been fully attached to its entity,
     // and once when it is being taken off. Registering with systems goes here.
     virtual void OnAttach() {}

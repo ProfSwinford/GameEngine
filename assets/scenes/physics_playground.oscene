@@ -1,0 +1,6130 @@
+{
+   "_collider_colours": "In the Scene view every collider is outlined: green solid, cyan trigger, grey disabled, and red while it is touching something (only while playing - nothing has been tested when the clock is paused). The Gizmos menu in the Scene view toolbar switches the whole Colliders category off.",
+   "_comment": "THE PHYSICS PLAYGROUND. Thirteen stations on a 4-wide grid, each one exercising a different part of the 2D physics. Open docs/physics-playground.md for what every station is for and what a FAILURE looks like at each one. Select a station root in the Hierarchy to jump to it; press F to frame it.",
+   "_keys": "Play, then: E resets the whole playground, SPACE re-launches every body that has a PhysicsLauncher on it. The readout in the top left is the PhysicsLab script on the root entity.",
+   "_layers": "Collision layers used here: World (all the static scenery), Default (the dynamic bodies), Trigger, Marker (the reference line in station 4 - it collides with nothing), and PassA/PassB/StopA/StopB for the layer test in station 8.",
+   "camera": {
+      "position": [
+         600,
+         360
+      ],
+      "zoom": 0.62
+   },
+   "entities": [
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLab",
+               "type": "ScriptComponent"
+            }
+         ],
+         "name": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  360
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "enabled": true,
+               "priority": 0,
+               "type": "CameraComponent",
+               "zoom": 0.85
+            }
+         ],
+         "name": "Lab Camera",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "all five dynamic shapes, one static box floor - every outline should sit exactly on the floor, none sunk in and none floating",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S01  Shapes on flat ground"
+               }
+            }
+         ],
+         "name": "S01 Shapes on flat ground",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S01 Ground",
+         "parent": "S01 Shapes on flat ground"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  180,
+                  520
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S01 Box",
+         "parent": "S01 Shapes on flat ground"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  370,
+                  520
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "edgeRadius": 10,
+               "friction": 0.4,
+               "halfExtents": [
+                  22,
+                  22
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S01 Rounded box",
+         "parent": "S01 Shapes on flat ground"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  560,
+                  520
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 28,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S01 Circle",
+         "parent": "S01 Shapes on flat ground"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  750,
+                  520
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  44,
+                  76
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "direction": "Vertical",
+               "friction": 0.4,
+               "layer": "Default",
+               "size": [
+                  44,
+                  76
+               ],
+               "trigger": false,
+               "type": "CapsuleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S01 Capsule",
+         "parent": "S01 Shapes on flat ground"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  940,
+                  520
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  56
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "points": [
+                  [
+                     30,
+                     0
+                  ],
+                  [
+                     15,
+                     25.98
+                  ],
+                  [
+                     -15,
+                     25.98
+                  ],
+                  [
+                     -30,
+                     0
+                  ],
+                  [
+                     -15,
+                     -25.98
+                  ],
+                  [
+                     15,
+                     -25.98
+                  ]
+               ],
+               "trigger": false,
+               "type": "PolygonColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S01 Polygon",
+         "parent": "S01 Shapes on flat ground"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1400,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "the same five, on an EdgeCollider valley - and one fired UP at it from below, because Collider.h claims an edge has no underside",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S02  Shapes on an edge chain"
+               }
+            }
+         ],
+         "name": "S02 Shapes on an edge chain",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "edgeRadius": 4,
+               "friction": 0.5,
+               "layer": "World",
+               "points": [
+                  [
+                     40,
+                     300
+                  ],
+                  [
+                     260,
+                     130
+                  ],
+                  [
+                     560,
+                     70
+                  ],
+                  [
+                     860,
+                     150
+                  ],
+                  [
+                     1160,
+                     340
+                  ]
+               ],
+               "trigger": false,
+               "type": "EdgeColliderComponent"
+            }
+         ],
+         "name": "S02 Valley",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  180,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S02 Box",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  370,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "edgeRadius": 10,
+               "friction": 0.4,
+               "halfExtents": [
+                  22,
+                  22
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S02 Rounded box",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  560,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 28,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S02 Circle",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  750,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  44,
+                  76
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "direction": "Vertical",
+               "friction": 0.4,
+               "layer": "Default",
+               "size": [
+                  44,
+                  76
+               ],
+               "trigger": false,
+               "type": "CapsuleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S02 Capsule",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  940,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  56
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "points": [
+                  [
+                     30,
+                     0
+                  ],
+                  [
+                     15,
+                     25.98
+                  ],
+                  [
+                     -15,
+                     25.98
+                  ],
+                  [
+                     -30,
+                     0
+                  ],
+                  [
+                     -15,
+                     -25.98
+                  ],
+                  [
+                     15,
+                     -25.98
+                  ]
+               ],
+               "trigger": false,
+               "type": "PolygonColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S02 Polygon",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  560,
+                  -120
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  28,
+                  28
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  120,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "Default",
+               "radius": 14,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 0,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 1.5,
+                  "launch": [
+                     0,
+                     520
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 4
+               }
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "showNormals": true
+               }
+            }
+         ],
+         "name": "S02 From below",
+         "parent": "S02 Shapes on an edge chain"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  2800,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "the same five again, on merged tile boxes - watch for a body catching on a seam where two merged runs meet",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S03  Shapes on a tilemap"
+               }
+            }
+         ],
+         "name": "S03 Shapes on a tilemap",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  40,
+                  20
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "cellSize": [
+                  32,
+                  32
+               ],
+               "chunks": [
+                  {
+                     "at": [
+                        0,
+                        0
+                     ],
+                     "cells": "32:1 12:0 4:1 12:0 4:1 12:0 4:1 176:0"
+                  },
+                  {
+                     "at": [
+                        1,
+                        0
+                     ],
+                     "cells": "32:1 224:0"
+                  }
+               ],
+               "layer": -10,
+               "palette": [
+                  "tiles/stone.otile"
+               ],
+               "type": "TilemapComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "layer": "World",
+               "trigger": false,
+               "type": "TilemapColliderComponent"
+            }
+         ],
+         "name": "S03 Tiled ground",
+         "parent": "S03 Shapes on a tilemap"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  120,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S03 Box",
+         "parent": "S03 Shapes on a tilemap"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  300,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "edgeRadius": 10,
+               "friction": 0.4,
+               "halfExtents": [
+                  22,
+                  22
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S03 Rounded box",
+         "parent": "S03 Shapes on a tilemap"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  480,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 28,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S03 Circle",
+         "parent": "S03 Shapes on a tilemap"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  660,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  44,
+                  76
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "direction": "Vertical",
+               "friction": 0.4,
+               "layer": "Default",
+               "size": [
+                  44,
+                  76
+               ],
+               "trigger": false,
+               "type": "CapsuleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S03 Capsule",
+         "parent": "S03 Shapes on a tilemap"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  840,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  56
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  210,
+                  170,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "points": [
+                  [
+                     30,
+                     0
+                  ],
+                  [
+                     15,
+                     25.98
+                  ],
+                  [
+                     -15,
+                     25.98
+                  ],
+                  [
+                     -30,
+                     0
+                  ],
+                  [
+                     -15,
+                     -25.98
+                  ],
+                  [
+                     15,
+                     -25.98
+                  ]
+               ],
+               "trigger": false,
+               "type": "PolygonColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S03 Polygon",
+         "parent": "S03 Shapes on a tilemap"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  4200,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "five circles, one floor, bounciness 0 / .25 / .5 / .75 / 1 - the last should return to the line it was dropped from and no higher",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S04  Bounciness 0 to 1"
+               }
+            }
+         ],
+         "name": "S04 Bounciness 0 to 1",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S04 Ground",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  160,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  90,
+                  220,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "layer": "Default",
+               "radius": 24,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 6
+               }
+            }
+         ],
+         "name": "S04 Bounce 0.00",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  350,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  130,
+                  190,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.25,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "layer": "Default",
+               "radius": 24,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 6
+               }
+            }
+         ],
+         "name": "S04 Bounce 0.25",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  540,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  170,
+                  160,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.5,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "layer": "Default",
+               "radius": 24,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 6
+               }
+            }
+         ],
+         "name": "S04 Bounce 0.50",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  730,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  210,
+                  130,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.75,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "layer": "Default",
+               "radius": 24,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 6
+               }
+            }
+         ],
+         "name": "S04 Bounce 0.75",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  920,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  250,
+                  100,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 1,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "layer": "Default",
+               "radius": 24,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 6
+               }
+            }
+         ],
+         "name": "S04 Bounce 1.00",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "collidesWith": [
+                  "Marker"
+               ],
+               "layer": "Marker",
+               "points": [
+                  [
+                     120,
+                     620
+                  ],
+                  [
+                     1080,
+                     620
+                  ]
+               ],
+               "trigger": false,
+               "type": "EdgeColliderComponent"
+            }
+         ],
+         "name": "S04 Drop line",
+         "parent": "S04 Bounciness 0 to 1"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  -900
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "five boxes, rotation frozen so this is sliding and not rolling - friction 0 should reach the bottom, 1 should barely move",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S05  Friction 0 to 1 on a ramp"
+               }
+            }
+         ],
+         "name": "S05 Friction 0 to 1 on a ramp",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  230
+               ],
+               "rotation": 0.38397,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1000,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  500,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S05 Ramp",
+         "parent": "S05 Friction 0 to 1 on a ramp"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  249,
+                  137.8
+               ],
+               "rotation": 0.38397,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  120,
+                  80,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S05 Friction 0.00",
+         "parent": "S05 Friction 0 to 1 on a ramp"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  415.9,
+                  205.2
+               ],
+               "rotation": 0.38397,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  145,
+                  80,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.25,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S05 Friction 0.25",
+         "parent": "S05 Friction 0 to 1 on a ramp"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  582.8,
+                  272.7
+               ],
+               "rotation": 0.38397,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  170,
+                  80,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S05 Friction 0.50",
+         "parent": "S05 Friction 0 to 1 on a ramp"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  749.7,
+                  340.1
+               ],
+               "rotation": 0.38397,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  195,
+                  80,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.75,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S05 Friction 0.75",
+         "parent": "S05 Friction 0 to 1 on a ramp"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  916.6,
+                  407.5
+               ],
+               "rotation": 0.38397,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  220,
+                  80,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 1,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S05 Friction 1.00",
+         "parent": "S05 Friction 0 to 1 on a ramp"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1400,
+                  -900
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "a six-box tower (do the boxes sink into each other?), and 1kg against 20kg - gravity is an acceleration, so both fall at the same rate",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S06  Mass, stacking and sinking"
+               }
+            }
+         ],
+         "name": "S06 Mass, stacking and sinking",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S06 Ground",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  240,
+                  80
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  140,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  36,
+                  20
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Tower 0",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  240,
+                  122
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  140,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  36,
+                  20
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Tower 1",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  240,
+                  164
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  140,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  36,
+                  20
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Tower 2",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  240,
+                  206
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  140,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  36,
+                  20
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Tower 3",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  240,
+                  248
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  140,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  36,
+                  20
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Tower 4",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  240,
+                  290
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  140,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  36,
+                  20
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Tower 5",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  640,
+                  600
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  200,
+                  160,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Light 1kg",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  760,
+                  600
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  160,
+                  70,
+                  50,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 20,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Heavy 20kg",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1000,
+                  82
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  44
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  200,
+                  230,
+                  160,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  36,
+                  22
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Squashed 1kg",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1000,
+                  600
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  72,
+                  44
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  160,
+                  70,
+                  50,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  36,
+                  22
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 20,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S06 Dropped 20kg",
+         "parent": "S06 Mass, stacking and sinking"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  2800,
+                  -900
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "a nudged tower tips, a plank on a fulcrum tilts, and a kinematic paddle sweeps balls - rotation is real, not a sprite trick",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S07  Rotation, tipping and a see-saw"
+               }
+            }
+         ],
+         "name": "S07 Rotation, tipping and a see-saw",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.7,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S07 Ground",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  200,
+                  130
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  28,
+                  140
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  160,
+                  90,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.7,
+               "halfExtents": [
+                  14,
+                  70
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 1,
+                  "launch": [
+                     130,
+                     0
+                  ],
+                  "leaveATrail": false,
+                  "repeatSeconds": 5
+               }
+            }
+         ],
+         "name": "S07 Tipping tower",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  80
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.9,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S07 Fulcrum",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  118
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  420,
+                  20
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  150,
+                  170,
+                  220,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "density": 1,
+               "friction": 0.9,
+               "halfExtents": [
+                  210,
+                  10
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 3,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S07 Plank",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  760,
+                  600
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  44,
+                  44
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  200,
+                  90,
+                  70,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  22,
+                  22
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 4,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S07 See-saw weight",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1010,
+                  300
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  260,
+                  24
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  220,
+                  150,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  130,
+                  12
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Kinematic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsMover",
+               "type": "ScriptComponent",
+               "vars": {
+                  "degreesPerSecond": 80,
+                  "seconds": 2,
+                  "travel": [
+                     0,
+                     0
+                  ],
+                  "useMovePosition": true
+               }
+            }
+         ],
+         "name": "S07 Paddle",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  960,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  28,
+                  28
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  220,
+                  240,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.2,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 14,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 0.5,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S07 Paddle ball 0",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1000,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  28,
+                  28
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  220,
+                  240,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.2,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 14,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 0.5,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S07 Paddle ball 1",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1040,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  28,
+                  28
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  220,
+                  240,
+                  200,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.2,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 14,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 0.5,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S07 Paddle ball 2",
+         "parent": "S07 Rotation, tipping and a see-saw"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  4200,
+                  -900
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "a trigger is fallen through and still reports; two layers that do not want each other pass through; two that do, do not",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S08  Triggers and layers"
+               }
+            }
+         ],
+         "name": "S08 Triggers and layers",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.5,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S08 Ground",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  220,
+                  300
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -3,
+               "size": [
+                  200,
+                  200
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  60,
+                  170,
+                  180,
+                  90
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "halfExtents": [
+                  100,
+                  100
+               ],
+               "layer": "Trigger",
+               "trigger": true,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S08 Trigger volume",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  220,
+                  640
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  36,
+                  36
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  230,
+                  240,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 18,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "logToConsole": false
+               }
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": false,
+                  "repeatSeconds": 5
+               }
+            }
+         ],
+         "name": "S08 Falls through trigger",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  560,
+                  500
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  90,
+                  44
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  120,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "PassA",
+                  "World"
+               ],
+               "halfExtents": [
+                  45,
+                  22
+               ],
+               "layer": "PassA",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S08 PassA",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  590,
+                  640
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  90,
+                  44
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  150,
+                  240,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "PassB",
+                  "World"
+               ],
+               "halfExtents": [
+                  45,
+                  22
+               ],
+               "layer": "PassB",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S08 PassB",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  900,
+                  500
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  90,
+                  44
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  120,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "StopB",
+                  "World"
+               ],
+               "halfExtents": [
+                  45,
+                  22
+               ],
+               "layer": "StopA",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S08 StopA",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  930,
+                  640
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  90,
+                  44
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  120,
+                  150,
+                  240,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "StopA",
+                  "World"
+               ],
+               "halfExtents": [
+                  45,
+                  22
+               ],
+               "layer": "StopB",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S08 StopB",
+         "parent": "S08 Triggers and layers"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  -1800
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "a lift carries its crate, a MovePosition character is stopped by a wall, and the same lift with the transform written instead does not",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S09  Kinematic bodies"
+               }
+            }
+         ],
+         "name": "S09 Kinematic bodies",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S09 Ground",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  200,
+                  160
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  240,
+                  24
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  220,
+                  150,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.9,
+               "halfExtents": [
+                  120,
+                  12
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Kinematic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsMover",
+               "type": "ScriptComponent",
+               "vars": {
+                  "seconds": 2.5,
+                  "travel": [
+                     0,
+                     300
+                  ],
+                  "useMovePosition": true
+               }
+            }
+         ],
+         "name": "S09 Lift",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  200,
+                  200
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  180,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.9,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S09 Lift crate",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  520,
+                  160
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  240,
+                  24
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  200,
+                  120,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.9,
+               "halfExtents": [
+                  120,
+                  12
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Kinematic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsMover",
+               "type": "ScriptComponent",
+               "vars": {
+                  "seconds": 2.5,
+                  "travel": [
+                     0,
+                     300
+                  ],
+                  "useMovePosition": false
+               }
+            }
+         ],
+         "name": "S09 Teleporting lift",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  520,
+                  200
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  56
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  180,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.9,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S09 Left behind crate",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1090,
+                  220
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  40,
+                  320
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "halfExtents": [
+                  20,
+                  160
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S09 Wall",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  760,
+                  140
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  44,
+                  76
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  160,
+                  240,
+                  190,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "direction": "Vertical",
+               "friction": 0.4,
+               "layer": "Default",
+               "size": [
+                  44,
+                  76
+               ],
+               "trigger": false,
+               "type": "CapsuleColliderComponent"
+            },
+            {
+               "bodyType": "Kinematic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsMover",
+               "type": "ScriptComponent",
+               "vars": {
+                  "seconds": 2.5,
+                  "travel": [
+                     320,
+                     0
+                  ],
+                  "useMovePosition": true
+               }
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "showCounts": true
+               }
+            }
+         ],
+         "name": "S09 Kinematic walker",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  760,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  60
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  200,
+                  160,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "halfExtents": [
+                  30,
+                  30
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Kinematic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsMover",
+               "type": "ScriptComponent",
+               "vars": {
+                  "seconds": 2,
+                  "travel": [
+                     260,
+                     0
+                  ]
+               }
+            }
+         ],
+         "name": "S09 Kinematic left",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1020,
+                  560
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  60
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  160,
+                  200,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "halfExtents": [
+                  30,
+                  30
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Kinematic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsMover",
+               "type": "ScriptComponent",
+               "vars": {
+                  "seconds": 2,
+                  "travel": [
+                     -260,
+                     0
+                  ]
+               }
+            }
+         ],
+         "name": "S09 Kinematic right",
+         "parent": "S09 Kinematic bodies"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1400,
+                  -1800
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "gravity scale -0.4 / 0 / 0.5 / 1 / 2, then three identical launches with linear drag 0 / 1 / 4 - the trails are the answer",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S10  Gravity scale and drag"
+               }
+            }
+         ],
+         "name": "S10 Gravity scale and drag",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S10 Ground",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  110,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  36,
+                  36
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  160,
+                  220,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 18,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": -0.4,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S10 Gravity -0.4",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  220,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  36,
+                  36
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  180,
+                  190,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 18,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 0,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S10 Gravity 0.0",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  330,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  36,
+                  36
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  200,
+                  160,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 18,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 0.5,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S10 Gravity 0.5",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  440,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  36,
+                  36
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  220,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 18,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S10 Gravity 1.0",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  550,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  36,
+                  36
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  240,
+                  100,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.4,
+               "layer": "Default",
+               "radius": 18,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 2,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S10 Gravity 2.0",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  640,
+                  140
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  30,
+                  30
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  200,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  15,
+                  15
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 0.5,
+                  "launch": [
+                     520,
+                     430
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 4
+               }
+            }
+         ],
+         "name": "S10 Drag 0",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  640,
+                  200
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  30,
+                  30
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  150,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  15,
+                  15
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "linearDrag": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 0.7,
+                  "launch": [
+                     520,
+                     430
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 4
+               }
+            }
+         ],
+         "name": "S10 Drag 1",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  640,
+                  260
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  30,
+                  30
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  100,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  15,
+                  15
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "linearDrag": 4,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 0.9,
+                  "launch": [
+                     520,
+                     430
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 4
+               }
+            }
+         ],
+         "name": "S10 Drag 4",
+         "parent": "S10 Gravity scale and drag"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  2800,
+                  -1800
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "seven probes, one per query, each sweeping - a normal that flips on a flat face or a hit that jumps to the far side is a real defect",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S11  World queries"
+               }
+            }
+         ],
+         "name": "S11 World queries",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  160,
+                  180
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -4,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  90,
+                  100,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "halfExtents": [
+                  60,
+                  60
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S11 Target box",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  340,
+                  180
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -4,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  90,
+                  100,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "World",
+               "radius": 55,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            }
+         ],
+         "name": "S11 Target circle",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  520,
+                  180
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -4,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  90,
+                  100,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "direction": "Vertical",
+               "layer": "World",
+               "size": [
+                  70,
+                  130
+               ],
+               "trigger": false,
+               "type": "CapsuleColliderComponent"
+            }
+         ],
+         "name": "S11 Target capsule",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  700,
+                  180
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -4,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  90,
+                  100,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "World",
+               "points": [
+                  [
+                     -60,
+                     -50
+                  ],
+                  [
+                     60,
+                     -50
+                  ],
+                  [
+                     40,
+                     55
+                  ],
+                  [
+                     -40,
+                     55
+                  ]
+               ],
+               "trigger": false,
+               "type": "PolygonColliderComponent"
+            }
+         ],
+         "name": "S11 Target polygon",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  0
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "edgeRadius": 5,
+               "layer": "World",
+               "points": [
+                  [
+                     830,
+                     120
+                  ],
+                  [
+                     930,
+                     230
+                  ],
+                  [
+                     1030,
+                     120
+                  ],
+                  [
+                     1130,
+                     230
+                  ]
+               ],
+               "trigger": false,
+               "type": "EdgeColliderComponent"
+            }
+         ],
+         "name": "S11 Target chain",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  960,
+                  420
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -3,
+               "size": [
+                  150,
+                  150
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  60,
+                  170,
+                  180,
+                  70
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "halfExtents": [
+                  75,
+                  75
+               ],
+               "layer": "Trigger",
+               "trigger": true,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S11 Target trigger",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  250,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     54,
+                     34
+                  ],
+                  "degrees": -125,
+                  "degreesPerSecond": 14,
+                  "length": 470,
+                  "mode": 0,
+                  "radius": 22
+               }
+            }
+         ],
+         "name": "S11 Probe Raycast",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  430,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     54,
+                     34
+                  ],
+                  "degrees": -125,
+                  "degreesPerSecond": 14,
+                  "length": 470,
+                  "mode": 1,
+                  "radius": 22
+               }
+            }
+         ],
+         "name": "S11 Probe RaycastAll",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  610,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     54,
+                     34
+                  ],
+                  "degrees": -125,
+                  "degreesPerSecond": 14,
+                  "length": 470,
+                  "mode": 2,
+                  "radius": 22
+               }
+            }
+         ],
+         "name": "S11 Probe CircleCast",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  790,
+                  620
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     54,
+                     34
+                  ],
+                  "degrees": -125,
+                  "degreesPerSecond": 14,
+                  "length": 470,
+                  "mode": 3,
+                  "radius": 22
+               }
+            }
+         ],
+         "name": "S11 Probe BoxCast",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  250,
+                  180
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     260,
+                     150
+                  ],
+                  "degrees": 0,
+                  "degreesPerSecond": 20,
+                  "mode": 4,
+                  "radius": 130
+               }
+            }
+         ],
+         "name": "S11 Probe OverlapCircle",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  610,
+                  180
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     260,
+                     150
+                  ],
+                  "degrees": 0,
+                  "degreesPerSecond": 20,
+                  "mode": 5,
+                  "radius": 130
+               }
+            }
+         ],
+         "name": "S11 Probe OverlapBox",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  960,
+                  420
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsProbe",
+               "type": "ScriptComponent",
+               "vars": {
+                  "boxSize": [
+                     260,
+                     150
+                  ],
+                  "degrees": 0,
+                  "degreesPerSecond": 20,
+                  "mode": 6,
+                  "radius": 130
+               }
+            }
+         ],
+         "name": "S11 Probe OverlapPoint",
+         "parent": "S11 World queries"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  4200,
+                  -1800
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "where a collider is NOT the sprite: an offset, a non-uniform scale on a box and on a circle, two colliders on one body, one switched off",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S12  Offset, scale, compound, switching"
+               }
+            }
+         ],
+         "name": "S12 Offset, scale, compound, switching",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  600,
+                  40
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": -5,
+               "size": [
+                  1150,
+                  40
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0,
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  575,
+                  20
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S12 Ground",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  150,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  56,
+                  112
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  160,
+                  120,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  28,
+                  28
+               ],
+               "layer": "Default",
+               "offset": [
+                  0,
+                  -42
+               ],
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S12 Offset collider",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  360,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  2,
+                  0.5
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  60
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  150,
+                  170,
+                  220,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  30,
+                  30
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S12 Scaled box",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  520,
+                  400
+               ],
+               "rotation": 0,
+               "scale": [
+                  2,
+                  0.5
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  60,
+                  60
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  150,
+                  220,
+                  170,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "layer": "Default",
+               "radius": 30,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S12 Scaled circle",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  690,
+                  420
+               ],
+               "rotation": 0.6,
+               "scale": [
+                  1.4,
+                  1.4
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  70,
+                  40
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  230,
+                  200,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  25,
+                  14
+               ],
+               "layer": "Default",
+               "offset": [
+                  12,
+                  0
+               ],
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            }
+         ],
+         "name": "S12 Rotated and scaled",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  900,
+                  420
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  120,
+                  30
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  170,
+                  150,
+                  220,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  60,
+                  15
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  15,
+                  45
+               ],
+               "layer": "Default",
+               "offset": [
+                  0,
+                  -45
+               ],
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "gravityScale": 1,
+               "mass": 2,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "showCounts": true
+               }
+            }
+         ],
+         "name": "S12 Compound body",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1080,
+                  260
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  160,
+                  24
+               ],
+               "texture": "textures/checker_green.bmp",
+               "tint": [
+                  120,
+                  200,
+                  150,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  80,
+                  12
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "script": "PhysicsToggle",
+               "type": "ScriptComponent",
+               "vars": {
+                  "offSeconds": 1.5,
+                  "onSeconds": 2.5
+               }
+            }
+         ],
+         "name": "S12 Switching ledge",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  1080,
+                  300
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  48,
+                  48
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  170,
+                  130,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.6,
+               "halfExtents": [
+                  24,
+                  24
+               ],
+               "layer": "Default",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 1,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "showCounts": true
+               }
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": -1,
+                  "launch": [
+                     0,
+                     0
+                  ],
+                  "leaveATrail": false,
+                  "repeatSeconds": 8
+               }
+            }
+         ],
+         "name": "S12 Rests on the ledge",
+         "parent": "S12 Offset, scale, compound, switching"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  0,
+                  -2700
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "script": "PhysicsLabel",
+               "type": "ScriptComponent",
+               "vars": {
+                  "note": "identical bodies at 300 / 1500 / 6000 units a second into a 6-unit wall, and 6000 into a 60-unit wall - discrete collision has a limit",
+                  "offset": [
+                     20,
+                     760
+                  ],
+                  "title": "S13  Speed and tunnelling"
+               }
+            }
+         ],
+         "name": "S13 Speed and tunnelling",
+         "parent": "Physics Lab"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  820,
+                  120
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  6,
+                  130
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  3,
+                  65
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S13 Thin wall 300",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  120,
+                  120
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  140,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.1,
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "Default",
+               "radius": 12,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 0,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 1,
+                  "launch": [
+                     300,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 2.5
+               }
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "countsOffset": [
+                     0,
+                     26
+                  ],
+                  "showCounts": true
+               }
+            }
+         ],
+         "name": "S13 Bullet 300 at thin",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  820,
+                  290
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  6,
+                  130
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  3,
+                  65
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S13 Thin wall 1500",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  120,
+                  290
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  140,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.1,
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "Default",
+               "radius": 12,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 0,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 1,
+                  "launch": [
+                     1500,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 2.5
+               }
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "countsOffset": [
+                     0,
+                     26
+                  ],
+                  "showCounts": true
+               }
+            }
+         ],
+         "name": "S13 Bullet 1500 at thin",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  820,
+                  460
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  6,
+                  130
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  3,
+                  65
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S13 Thin wall 6000",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  120,
+                  460
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  140,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.1,
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "Default",
+               "radius": 12,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 0,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 1,
+                  "launch": [
+                     6000,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 2.5
+               }
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "countsOffset": [
+                     0,
+                     26
+                  ],
+                  "showCounts": true
+               }
+            }
+         ],
+         "name": "S13 Bullet 6000 at thin",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  820,
+                  630
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  120,
+                  130
+               ],
+               "texture": "textures/checker_blue.bmp",
+               "tint": [
+                  70,
+                  80,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "collidesWith": [
+                  "All"
+               ],
+               "friction": 0.3,
+               "halfExtents": [
+                  60,
+                  65
+               ],
+               "layer": "World",
+               "trigger": false,
+               "type": "BoxColliderComponent"
+            }
+         ],
+         "name": "S13 Thick wall 6000",
+         "parent": "S13 Speed and tunnelling"
+      },
+      {
+         "components": [
+            {
+               "position": [
+                  120,
+                  630
+               ],
+               "rotation": 0,
+               "scale": [
+                  1,
+                  1
+               ],
+               "type": "TransformComponent"
+            },
+            {
+               "layer": 0,
+               "size": [
+                  24,
+                  24
+               ],
+               "texture": "textures/checker_red.bmp",
+               "tint": [
+                  240,
+                  140,
+                  110,
+                  255
+               ],
+               "type": "SpriteComponent"
+            },
+            {
+               "bounciness": 0.1,
+               "collidesWith": [
+                  "All"
+               ],
+               "layer": "Default",
+               "radius": 12,
+               "trigger": false,
+               "type": "CircleColliderComponent"
+            },
+            {
+               "bodyType": "Dynamic",
+               "freezeRotation": true,
+               "gravityScale": 0,
+               "mass": 1,
+               "type": "Rigidbody2DComponent"
+            },
+            {
+               "script": "PhysicsLauncher",
+               "type": "ScriptComponent",
+               "vars": {
+                  "firstDelaySeconds": 1,
+                  "launch": [
+                     6000,
+                     0
+                  ],
+                  "leaveATrail": true,
+                  "repeatSeconds": 2.5
+               }
+            },
+            {
+               "script": "PhysicsReporter",
+               "type": "ScriptComponent",
+               "vars": {
+                  "countsOffset": [
+                     0,
+                     26
+                  ],
+                  "showCounts": true
+               }
+            }
+         ],
+         "name": "S13 Bullet 6000 at thick",
+         "parent": "S13 Speed and tunnelling"
+      }
+   ],
+   "name": "Physics Playground"
+}

@@ -326,6 +326,8 @@ void Gizmos::Clear() {
     g_commands.clear();
 }
 
+std::size_t Gizmos::QueuedCount() { return g_commands.size(); }
+
 void Gizmos::SetEnabled(bool on) { g_enabled = on; }
 bool Gizmos::IsEnabled()         { return g_enabled; }
 

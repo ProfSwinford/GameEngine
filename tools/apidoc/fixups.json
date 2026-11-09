@@ -1,0 +1,161 @@
+{
+  "_note": [
+    "Two things that cannot come out of the headers mechanically.",
+    "",
+    "`sub` holds corrections to harvested examples, from compiling all of them",
+    "with MSVC against the real headers at /std:c++20. Each entry says what the",
+    "compiler said, so a stale fixup can be recognised as stale. gen.pl reports",
+    "any entry that matches nothing, so this file cannot rot silently.",
+    "",
+    "`messages` holds the script lifecycle callbacks. ScriptBehaviour",
+    "DELIBERATELY does not declare them - that absence is the whole mechanism,",
+    "because it is what lets the compiler tell which ones you actually wrote.",
+    "So there is no declaration to copy, and they are written out here instead.",
+    "Each one carries the line of the concept in ScriptHooks.h that detects it,",
+    "which is the closest thing to a declaration they have."
+  ],
+
+  "sub": [
+    {
+      "type": "SpinComponent",
+      "find": "\"SpinReverser needs a SpinComponent on '{}'\", *name);",
+      "replace": "\"SpinReverser needs a SpinComponent on '{}'\", name);",
+      "why": "C2100: you cannot dereference an operand of type 'eng::NameHandle'. NameHandle has a std::formatter, so it is passed as `name`, not `*name`."
+    },
+    {
+      "type": "SpawnOptions",
+      "find": "SpawnOptions{}.At(transform->WorldPosition())",
+      "replace": "const SpawnOptions where = SpawnOptions{}.At(transform->WorldPosition());",
+      "why": "A bare expression is not a statement; shown as the declaration a caller would actually write."
+    },
+    {
+      "type": "SpawnOptions",
+      "find": "SpawnOptions{}.Facing(transform->WorldRotation())",
+      "replace": "const SpawnOptions aimed = SpawnOptions{}.Facing(transform->WorldRotation());",
+      "why": "As above."
+    },
+    {
+      "type": "SpawnOptions",
+      "find": "SpawnOptions{}.Scaled(Vec2{2.0f, 2.0f})",
+      "replace": "const SpawnOptions twiceAsBig = SpawnOptions{}.Scaled(Vec2{2.0f, 2.0f});",
+      "why": "As above."
+    },
+    {
+      "type": "SpawnOptions",
+      "find": "SpawnOptions{}.Named(\"Bullet\")",
+      "replace": "const SpawnOptions named = SpawnOptions{}.Named(\"Bullet\");",
+      "why": "As above."
+    }
+  ],
+
+  "messages": {
+    "ScriptBehaviour": [
+      {
+        "name": "OnStart",
+        "signature": "void OnStart()",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 64,
+        "summary": "Once, on the first update of either kind after this script is attached and its entity is fully built",
+        "unity": "MonoBehaviour.Start",
+        "description": "**Not at attach time.** While a scene loads, components arrive one at a time, so a component you look for at attach time may not exist yet. By `OnStart` the entity is complete.\n\nAll five handles and every verb on `ScriptBehaviour` are valid from here onwards.",
+        "example": "void OnStart() {\n    m_body = Find<Rigidbody2DComponent>();\n    ENGINE_LOG_INFO(Channels::kGame, \"{} is ready\", name);\n}"
+      },
+      {
+        "name": "OnFixedUpdate",
+        "signature": "void OnFixedUpdate()",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 66,
+        "summary": "Every fixed simulation step. Movement, physics, anything timed",
+        "unity": "MonoBehaviour.FixedUpdate",
+        "description": "Runs a whole number of times per drawn frame - sometimes twice, sometimes not at all - at a steady 1/60 s. That is what makes a game behave the same on every machine.\n\n**It takes no delta.** Ask `Time::FixedDeltaTime()`. Writing `OnFixedUpdate(float dt)` is a compile error that says so rather than a hook that is silently never called.",
+        "example": "void OnFixedUpdate() {\n    transform->Translate(direction * (speed * Time::FixedDeltaTime()));\n}"
+      },
+      {
+        "name": "OnUpdate",
+        "signature": "void OnUpdate()",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 65,
+        "summary": "Once per drawn frame. Fades, menus, anything tied to the screen rather than the world",
+        "unity": "MonoBehaviour.Update",
+        "description": "Runs however often this machine happens to draw, so it is the wrong place for movement or physics - that is the whole reason the fixed step exists.\n\nIt is the right place for an **edge-triggered input read**. `InputMap::IsPressed` is true only on the frame the action went down, and input is sampled once per drawn frame - so asking in a fixed step can miss it entirely or see it twice. `IsHeld` and `IsDown` are level reads and work in either hook.\n\nAsk `Time::DeltaTime()` here, or `Time::UnscaledDeltaTime()` for something that must keep moving while the game is paused. Like `OnFixedUpdate` it takes no argument.",
+        "example": "void OnUpdate() {\n    if (InputMap::IsPressed(\"Jump\")) {\n        m_jumpQueued = true;   // consumed in the next fixed step\n    }\n}"
+      },
+      {
+        "name": "OnDestroy",
+        "signature": "void OnDestroy()",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 67,
+        "summary": "The entity is going away. Still safe to touch things here, and not afterwards",
+        "unity": "MonoBehaviour.OnDestroy",
+        "description": "Runs at stage 600, when the queued destroy actually lands - not at the moment `Destroy` was called.",
+        "example": "void OnDestroy() {\n    MessageBus::Send(Message{MessageTypes::kDied, OwnerId()});\n}"
+      },
+      {
+        "name": "OnCollisionEnter",
+        "signature": "void OnCollisionEnter(eng::EntityId other) | void OnCollisionEnter(const eng::Collision2D& hit)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 119,
+        "summary": "A solid contact began - neither side is a trigger. Write whichever form you need",
+        "unity": "MonoBehaviour.OnCollisionEnter2D",
+        "description": "**Two forms, and the richest one you write wins.** The contact form carries `hit.normal`, `hit.point` and `hit.relativeVelocity`, which is how landing on something is told from walking into it, plus `hit.thisCollider` - which of *your* colliders fired.\n\nOne event per collider **pair**: an entity with three colliders all touching the same wall gets three calls. Two colliders on the same entity never report each other.\n\nAn `EntityId` may already name something destroyed. Look it up through the scene every time.",
+        "example": "void OnCollisionEnter(const eng::Collision2D& hit) {\n    if (hit.normal.y > 0.7f) {\n        m_grounded = true;         // landed on top of something\n    }\n}"
+      },
+      {
+        "name": "OnCollisionStay",
+        "signature": "void OnCollisionStay(eng::EntityId other) | void OnCollisionStay(const eng::Collision2D& hit)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 121,
+        "summary": "Every step a solid contact continues",
+        "unity": "MonoBehaviour.OnCollisionStay2D",
+        "description": "Fires once per step per pair for as long as the overlap lasts, in the same two forms as `OnCollisionEnter`."
+      },
+      {
+        "name": "OnCollisionExit",
+        "signature": "void OnCollisionExit(eng::EntityId other) | void OnCollisionExit(const eng::Collision2D& hit)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 123,
+        "summary": "A solid contact ended - including because the other entity was destroyed",
+        "unity": "MonoBehaviour.OnCollisionExit2D",
+        "description": "The pair has already ended by the time this arrives, so there is nothing left to point at: the exit forms take the id or the contact and never a bare collider.\n\nIt fires when the other entity is **destroyed** while still overlapping, as well as when it moves away, so a script can rely on seeing an exit for every enter."
+      },
+      {
+        "name": "OnTriggerEnter",
+        "signature": "void OnTriggerEnter(eng::EntityId other) | void OnTriggerEnter(Collider2D other) | void OnTriggerEnter(const eng::Collision2D& hit)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 227,
+        "summary": "An overlap began where either side has trigger ticked. Nothing is pushed apart",
+        "unity": "MonoBehaviour.OnTriggerEnter2D",
+        "description": "**Three forms, and the richest one you write wins.** `Collider2D` is Unity's form and reaches the entity in one hop - `other->Owner()`. The contact form also says which of *your* colliders fired, as `hit.thisCollider`, which Unity cannot tell you at all.\n\n**A pair sends collision events or trigger events, never both.** A script with `OnCollisionEnter` on a trigger collider is never called - and the engine reports that in the Console rather than leaving it silent. An entity carrying a trigger collider *and* a solid one gets both families at once, from the same pair.",
+        "example": "void OnTriggerEnter(Collider2D other) {\n    eng::Entity* owner = other->Owner();\n    if (owner != nullptr && owner->HasTag(\"Pickup\")) {\n        Destroy(owner->Id());\n    }\n}"
+      },
+      {
+        "name": "OnTriggerStay",
+        "signature": "void OnTriggerStay(eng::EntityId other) | void OnTriggerStay(Collider2D other) | void OnTriggerStay(const eng::Collision2D& hit)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 230,
+        "summary": "Every step a trigger overlap continues",
+        "unity": "MonoBehaviour.OnTriggerStay2D",
+        "description": "The same three forms as `OnTriggerEnter`, once per step per pair for as long as the overlap lasts."
+      },
+      {
+        "name": "OnTriggerExit",
+        "signature": "void OnTriggerExit(eng::EntityId other) | void OnTriggerExit(const eng::Collision2D& hit)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 233,
+        "summary": "A trigger overlap ended - including because the other entity was destroyed",
+        "unity": "MonoBehaviour.OnTriggerExit2D",
+        "description": "Two forms, not three: the pair has already ended, so there is no collider left to hand you. Writing the collider form is a compile error that says exactly that."
+      },
+      {
+        "name": "OnExpose",
+        "signature": "void OnExpose(eng::ScriptFields& fields)",
+        "header": "engine/scene/ScriptHooks.h",
+        "line": 76,
+        "summary": "Lists this script's variables for the Inspector by hand. Not an event, and usually unnecessary",
+        "unity": "no equivalent; Unity reflects over fields instead",
+        "description": "**You rarely need this.** A public variable of a supported type is already in the Inspector with no code at all - the editor reads the script's source when it builds it and generates the registration. Write `OnExpose` only when the set of controls has to be decided rather than declared.\n\nCalled **once**, when the script is bound - not every frame, and not when anything changes. A hand-written `OnExpose` is never overwritten by the generated one.\n\nIt is not a lifecycle hook: a script with `OnExpose` and nothing else never runs, and the registration macro says so at compile time.",
+        "example": "void OnExpose(eng::ScriptFields& fields) {\n    fields.Var(\"range\", range, \"how far it can shoot, in pixels\");\n    fields.Range(\"spread\", spread, 0.0f, 1.0f, \"0 is dead straight\");\n}"
+      }
+    ]
+  }
+}

@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -151,6 +152,27 @@ const Collision2D* LookUpByEntities(const std::map<EPair, CPair>& index, EntityI
 bool g_collisionsSubscribed = false;
 
 int         g_solverIterations = 4;
+
+// ===========================================================================
+//  THE CLOSING SPEED BELOW WHICH A BOUNCE IS NOT WORTH HAVING.
+//
+//  Without one, any bounciness above zero means a body NEVER COMES TO REST.
+//  Every step gravity adds a sliver of closing speed, the contact hands a
+//  fraction of it back, and the body buzzes against the floor forever with a
+//  velocity that never reaches zero - so "is it standing still?" has no
+//  answer, and a script waiting for one waits all game.
+//
+//  WORKED OUT FROM GRAVITY AND THE STEP rather than written down, because the
+//  right number is "a couple of steps' worth of falling" and this engine does
+//  not fix its units. At the shipped default of 981 px/s^2 and a sixtieth of
+//  a second that is about 33 px/s; a project working in metres gets 0.33 m/s
+//  instead of a threshold three hundred times too big. Box2D writes a
+//  constant here and can afford to, because Box2D fixes the unit as the metre.
+//
+//  Set at the top of each Update, so changing gravity or the step takes
+//  effect at once.
+// ===========================================================================
+float g_restingSpeed = 0.0f;
 std::size_t g_narrowPhaseTests = 0;
 
 // How many pairs the SWEEP actually looked at - every inner-loop iteration it
@@ -166,6 +188,15 @@ std::size_t g_bruteForcePairs  = 0;
 // FLAT RATHER THAN A FIXED BLOCK PER COLLIDER. An edge collider may produce 32
 // shapes and a circle produces 1, so giving every collider room for 32 would
 // waste about 2 KB each for the overwhelmingly common case.
+// WHERE THE POSITION SOLVER IS MOVING EACH BODY TO, accumulated across its
+// passes and applied once at the end. Nothing moves while the sweep is part
+// way through its own list, which is what lets a pass read the separations
+// the previous pass produced without the shapes having to be rebuilt.
+//
+// Kept at file scope rather than built per step so that a scene with a
+// hundred contacts asks the system for memory once.
+std::unordered_map<Rigidbody2DComponent*, Vec2> g_corrections;
+
 std::vector<ConvexShape> g_shapePool;
 
 struct ShapeSlice {
@@ -253,13 +284,44 @@ void WritePointList(Json& out, std::string_view key, const std::vector<Vec2>& po
     out[std::string(key)] = std::move(array);
 }
 
-void SendPairEvent(const char* type, EntityId to, EntityId partner) {
+// ---------------------------------------------------------------------------
+//  WHICH COLLIDER PAIR EACH EVENT WAS SENT FOR, in the order they were sent.
+//
+//  A message carries entity ids and a small payload - see Messaging.h, and
+//  the argument there for keeping it small. A CPair is two collider ids and
+//  does not fit in the one int it has, so the int carries a 1-BASED TOKEN
+//  into this list instead and the collision system hands back the contact.
+//
+//  THIS IS WHAT MAKES "EVENTS ARE PER COLLIDER PAIR" TRUE. The dispatcher
+//  used to re-derive the contact from an entity-keyed index, which holds one
+//  CPair per entity pair: the deepest. A wall with two colliders therefore
+//  sent two OnCollisionEnter calls whose contacts were byte-identical, both
+//  naming the same collider, with the shallower pair's contact unreachable
+//  from any API at all.
+//
+//  Cleared at the top of every step, and a token is only meaningful until the
+//  next one - which is the same lifetime the contacts themselves have.
+// ---------------------------------------------------------------------------
+std::vector<CPair> g_eventPairs;
+
+// A token of 0 means "no pair", which is what an exit sends: an exit has no
+// contact to describe, by definition and by design. See Contact.h.
+void SendPairEvent(const char* type, EntityId to, EntityId partner, int pairToken = 0) {
     Message message;
     message.type   = type;
     message.target = to;
     message.sender = partner;
     message.other  = partner;
+    message.i0     = pairToken;
     MessageBus::Send(message);
+}
+
+// Remembers a pair and returns the token for it. Both directions of one event
+// share a token: the stored contact is oriented for whichever collider sorted
+// first, and the dispatcher turns it round for the other receiver.
+int TokenFor(const CPair& pair) {
+    g_eventPairs.push_back(pair);
+    return static_cast<int>(g_eventPairs.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +380,16 @@ bool ColliderComponent::CaresAbout(const std::string& layer) const {
 Mat3 ColliderComponent::OwnerWorldMatrix() const {
     const Transform2D* transform = OwnerTransform();
     return transform != nullptr ? transform->WorldMatrix() : Mat3::Identity();
+}
+
+Vec2 ColliderComponent::OwnerWorldScale() const {
+    const Vec2 scale = OwnerWorldMatrix().GetScale();
+
+    // ABSOLUTE, because a mirrored entity - scale (-1, 1), which is how a
+    // sprite is flipped - is the same SIZE as an unmirrored one. A negative
+    // factor here would give a shape a negative area and a body a negative
+    // mass, and the solver divides by mass.
+    return Vec2{std::fabs(scale.x), std::fabs(scale.y)};
 }
 
 void ColliderComponent::SetDensity(float density) {
@@ -549,7 +621,33 @@ int BoxColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
 }
 
 float BoxColliderComponent::Area() const {
-    return 4.0f * m_halfExtents.x * m_halfExtents.y;
+    const Vec2 scale = OwnerWorldScale();
+
+    const float halfX = m_halfExtents.x * scale.x;
+    const float halfY = m_halfExtents.y * scale.y;
+    const float core  = 4.0f * halfX * halfY;
+
+    // ======================================================================
+    //  THE ROUNDING COUNTS, and leaving it out contradicted this function's
+    //  own contract.
+    //
+    //  WorldShapes hands the solver the core inflated by edgeRadius, and
+    //  Area() promises to be "the area of what WorldShapes() produces". A
+    //  32x64 box with a radius of 16 is really 3876 units of shape and was
+    //  reported as 1024 - so an auto-mass body was nearly four times too
+    //  light for the thing being pushed, while LocalSize() beside it already
+    //  counted the same rounding for the inertia. The two numbers describing
+    //  one collider disagreed about how big it was.
+    //
+    //  Minkowski, exactly: the core, plus its perimeter swept by the radius,
+    //  plus the disc the four quarter-corners add up to. The radius takes the
+    //  LARGER scale, which is what WorldShapes gives it.
+    // ======================================================================
+    const float radius = m_edgeRadius * std::max(scale.x, scale.y);
+    if (radius <= 0.0f) {
+        return core;
+    }
+    return core + 4.0f * (halfX + halfY) * radius + kPi * radius * radius;
 }
 
 // ---------------------------------------------------------------------------
@@ -598,7 +696,12 @@ int CircleColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
 }
 
 float CircleColliderComponent::Area() const {
-    return kPi * m_radius * m_radius;
+    // The LARGER scale, because that is the radius WorldCircle hands the
+    // collision system - see the note there. The two must agree or the shape
+    // the solver pushes is not the shape it weighs.
+    const Vec2  scale  = OwnerWorldScale();
+    const float radius = m_radius * std::max(scale.x, scale.y);
+    return kPi * radius * radius;
 }
 
 // ---------------------------------------------------------------------------
@@ -643,37 +746,87 @@ int CapsuleColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
         return 0;
     }
 
+    // ======================================================================
+    //  THE SIZE IS SCALED FIRST, AND THEN THE CAPSULE IS DERIVED FROM IT.
+    //
+    //  That order is Unity's and it is the whole fix. The radius used to be
+    //  worked out from the UNSCALED size and then multiplied by
+    //  max(scale.x, scale.y) - so a character stretched vertically, scale
+    //  (1, 3), got a capsule three times too WIDE: twenty pixels of solid
+    //  collider hanging off each side of the sprite, snagging on every wall
+    //  and doorway it walked past. At scale (1, 10) it was ten times too wide.
+    //
+    //  Collider.h states the max() rule for a CIRCLE, where a non-uniform
+    //  scale genuinely has no answer without an ellipse test - and then
+    //  recommends a capsule for when that matters. A capsule copying the
+    //  circle's compromise is the one thing it must not do: a capsule HAS a
+    //  short axis and a long one, so each can take the scale of the axis it
+    //  is actually on.
+    // ======================================================================
+    const Mat3 world = OwnerWorldMatrix();
+    const Vec2 scale = OwnerWorldScale();
+
+    const Vec2 scaled{m_size.x * scale.x, m_size.y * scale.y};
+
     // Unity's description turned into the engine's: the radius is half the
     // SHORT side, and whatever length is left after both round ends is the
     // core segment. A capsule as wide as it is tall has no core left and is a
     // circle, which ToConvex collapses for us.
     const bool  vertical = m_direction == CapsuleDirection::Vertical;
-    const float breadth  = vertical ? m_size.x : m_size.y;
-    const float length   = vertical ? m_size.y : m_size.x;
+    const float breadth  = vertical ? scaled.x : scaled.y;
+    const float length   = vertical ? scaled.y : scaled.x;
 
     const float radius  = breadth * 0.5f;
     const float coreLen = std::max(length - breadth, 0.0f) * 0.5f;
 
-    const Vec2 along = vertical ? Vec2{0.0f, coreLen} : Vec2{coreLen, 0.0f};
+    // ======================================================================
+    //  THE DIRECTION COMES FROM THE MATRIX, THE LENGTH FROM THE SCALED SIZE.
+    //
+    //  Those are two different questions and they used to be answered by one
+    //  piece of arithmetic, badly in turn.
+    //
+    //  Putting the core offset through the FULL matrix scales it a second
+    //  time, which is the bug that made a capsule under a vertical stretch
+    //  come out the wrong length. Rotating it by the matrix's EXTRACTED
+    //  rotation instead was worse in a way that is easy to miss: a rotated
+    //  child under a non-uniformly scaled parent composes to a matrix that is
+    //  NOT scale-then-rotate-then-translate - it SHEARS - and GetScale() and
+    //  GetRotation() cannot describe such a matrix between them. Measured on
+    //  a 45-degree child under a parent scaled (1,3): the extracted rotation
+    //  was 71.6 degrees against a true core axis of 108.4, so both cap
+    //  centres landed 32 px out. The full-matrix version had that case right.
+    //
+    //  So: the matrix transforms the local AXIS, which is correct under
+    //  rotation, scale and shear alike, and the result is normalized to a
+    //  pure direction. The distance along it is the core half-length derived
+    //  from the scaled size, which is Unity's rule. The two cannot interfere.
+    // ======================================================================
+    // A degenerate matrix - an entity scaled to nothing on this axis - leaves
+    // no direction to take, so the unrotated axis stands in. Overlap.h keeps
+    // its own kTinyLength for this; it is file-local, so the number is here.
+    constexpr float kNoDirection = 1e-12f;
 
-    const Mat3 world = OwnerWorldMatrix();
-    const Vec2 scale = world.GetScale();
+    const Vec2 axis    = vertical ? Vec2{0.0f, 1.0f} : Vec2{1.0f, 0.0f};
+    const Vec2 mapped  = world.TransformVector(axis);
+    const Vec2 heading =
+        mapped.LengthSquared() > kNoDirection ? mapped.Normalized() : axis;
 
-    // The ends go through the full matrix, so rotation and the parent chain
-    // come for free. The radius takes the larger scale, for the same reason a
-    // circle's does.
-    const Capsule capsule{world.TransformPoint(m_offset - along),
-                          world.TransformPoint(m_offset + along),
-                          radius * std::max(scale.x, scale.y)};
+    const Vec2 turned = heading * coreLen;
+    const Vec2 centre = world.TransformPoint(m_offset);
 
-    out[0] = ToConvex(capsule);
+    out[0] = ToConvex(Capsule{centre - turned, centre + turned, radius});
     return 1;
 }
 
 float CapsuleColliderComponent::Area() const {
+    // The same arithmetic as WorldShapes, in the same order: scale the size,
+    // then derive. Writing it the other way round is what made the collider
+    // three times too wide under a vertical stretch.
+    const Vec2  scale    = OwnerWorldScale();
+    const Vec2  scaled{m_size.x * scale.x, m_size.y * scale.y};
     const bool  vertical = m_direction == CapsuleDirection::Vertical;
-    const float breadth  = vertical ? m_size.x : m_size.y;
-    const float length   = vertical ? m_size.y : m_size.x;
+    const float breadth  = vertical ? scaled.x : scaled.y;
+    const float length   = vertical ? scaled.y : scaled.x;
     const float radius   = breadth * 0.5f;
     const float coreLen  = std::max(length - breadth, 0.0f);
 
@@ -686,7 +839,10 @@ float CapsuleColliderComponent::Area() const {
 // ---------------------------------------------------------------------------
 
 std::vector<Vec2> PolygonColliderComponent::DefaultSquare() {
-    return {Vec2{-0.5f, -0.5f}, Vec2{0.5f, -0.5f}, Vec2{0.5f, 0.5f}, Vec2{-0.5f, 0.5f}};
+    // 32 pixels across, anticlockwise. See the note on BoxCollider's default
+    // for why this is not Unity's half-a-unit square.
+    return {Vec2{-16.0f, -16.0f}, Vec2{16.0f, -16.0f},
+            Vec2{16.0f, 16.0f},   Vec2{-16.0f, 16.0f}};
 }
 
 void PolygonColliderComponent::SetPoints(std::vector<Vec2> points) {
@@ -784,8 +940,28 @@ int PolygonColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
     return 1;
 }
 
+// The box around the outline, in the entity's own space. A polygon is not a
+// rectangle, so this overestimates how hard it is to spin - which errs toward
+// calm, the same direction the old world-bounds version erred in and the
+// right one for a number whose job is to make a shape tumble convincingly.
+Vec2 PolygonColliderComponent::LocalSize() const {
+    if (m_points.empty()) {
+        return Vec2{0.0f, 0.0f};
+    }
+    Vec2 lo = m_points.front();
+    Vec2 hi = lo;
+    for (const Vec2& p : m_points) {
+        lo.x = std::min(lo.x, p.x);
+        lo.y = std::min(lo.y, p.y);
+        hi.x = std::max(hi.x, p.x);
+        hi.y = std::max(hi.y, p.y);
+    }
+    return hi - lo;
+}
+
 float PolygonColliderComponent::Area() const {
-    return PolygonArea(m_points);
+    const Vec2 scale = OwnerWorldScale();
+    return PolygonArea(m_points) * scale.x * scale.y;
 }
 
 // ---------------------------------------------------------------------------
@@ -793,7 +969,9 @@ float PolygonColliderComponent::Area() const {
 // ---------------------------------------------------------------------------
 
 std::vector<Vec2> EdgeColliderComponent::DefaultLine() {
-    return {Vec2{-1.0f, 0.0f}, Vec2{1.0f, 0.0f}};
+    // 64 pixels long, so a new edge collider is something you can see and
+    // grab. See the note on BoxCollider's default.
+    return {Vec2{-32.0f, 0.0f}, Vec2{32.0f, 0.0f}};
 }
 
 void EdgeColliderComponent::SetPoints(std::vector<Vec2> points) {
@@ -879,6 +1057,24 @@ int EdgeColliderComponent::WorldShapeCount() const {
     // Must agree with the `segments` calculation in WorldShapes above: a loop
     // has one segment per point, an open chain one fewer.
     return static_cast<int>(m_points.size()) - (m_loop ? 0 : 1);
+}
+
+// The box around the chain, inflated by its thickness. An edge collider has
+// no area and gets no auto-mass - see Area below - but a body given one a
+// mass by hand still has to be able to turn.
+Vec2 EdgeColliderComponent::LocalSize() const {
+    if (m_points.empty()) {
+        return Vec2{0.0f, 0.0f};
+    }
+    Vec2 lo = m_points.front();
+    Vec2 hi = lo;
+    for (const Vec2& p : m_points) {
+        lo.x = std::min(lo.x, p.x);
+        lo.y = std::min(lo.y, p.y);
+        hi.x = std::max(hi.x, p.x);
+        hi.y = std::max(hi.y, p.y);
+    }
+    return (hi - lo) + Vec2{m_edgeRadius, m_edgeRadius} * 2.0f;
 }
 
 float EdgeColliderComponent::Area() const {
@@ -999,6 +1195,7 @@ void CollisionSystem::Unregister(ColliderComponent& collider) {
 }
 
 void CollisionSystem::Clear() {
+    g_eventPairs.clear();
     g_colliders.clear();
     g_lastFrame.clear();
     g_thisFrame.clear();
@@ -1019,6 +1216,16 @@ void CollisionSystem::SetSolverIterations(int iterations) {
 }
 
 int CollisionSystem::SolverIterations() { return g_solverIterations; }
+
+const Collision2D* CollisionSystem::ContactForEvent(int pairToken) {
+    if (pairToken <= 0 ||
+        static_cast<std::size_t>(pairToken) > g_eventPairs.size()) {
+        return nullptr;
+    }
+    const auto it =
+        g_contacts.find(g_eventPairs[static_cast<std::size_t>(pairToken - 1)]);
+    return (it == g_contacts.end()) ? nullptr : &it->second;
+}
 
 const Collision2D* CollisionSystem::FindContact(EntityId a, EntityId b) {
     // THE DEEPEST SOLID CONTACT BETWEEN THESE TWO ENTITIES, or null - never a
@@ -1059,18 +1266,22 @@ namespace {
 //  self-limiting: once a pair is no longer closing, `closing` is not negative
 //  any more and the pass does nothing.
 //
-//  CorrectPosition un-overlaps them, and is run ONCE. It is NOT self-limiting,
-//  and that difference cost a real bug worth recording: with both halves in
-//  one function and four solver passes, each pass moved the bodies by 80% of
-//  the SAME cached overlap - four times over - which fired a body clear of the
-//  thing it had just landed on. The symptom was a capsule bouncing off the
-//  floor with its bounciness set to zero, and an OnCollisionEnter every few
-//  frames as the pair separated and met again.
+//  CorrectPositionPass un-overlaps them, and is ALSO run several times - but
+//  it accumulates into g_corrections rather than moving anything, and each
+//  pass RE-READS every separation from what the earlier passes accumulated.
 //
-//  Recomputing the overlap between passes would also have fixed it, at the
-//  price of redoing the narrow phase several times a step. Correcting once is
-//  cheaper and reads more honestly: the velocity constraint is iterative, the
-//  position fix is a one-off nudge.
+//  THAT RE-READING IS THE WHOLE POINT, and getting it wrong has now cost two
+//  separate bugs. The first: both halves in one function and four passes, each
+//  moving the bodies by 80% of the SAME cached overlap, four times over -
+//  which fired a body clear of the thing it had just landed on. The symptom
+//  was a capsule bouncing off a floor with its bounciness set to zero. That
+//  was fixed by correcting ONCE, which then caused the second: one sweep over
+//  stale separations cannot satisfy a chain of contacts, so a six-box tower
+//  settled 6.9 units inside the floor and stayed there.
+//
+//  "Recomputing the overlap between passes" sounded expensive and is not. A
+//  correction is a pure translation, so the live separation is the original
+//  plus a dot product - no shape is rebuilt and the narrow phase runs once.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 //  HOW MOVABLE EACH SIDE OF A CONTACT IS.
@@ -1195,8 +1406,12 @@ void SolveVelocity(const Collision2D& contact, ColliderComponent* a,
     }
 
     {
+        // A CONTACT BARELY CLOSING DOES NOT BOUNCE. See g_restingSpeed: the
+        // alternative is a bouncy body that never settles.
         const float restitution =
-            std::max(a->Material().bounciness, b->Material().bounciness);
+            (-closing > g_restingSpeed)
+                ? std::max(a->Material().bounciness, b->Material().bounciness)
+                : 0.0f;
 
         // The rotational part: a contact far from the centre is easier to spin
         // than to shove, and Cross(arm, normal) is how much of an impulse goes
@@ -1258,10 +1473,41 @@ void SolveVelocity(const Collision2D& contact, ColliderComponent* a,
 }
 
 // ---------------------------------------------------------------------------
-//  Un-overlapping them. Run ONCE per step - see the note above.
+//  THE POSITION HALF OF THE SOLVER, which un-overlaps what the velocity half
+//  has already stopped.
+//
+//  ONE CONTACT, ONE PASS. The caller sweeps the whole contact list several
+//  times; see the loop in Update.
+//
+//  ==========================================================================
+//  IT ACCUMULATES RATHER THAN MOVING ANYTHING, and the separation it works
+//  from is RE-READ rather than taken as given. Both of those are the fix for
+//  a single stale sweep, which was wrong in two opposite directions at once:
+//
+//    THREE CONTACTS PUSHING THE SAME WAY. A compound body resting flat on the
+//    ground - three box colliders on one entity, which physics/Collider.h
+//    recommends - had three contacts, all of depth d, and each one moved it
+//    0.8d. Total 2.4d: it was fired clear of the thing it had just landed on,
+//    fell back, and did it again.
+//
+//    TWO CONTACTS PUSHING OPPOSITE WAYS. An interior box in a stack is pushed
+//    up out of the box below and down out of the box above by nearly the same
+//    amount, so the two cancelled and the overlap never cleared at all. A
+//    six-box tower settled with its bottom box 6.9 units inside the floor and
+//    its neighbours 13 units inside each other, and stayed that way for
+//    twenty seconds.
+//
+//  ==========================================================================
+//  AND IT COSTS NO GEOMETRY TO RE-READ. A correction is a pure translation,
+//  so a contact's live separation is its original separation plus how far the
+//  two bodies have since been moved ALONG ITS NORMAL. That is one dot product
+//  per contact per pass - no shape is rebuilt, no narrow phase is re-run, and
+//  nothing has to be re-gathered. The normal points from B toward A (A
+//  separates by moving along it; see SolveVelocity), so moving A along the
+//  normal and B against it both widen the gap.
 // ---------------------------------------------------------------------------
-void CorrectPosition(const Collision2D& contact, ColliderComponent* a,
-                     ColliderComponent* b) {
+void CorrectPositionPass(const Collision2D& contact, ColliderComponent* a,
+                         ColliderComponent* b) {
     Rigidbody2DComponent* bodyA = a->AttachedRigidbody();
     Rigidbody2DComponent* bodyB = b->AttachedRigidbody();
 
@@ -1274,44 +1520,61 @@ void CorrectPosition(const Collision2D& contact, ColliderComponent* a,
         return;
     }
 
-    // An impulse changes velocity, which fixes the NEXT step. The overlap that
-    // already exists has to be undone by moving them, split in proportion to
-    // how movable each one is.
-    //
     // THE SLOP IS NOT A FUDGE. Correcting every last fraction of a unit makes
     // a resting body jitter: it is pushed out, gravity pulls it back in, and
     // it buzzes forever. Leaving a sliver of overlap alone lets it settle, and
     // the sliver is far too small to see.
     //
-    // AND THE FRACTION IS NOT ONE for the same reason. Moving them exactly
-    // flush means the next step starts with them a hair apart, so the contact
-    // is gone and gravity re-establishes it - which is a contact that enters
-    // and exits forever rather than one that stays.
+    // AND THE FRACTION IS NOT ONE. Taking 80% of whatever is LEFT each pass
+    // converges on the right answer without ever overshooting it - which is
+    // the whole reason this can now be iterated at all.
     constexpr float kSlop     = 0.01f;
     constexpr float kFraction = 0.8f;
 
-    const float depth = std::max(-contact.separation - kSlop, 0.0f);
+    const auto moved = [](const std::unordered_map<Rigidbody2DComponent*, Vec2>& map,
+                          Rigidbody2DComponent* body) {
+        if (body == nullptr) {
+            return Vec2{0.0f, 0.0f};
+        }
+        const auto it = map.find(body);
+        return it != map.end() ? it->second : Vec2{0.0f, 0.0f};
+    };
+
+    const Vec2  deltaA = moved(g_corrections, bodyA);
+    const Vec2  deltaB = moved(g_corrections, bodyB);
+    const float live   = contact.separation + Dot(deltaA - deltaB, contact.normal);
+
+    const float depth = std::max(-live - kSlop, 0.0f);
     if (depth <= 0.0f) {
-        return;
+        return;   // already clear, or clear enough
     }
 
     const Vec2 correction = contact.normal * (depth * kFraction / invMassSum);
-    if (bodyA != nullptr) { bodyA->Translate(correction * invMassA); }
-    if (bodyB != nullptr) { bodyB->Translate(-correction * invMassB); }
+    if (bodyA != nullptr && invMassA > 0.0f) {
+        g_corrections[bodyA] += correction * invMassA;
+    }
+    if (bodyB != nullptr && invMassB > 0.0f) {
+        g_corrections[bodyB] -= correction * invMassB;
+    }
 }
 
 } // namespace
 
-void CollisionSystem::Update(float /*deltaSeconds*/) {
+void CollisionSystem::Update(float fixedStep) {
     Scene* scene = Scene::Active();
     if (scene == nullptr) {
         return;
     }
 
+    // Two steps' worth of falling, which is the speed a body at rest on the
+    // floor picks up and gives back every step. See g_restingSpeed.
+    g_restingSpeed = std::fabs(Physics2D::Gravity().y) * fixedStep * 2.0f;
+
     g_thisFrame.clear();
     g_contacts.clear();
     g_entityContact.clear();
     g_entityTrigger.clear();
+    g_eventPairs.clear();
     g_narrowPhaseTests = 0;
     g_broadPhasePairs  = 0;
 
@@ -1578,11 +1841,35 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
         }
     }
 
-    // ONCE, after the velocities have settled.
-    for (auto& [pair, contact] : g_contacts) {
-        if (solid(contact)) {
-            CorrectPosition(contact, contact.thisCollider, contact.otherCollider);
+    // ======================================================================
+    //  AND THEN THE POSITIONS, swept several times and applied once.
+    //
+    //  SEVERAL TIMES, because one sweep cannot satisfy a chain: clearing the
+    //  overlap between the floor and the bottom box of a tower moves that box
+    //  up into the one above it, and only another pass notices. Four passes
+    //  takes a six-box tower from 6.9 units of sink to a fraction of one; the
+    //  number is its own constant rather than borrowing solverIterations,
+    //  because the two halves converge at different rates and tying them
+    //  together would make tuning one retune the other.
+    //
+    //  APPLIED ONCE, at the end, because a pass has to read the separations
+    //  the previous pass produced - and it reads them from the accumulated
+    //  translations rather than from the shapes, so nothing may move until
+    //  every pass is done. See CorrectPositionPass.
+    // ======================================================================
+    constexpr int kPositionPasses = 4;
+
+    g_corrections.clear();
+    for (int pass = 0; pass < kPositionPasses; ++pass) {
+        for (auto& [pair, contact] : g_contacts) {
+            if (solid(contact)) {
+                CorrectPositionPass(contact, contact.thisCollider,
+                                    contact.otherCollider);
+            }
         }
+    }
+    for (const auto& [body, delta] : g_corrections) {
+        body->Translate(delta);
     }
 
     // ---- the events -------------------------------------------------------
@@ -1620,8 +1907,9 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
                            : (wasTouching ? MessageTypes::kCollisionStay
                                           : MessageTypes::kCollisionEnter);
 
-        SendPairEvent(type, info.a, info.b);
-        SendPairEvent(type, info.b, info.a);
+        const int token = TokenFor(pair);
+        SendPairEvent(type, info.a, info.b, token);
+        SendPairEvent(type, info.b, info.a, token);
     }
 
     for (const auto& [pair, info] : g_lastFrame) {
@@ -1639,47 +1927,52 @@ void CollisionSystem::Update(float /*deltaSeconds*/) {
     }
 
     g_lastFrame = g_thisFrame;
+}
 
-    // ---- gizmos -----------------------------------------------------------
-    //
-    // Draw every collider, so you can SEE what the collision system thinks the
-    // shapes are. Green is not touching anything, red is touching something,
-    // cyan is a trigger, grey is disabled. The Scene view's Gizmos menu
-    // switches the whole Colliders category off.
-    if (Gizmos::IsCategoryEnabled(GizmoCategory::Colliders)) {
-        for (const ColliderRecord& record : g_colliders) {
-            ColliderComponent* collider = record.collider;
-            if (collider == nullptr) {
-                continue;
-            }
+// ---------------------------------------------------------------------------
+//  The collider outlines. See the long note on the declaration for why this
+//  is not the tail of Update any more.
+// ---------------------------------------------------------------------------
+void CollisionSystem::DrawGizmos(bool liveContacts) {
+    if (!Gizmos::IsCategoryEnabled(GizmoCategory::Colliders)) {
+        return;
+    }
 
-            Color color = Color::Green();
-            if (!collider->Enabled()) {
-                color = Color{110, 110, 110, 255};
-            } else if (collider->IsTrigger()) {
-                color = Color::Cyan();
-            } else {
-                // THIS COLLIDER, not its entity. A collider used to turn red
-                // because a SIBLING was touching something, which is not what
-                // the colour claims to mean.
-                const bool touching =
-                    std::any_of(g_thisFrame.begin(), g_thisFrame.end(),
-                                [&](const auto& entry) {
-                                    return entry.first.first == record.id ||
-                                           entry.first.second == record.id;
-                                });
-                if (touching) {
-                    color = Color::Red();
-                }
-            }
+    // Kept between calls rather than built on each one, exactly as
+    // WorldBounds does it: this runs once a frame over every collider in the
+    // scene, and a tilemap collider alone produces hundreds of shapes. After
+    // the first frame it asks the system for nothing.
+    static std::vector<ConvexShape> shapes;
 
-            // The same buffer the gather above used, refilled. It still has
-            // the capacity it reached there, so the gizmo pass allocates
-            // nothing at all.
-            const int count = GatherWorldShapes(*collider, scratch);
-            for (int i = 0; i < count; ++i) {
-                DrawShapeGizmo(scratch[i], color);
+    for (const ColliderRecord& record : g_colliders) {
+        ColliderComponent* collider = record.collider;
+        if (collider == nullptr) {
+            continue;
+        }
+
+        Color color = Color::Green();
+        if (!collider->Enabled()) {
+            color = Color{110, 110, 110, 255};
+        } else if (collider->IsTrigger()) {
+            color = Color::Cyan();
+        } else if (liveContacts) {
+            // THIS COLLIDER, not its entity. A collider used to turn red
+            // because a SIBLING was touching something, which is not what
+            // the colour claims to mean.
+            const bool touching =
+                std::any_of(g_thisFrame.begin(), g_thisFrame.end(),
+                            [&](const auto& entry) {
+                                return entry.first.first == record.id ||
+                                       entry.first.second == record.id;
+                            });
+            if (touching) {
+                color = Color::Red();
             }
+        }
+
+        const int count = GatherWorldShapes(*collider, shapes);
+        for (int i = 0; i < count; ++i) {
+            DrawShapeGizmo(shapes[i], color);
         }
     }
 }

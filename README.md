@@ -153,9 +153,9 @@ rather than going round the input layer.
 | `assets/`      | Scenes, images **and your scripts**, in whatever folders suit the game. **Committed.** |
 | `tests/`       | Unit tests.                                                       |
 | `cmake/`       | Build system pieces.                                              |
-| `tools/`       | The fresh-clone check script.                                     |
+| `tools/`       | The fresh-clone check, and the API reference checks.              |
 | `config/`      | `engine.json` is read at start-up; `engine.example.json` documents every setting. |
-| `docs/`        | The scripting reference, the editor guide and the engine tour.     |
+| `docs/`        | The editor guide, the engine tour, and `api/` - the browsable API reference. |
 | `.build/`      | Where the editor compiles your scripts to. Generated; not committed. |
 
 There is no `scripts/` folder, and that is deliberate. Your behaviour scripts
@@ -442,6 +442,23 @@ this project uses `-981`:
 "physics": { "gravity": [0.0, -981.0], "solverIterations": 4 }
 ```
 
+### Watching all of it at once
+
+`assets/scenes/physics_playground.oscene` is a scene built to exercise every
+part of this: all five collider shapes against flat ground, an edge chain and a
+tilemap; bounciness and friction ladders; stacking; tipping and a see-saw;
+triggers and layers; kinematic lifts and a kinematic character; gravity scale
+and drag; one probe per world query, sweeping; collider offsets, non-uniform
+scale and compound bodies; and the speed at which discrete collision starts to
+tunnel.
+
+In the **Scene view** every collider is outlined - green solid, cyan trigger,
+grey disabled, red touching - whether anything is playing or not. The **Game
+view** never draws them, and nor does a built game.
+
+See [docs/physics-playground.md](docs/physics-playground.md), which says what
+each station is for and, for each one, what a FAILURE looks like.
+
 ---
 
 ## Tilemaps
@@ -552,10 +569,24 @@ all.
 
 ## Where to start reading
 
-[docs/scripting-reference.md](docs/scripting-reference.md) is everything a
-script can call, arranged by what you are trying to do - spawning things,
-destroying them, finding other entities, reading input, physics queries - with a
-Unity-to-here mapping table and an honest list of what is not here yet.
+[docs/api/index.html](docs/api/index.html) is the **scripting API reference** -
+open it in a browser, no server needed. Every public type reachable from
+`<engine/Engine.h>`, arranged the way Unity's scripting reference is: a class
+list down the side, a page per class with its properties, methods, operators
+and messages, and the lifecycle hooks documented on `ScriptBehaviour` itself.
+213 classes, 1905 members, 230 code examples.
+
+Every signature on it is the declaration **as written in its header**, not a
+paraphrase, and every page says which header and line it came from.
+[tools/apidoc/](tools/apidoc/README.md) has the two checks that keep that true:
+one re-reads every declaration out of `engine/include/`, the other compiles
+every example in the reference with the real compiler.
+
+[docs/scripting-reference.md](docs/scripting-reference.md) is the same ground
+as prose, arranged by what you are trying to do - spawning things, destroying
+them, finding other entities, reading input, physics queries - with a
+Unity-to-here mapping table and an honest list of what is not here yet. Read
+that one first and the API reference second.
 
 [docs/engine-tour.md](docs/engine-tour.md) is a map of the whole engine with a
 "if you want to understand X, open Y" table.

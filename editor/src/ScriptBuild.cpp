@@ -625,10 +625,113 @@ std::string FindVisualStudioVcvars() {
 //
 // which reads like a broken compiler or a broken engine header, when in fact
 // the compiler simply has not been told where its own headers live.
+// The headers that have to be REACHABLE for this environment to be worth
+// anything, one per part of the toolchain that can go stale on its own:
+// <algorithm> lives in the MSVC toolset's own include directory, crtdbg.h in
+// the Universal CRT, windows.h in the Windows SDK's um. Each was confirmed
+// present in the real INCLUDE on a healthy install before being relied on
+// here.
+const char* const kCanaryHeaders[] = {"algorithm", "crtdbg.h", "windows.h"};
+
+// One semicolon-separated search path, as directories. INCLUDE is not
+// conventionally quoted - a space needs no quoting in a list separated by
+// semicolons - but an entry that did arrive quoted would otherwise fail every
+// probe below and condemn the machine to running vcvars on every build.
+std::vector<fs::path> SplitSearchPath(const std::string& value) {
+    std::vector<fs::path> dirs;
+    std::stringstream     entries{value};
+    std::string           entry;
+    while (std::getline(entries, entry, ';')) {
+        if (entry.size() >= 2 && entry.front() == '"' && entry.back() == '"') {
+            entry = entry.substr(1, entry.size() - 2);
+        }
+        if (!entry.empty()) {
+            dirs.emplace_back(entry);
+        }
+    }
+    return dirs;
+}
+
+// One variable out of a `set` dump, or empty. Deliberately a plain lookup
+// rather than ApplyEnvironmentDump: reading a dump and INSTALLING it are
+// different operations, and the whole point here is to do the first without
+// the second.
+std::string DumpValue(const std::string& dump, std::string_view key) {
+    std::istringstream lines(dump);
+    std::string        line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos || equals == 0) {
+            continue;
+        }
+        if (std::string_view(line).substr(0, equals) == key) {
+            return line.substr(equals + 1);
+        }
+    }
+    return {};
+}
+
+// Can a compiler given this INCLUDE find its own headers?
+bool IncludeLooksUsable(const std::string& include) {
+    if (include.empty()) {
+        return false;
+    }
+
+    // THE HEADERS HAVE TO BE FOUND, not merely named.
+    //
+    // A NON-EMPTY STRING WAS NOT ENOUGH, and the cache is why. It is keyed on
+    // vcvars64.bat's own path and timestamp, neither of which moves when a
+    // Windows SDK component is upgraded or removed underneath it - so the
+    // cheap path adopted an INCLUDE pointing at directories that were gone,
+    // this function said yes, and EnsureCompilerEnvironment then CLEARED
+    // g_vcvarsPath, which takes `call vcvars` out of build.bat and removes
+    // the one thing that would have healed it. Measured on a planted stale
+    // cache: 13 of 13 scripts failing on
+    //
+    //     yvals.h(22): fatal error C1083: Cannot open include file: 'crtdbg.h'
+    //
+    // and nothing in the product able to clear the cache - a full rebuild
+    // deletes modules, obj and units, never msvcenv.txt. It also reached the
+    // generated IDE files, which named five directories that did not exist
+    // while the config asserted it had found the toolchain.
+    //
+    // THREE CANARIES RATHER THAN "EVERY DIRECTORY EXISTS", which is the
+    // tempting version and is wrong. INCLUDE routinely names a component
+    // nothing includes from - NETFXSDK here - and rejecting a whole working
+    // toolchain over one absent folder would be worse than the bug: adoption
+    // would fail, toolchainIncludeDirs would come back EMPTY, and the
+    // generated files would be back to naming only the engine. These three
+    // answer the question that actually matters, which is whether the
+    // compiler can find its own headers.
+    const std::vector<fs::path> dirs = SplitSearchPath(include);
+
+    std::error_code ec;
+    for (const char* header : kCanaryHeaders) {
+        bool found = false;
+        for (const fs::path& dir : dirs) {
+            if (fs::exists(dir / header, ec)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool MsvcEnvironmentIsSetUp() {
     const char* include = std::getenv("INCLUDE");
     const char* lib     = std::getenv("LIB");
-    return include != nullptr && *include != '\0' && lib != nullptr && *lib != '\0';
+    if (include == nullptr || *include == '\0' || lib == nullptr || *lib == '\0') {
+        return false;
+    }
+    return IncludeLooksUsable(include);
 }
 
 // ============================================================================
@@ -707,6 +810,53 @@ void ApplyEnvironmentDump(const std::string& dump) {
     }
 }
 
+// Everything in this dump that nothing will ever read back. The answer is
+// normally most of it: `set` prints the whole environment, and
+// ApplyEnvironmentDump installs eleven variables of it.
+bool DumpHasForeignKeys(const std::string& dump) {
+    std::istringstream lines(dump);
+    std::string        line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos || equals == 0) {
+            continue;
+        }
+        if (!IsMsvcEnvironmentKey(line.substr(0, equals))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The cache, holding the key line and nothing but the variables that will be
+// read back out of it.
+//
+// ONE WRITER FOR BOTH CALLERS. The fresh-from-vcvars path and the repair of
+// an older cache have to produce byte-identical files or the repair would
+// loop, rewriting on every run forever.
+void WriteEnvironmentCache(const fs::path& cacheFile, const std::string& keyLine,
+                           const std::string& dump) {
+    std::ofstream      cache(cacheFile, std::ios::trunc);
+    cache << keyLine << "\n";
+    std::istringstream lines(dump);
+    std::string        line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos || equals == 0) {
+            continue;
+        }
+        if (IsMsvcEnvironmentKey(line.substr(0, equals))) {
+            cache << line << "\n";
+        }
+    }
+}
+
 // What the cache has to match to be trusted.
 std::string MsvcEnvironmentKeyLine(const std::string& vcvarsPath) {
     std::error_code ec;
@@ -734,9 +884,39 @@ bool AdoptMsvcEnvironment(const std::string& vcvarsPath) {
                 header.pop_back();
             }
             if (header == expected) {
-                ApplyEnvironmentDump(cached.substr(firstBreak + 1));
-                if (MsvcEnvironmentIsSetUp()) {
-                    return true;
+                const std::string body = cached.substr(firstBreak + 1);
+
+                // CHECKED BEFORE IT IS INSTALLED, and that order is the whole
+                // point. ApplyEnvironmentDump calls _putenv_s, so asking
+                // afterwards whether the cache was any good leaves a rejected
+                // one sitting in this process - and vcvars64.bat PREPENDS to
+                // INCLUDE rather than replacing it, so the re-run that exists
+                // to heal things instead merges the live directories with the
+                // dead ones and caches the result. Measured on a planted
+                // stale cache: five live Windows SDK directories and five
+                // dead ones in one generated CppProperties.json, and four
+                // lines of the rewritten cache still naming a version that is
+                // not installed.
+                if (IncludeLooksUsable(DumpValue(body, "INCLUDE"))) {
+                    ApplyEnvironmentDump(body);
+                    if (MsvcEnvironmentIsSetUp()) {
+                        // REPAIRED IN PASSING, because a valid cache is never
+                        // otherwise rewritten: it is keyed on vcvars64.bat's
+                        // path and timestamp, so it outlives everything short
+                        // of a Visual Studio update. An older editor wrote
+                        // the whole environment here - 106 variables on this
+                        // machine, whatever the launching shell happened to
+                        // carry - and left a second copy in msvcenv.dump when
+                        // the delete below failed. Neither belongs in
+                        // somebody's project folder, and neither will leave
+                        // on its own.
+                        std::error_code repairEc;
+                        if (DumpHasForeignKeys(body)) {
+                            WriteEnvironmentCache(cacheFile, expected, body);
+                        }
+                        fs::remove(BuildDirectory() / "msvcenv.dump", repairEc);
+                        return true;
+                    }
                 }
                 // The cache matched and is still not usable. Fall through and
                 // ask vcvars, which is the self-healing half.
@@ -755,6 +935,15 @@ bool AdoptMsvcEnvironment(const std::string& vcvarsPath) {
         bat << "@echo off\n";
         bat << "REM Written by the editor. It asks vcvars64.bat what it sets, once, so\n";
         bat << "REM that every later build does not have to run it again.\n";
+        bat << "REM\n";
+        bat << "REM The telemetry line is not a preference. VsDevCmd.bat does\n";
+        bat << "REM `START \"\" /B powershell.exe ... > NUL` to report usage, and START /B\n";
+        bat << "REM DETACHES it - so it outlives the cmd.exe this script runs in while\n";
+        bat << "REM still holding the inherited handle to the dump file below, and the\n";
+        bat << "REM editor's attempt to delete that dump fails with a sharing violation\n";
+        bat << "REM for the next half second. Measured: 3 of 3 runs failed on the first\n";
+        bat << "REM try with error 32, and 3 of 3 succeeded with this line present.\n";
+        bat << "set VSCMD_SKIP_SENDTELEMETRY=1\n";
         bat << "call \"" << vcvarsPath << "\" >nul 2>&1\n";
         bat << "set\n";
     }
@@ -770,11 +959,27 @@ bool AdoptMsvcEnvironment(const std::string& vcvarsPath) {
     }
 
     // Only written once it is known to work, so a bad dump is never cached.
-    {
-        std::ofstream cache(cacheFile, std::ios::trunc);
-        cache << expected << "\n" << dump;
+    //
+    // AND ONLY THE KEYS THAT WILL BE READ BACK. `set` prints the WHOLE
+    // environment - 106 variables on this machine - and writing it verbatim
+    // put every variable the editor was launched with into a file inside
+    // somebody's project folder, which is exactly what the note above says
+    // this does not do. ApplyEnvironmentDump has always filtered on the way
+    // in; filtering on the way out as well is behaviour-preserving and takes
+    // the file from 106 variables to the 11 that matter.
+    WriteEnvironmentCache(cacheFile, expected, dump);
+
+    // RETRIED, because this used to fail silently and leave a second copy of
+    // the environment in the project for good. The telemetry line in the
+    // script above is what fixes the cause; this is the belt for the next
+    // thing Visual Studio decides to detach. Half a second was the longest
+    // measured hold.
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        if (fs::remove(dumpPath, ec) || !fs::exists(dumpPath, ec)) {
+            break;
+        }
+        Sleep(50);
     }
-    fs::remove(dumpPath, ec);
     return true;
 }
 
@@ -933,6 +1138,50 @@ ScriptBuild::CompileSettings ScriptBuild::Settings() {
     for (const fs::path& dir : IncludeDirectories()) {
         settings.includeDirs.push_back(dir.generic_string());
     }
+
+#if defined(_WIN32)
+    // THE TOOLCHAIN, NAMED EXPLICITLY FOR THE READERS THAT CANNOT INHERIT IT.
+    //
+    // ASKED FOR RATHER THAN ASSUMED. Init() only LOCATES vcvars64.bat;
+    // bringing what it sets into this process is deliberately lazy - "the
+    // first time a build needs it" - so INCLUDE is unset until something
+    // actually builds, and describing the compile builds nothing. Assuming
+    // otherwise is how the first version of this shipped a configuration
+    // whose only toolchain entry was ${env.INCLUDE}, which is to say none.
+    //
+    // The cost is the one vcvars64.bat run the editor pays on its first build
+    // anyway, cached in .build/msvcenv.txt, and this call is a no-op once
+    // anything in the process has already tried - whether that attempt
+    // succeeded or not, which is why the warning in ScriptIde.cpp does not
+    // tell anybody to build and try again.
+    EnsureCompilerEnvironment();
+
+    if (const char* include = std::getenv("INCLUDE")) {
+        std::error_code ec;
+        for (const fs::path& dir : SplitSearchPath(include)) {
+            // ABSENT DIRECTORIES ARE DROPPED. A stale INCLUDE can still reach
+            // this process from the shell the editor was LAUNCHED in, and
+            // vcvars prepends rather than replaces, so the live directories
+            // and the dead ones can arrive together. A dead one resolves
+            // nothing, so losing it costs nothing - and a generated file that
+            // names directories which are not there is a file that lies about
+            // having found the toolchain. The canary check above is what
+            // guarantees what remains is enough.
+            if (!fs::is_directory(dir, ec)) {
+                continue;
+            }
+
+            // NORMALIZED, because vcvars does not emit these tidily: on this
+            // machine four of the nine arrive with a doubled separator, as in
+            // "Windows Kits\10\\include\10.0.26100.0\\um". cl.exe does not
+            // care and a human reading the generated file does.
+            const std::string normalized = dir.lexically_normal().generic_string();
+            if (!normalized.empty()) {
+                settings.toolchainIncludeDirs.push_back(normalized);
+            }
+        }
+    }
+#endif
 
     return settings;
 }

@@ -65,6 +65,133 @@ Vec2 Support(const ConvexShape& shape, Vec2 axis) {
 }
 
 // ---------------------------------------------------------------------------
+//  TWO EXACT RAY PRIMITIVES, which everything rounded is built out of.
+//
+//  Both answer with the ray parameter at the crossing, or a NEGATIVE number
+//  for no crossing - so a caller can compare candidates with one `<` and
+//  range-check the winner once. Neither bounds the result by the ray's
+//  length; that is the caller's business, because a candidate past the end
+//  still has to lose to a nearer one rather than being silently dropped.
+// ---------------------------------------------------------------------------
+
+// Four cross products. `u` is how far along the segment the crossing is, and
+// it is what makes this a segment rather than the infinite line through it.
+float RaySegmentT(const Ray& ray, Vec2 from, Vec2 to) {
+    const Vec2  along = to - from;
+    const float denom = Cross(ray.direction, along);
+    if (std::fabs(denom) < kTinyLength) {
+        return -1.0f;   // parallel: no single crossing to report
+    }
+
+    const Vec2  toStart = from - ray.origin;
+    const float t       = Cross(toStart, along) / denom;
+    const float u       = Cross(toStart, ray.direction) / denom;
+
+    if (t < 0.0f || u < 0.0f || u > 1.0f) {
+        return -1.0f;
+    }
+    return t;
+}
+
+// The NEAR crossing of a circle. A ray starting inside one has its near
+// crossing behind it and is handled by the caller, which is the only place
+// that knows what "inside" should mean for the whole shape.
+float RayCircleT(const Ray& ray, Vec2 centre, float radius) {
+    const Vec2  toCentre = centre - ray.origin;
+    const float along    = Dot(toCentre, ray.direction);
+    const float radiusSq = radius * radius;
+    const float distSq   = toCentre.LengthSquared() - along * along;
+
+    if (distSq > radiusSq) {
+        return -1.0f;
+    }
+    const float enter = along - std::sqrt(std::max(0.0f, radiusSq - distSq));
+    return enter >= 0.0f ? enter : -1.0f;
+}
+
+// The same shape with its rounding taken off, which is what "the core" means
+// everywhere in this file.
+ConvexShape CoreOf(const ConvexShape& shape) {
+    ConvexShape core = shape;
+    core.radius      = 0.0f;
+    return core;
+}
+
+// The outward normal of edge `i`, for a core wound ANTICLOCKWISE - which is
+// what MakeAnticlockwise guarantees for a box and what a polygon collider is
+// required to be. Turning the edge clockwise is Perpendicular() negated.
+Vec2 EdgeNormal(const ConvexShape& shape, int i) {
+    const Vec2 from = shape.points[i];
+    const Vec2 to   = shape.points[(i + 1) % shape.count];
+    return -(to - from).Perpendicular().Normalized();
+}
+
+// ---------------------------------------------------------------------------
+//  WHERE TWO OVERLAPPING SHAPES MEET: the MIDDLE OF THE REGION THEY SHARE.
+//
+//  THIS USED TO BE THE AVERAGE OF THE TWO SUPPORT VERTICES, and that is wrong
+//  in the most ordinary case there is. Support returns a single vertex, and
+//  along a flat face two vertices tie - so it keeps whichever comes first in
+//  the point list. For a crate resting on a floor that is the FLOOR'S FAR
+//  CORNER and the CRATE'S NEAR CORNER, and their average sits
+//  (widthA - widthB) / 2 away from where the two shapes actually touch. On a
+//  40-wide box resting on an 800-wide floor that is 190 units, outside the
+//  crate altogether.
+//
+//  It never looked wrong because for two EQUAL-width boxes the two tie-broken
+//  corners fall on opposite sides and cancel exactly. Stack identical crates
+//  and the answer is perfect; rest one on a floor and it is nonsense.
+//
+//  WHAT IT COST, both measured before this was changed:
+//
+//    A BOX RESTING ON FLAT GROUND SPUN UP AND FELL THROUGH IT. The contact
+//    solver applies its impulse at this point, so a point 190 units off
+//    centre is a 190-unit lever arm on a body that is doing nothing at all.
+//    Angular velocity reached 13.6 rad/s in four seconds.
+//
+//    AND IT SANK. The impulse needed to stop a body is divided by an
+//    effective mass that includes invInertia * arm^2; at arm 190 that is 136
+//    times the real value, so the contact pushed back 136 times too weakly.
+//
+//  HOW IT IS DONE NOW. The normal is known, so the contact lies on the line
+//  perpendicular to it. Project both shapes onto that line, intersect the two
+//  intervals - that intersection IS the overlap region, the thing a proper
+//  manifold would clip a face down to - and take its middle. Along the normal
+//  itself, sit halfway between the two surfaces.
+//
+//  STILL EXACT FOR A CIRCLE, which is what the old comment claimed for the
+//  average: two circles touching along the line of centres share one tangent
+//  coordinate, so the intersection collapses to it.
+//
+//  STILL "ROUGHLY WHERE" FOR A CORNER, which is all Overlap.h promises. A box
+//  landing on another box's corner gets the middle of a small overlap region
+//  rather than the deepest point of it, and the difference is a fraction of
+//  the overlap.
+// ---------------------------------------------------------------------------
+Vec2 ContactPoint(const ConvexShape& a, const ConvexShape& b, Vec2 normal) {
+    // ACROSS the contact: the shared span, and its middle.
+    //
+    // Project already accounts for each shape's radius, so a rounded box and
+    // a capsule need no special case here.
+    const Vec2     tangent = normal.Perpendicular();
+    const Interval alongA  = Project(a, tangent);
+    const Interval alongB  = Project(b, tangent);
+
+    const float lo = std::max(alongA.min, alongB.min);
+    const float hi = std::min(alongA.max, alongB.max);
+
+    // ALONG the contact: halfway between the two surfaces. For an overlap
+    // that is inside both of them, which is where a contact belongs; for a
+    // pair that is apart it is the middle of the gap.
+    const Interval acrossA = Project(a, normal);
+    const Interval acrossB = Project(b, normal);
+
+    // Rebuilt from its two coordinates in the (tangent, normal) frame, which
+    // is orthonormal because Perpendicular is a quarter turn of a unit vector.
+    return tangent * ((lo + hi) * 0.5f) + normal * ((acrossA.max + acrossB.min) * 0.5f);
+}
+
+// ---------------------------------------------------------------------------
 //  THE AXES THAT HAVE TO BE TESTED, and why this particular set is complete.
 //
 //  The separating axis theorem says two convex shapes are apart if and only
@@ -420,30 +547,31 @@ Contact Collide(const ConvexShape& a, const ConvexShape& b) {
             bestSeparation = separation;
             bestNormal     = normal;
         }
-
-        // A positive separation on ANY axis is proof they do not touch, so
-        // there is nothing to gain from the remaining axes.
-        if (bestSeparation > 0.0f) {
-            contact.touching   = false;
-            contact.normal     = bestNormal;
-            contact.separation = bestSeparation;
-            contact.point      = Support(a, bestNormal) + bestNormal * a.radius;
-            return contact;
-        }
     }
 
-    // No axis separated them, so they overlap by -bestSeparation along
-    // bestNormal, which points from A toward B.
-    contact.touching   = true;
+    // ======================================================================
+    //  EVERY AXIS IS TESTED, EVEN ONCE ONE OF THEM HAS SEPARATED THEM.
+    //
+    //  It used to stop at the first positive separation, on the reasoning
+    //  that one is proof enough they do not touch. True for `touching`, and
+    //  wrong for the other two fields: the GAP between two shapes is the
+    //  LARGEST separation over all axes, not the first one found, and the
+    //  normal that goes with it is the direction of that gap. Stopping early
+    //  handed Physics2D::Distance - and every caller of it - whichever axis
+    //  the loop happened to reach first.
+    //
+    //  The axis count is kMaxAxes - eight edge normals from each shape plus
+    //  every vertex-to-vertex direction, so up to 80 for two octagons, not
+    //  the sixteen this comment used to claim. The broad phase has already
+    //  thrown away the pairs that are nowhere near each other, so the cost
+    //  falls only on pairs that are close enough to be worth an exact answer
+    //  - and for the box-on-box and circle-on-box pairs that make up almost
+    //  every contact in practice it is eight axes and sixteen projections.
+    // ======================================================================
+    contact.touching   = bestSeparation <= 0.0f;
     contact.normal     = bestNormal;
     contact.separation = bestSeparation;
-
-    // Roughly where. The two surface points along the contact normal, averaged
-    // - exact for a circle, and close enough to the middle of a face-to-face
-    // contact to put a torque in the right direction.
-    const Vec2 onA = Support(a, bestNormal) + bestNormal * a.radius;
-    const Vec2 onB = Support(b, -bestNormal) - bestNormal * b.radius;
-    contact.point  = (onA + onB) * 0.5f;
+    contact.point      = ContactPoint(a, b, bestNormal);
     return contact;
 }
 
@@ -463,30 +591,51 @@ Vec2 ClosestPoint(const ConvexShape& shape, Vec2 point) {
 
     if (shape.count == 1) {
         // A circle. The nearest surface point is one radius along the line
-        // from the centre - unless the point IS the centre, where no direction
-        // exists and the centre itself is as good an answer as any.
+        // from the centre, INSIDE OR OUT.
+        //
+        // The reach used to be clamped to how far away the query point was,
+        // so a point inside came back UNCHANGED - which made a circle answer
+        // this question differently from a box of the same footprint, and
+        // contradicted both Collider.h ("for a point inside the collider, the
+        // nearest point on the boundary") and this comment.
         const Vec2  toPoint = point - shape.points[0];
         const float length  = toPoint.Length();
         if (length <= kTinyLength) {
-            return shape.points[0];
+            // No direction exists at the exact centre, so any is as good as
+            // another; +x is a point on the surface, which is the contract.
+            return shape.points[0] + Vec2{shape.radius, 0.0f};
         }
-        const float reach = std::min(length, shape.radius);
-        return shape.points[0] + toPoint * (reach / length);
+        return shape.points[0] + toPoint * (shape.radius / length);
     }
 
     // Walk every edge of the core and keep the nearest foot. For a convex
     // shape that is the nearest point on its boundary, and for a point INSIDE
     // the core it is still the nearest boundary point - which is what
     // Collider2D.ClosestPoint means.
-    Vec2  best        = shape.points[0];
-    float bestDistSq  = std::numeric_limits<float>::max();
+    Vec2  best       = shape.points[0];
+    Vec2  bestOut{0.0f, 0.0f};
+    float bestDistSq = std::numeric_limits<float>::max();
+
+    // HOW FAR OUTSIDE THE CORE THE QUERY POINT IS, over all the edge
+    // half-planes. Positive on any one of them means outside, which for a
+    // convex core is the whole test - and it cannot be fooled by two edges
+    // tying on distance, which is what a dot against the single kept normal
+    // was. Meaningless for a 2-point core, which is handled below.
+    float furthestOutside = -std::numeric_limits<float>::max();
+
     for (int i = 0; i < shape.count; ++i) {
         const Segment edge{shape.points[i], shape.points[(i + 1) % shape.count]};
-        const Vec2    foot   = ClosestPointOnSegment(edge, point);
-        const float   distSq = DistanceSquared(foot, point);
+        const Vec2    foot    = ClosestPointOnSegment(edge, point);
+        const float   distSq  = DistanceSquared(foot, point);
+        const Vec2    outwardI = EdgeNormal(shape, i);
+
+        furthestOutside =
+            std::max(furthestOutside, Dot(point - shape.points[i], outwardI));
+
         if (distSq < bestDistSq) {
             bestDistSq = distSq;
             best       = foot;
+            bestOut    = outwardI;
         }
     }
 
@@ -494,15 +643,65 @@ Vec2 ClosestPoint(const ConvexShape& shape, Vec2 point) {
         return best;
     }
 
-    // Rounded: step out from the core's surface by the radius, toward the
-    // query point.
+    // ======================================================================
+    //  ROUNDED: ONE RADIUS OUT FROM THE CORE, AND "OUT" IS THE WHOLE
+    //  QUESTION.
+    //
+    //  Outside the core, the direction from the core's nearest point toward
+    //  the query point is outward - and it is also the right direction round
+    //  a corner, so it is used wherever it applies, which is nearly
+    //  everywhere.
+    //
+    //  INSIDE A POLYGON CORE that direction points the wrong way, and this
+    //  once followed it anyway while clamping the distance to how far away
+    //  the query point was. A rounded box with half-extents 10 and a radius
+    //  of 5, asked about its own centre, answered (0, -5): ten units inside a
+    //  surface that is at y = -15, and neither a boundary point nor the query
+    //  point. For an interior point the outward EDGE NORMAL is used instead,
+    //  which gives (0, -15).
+    //
+    //  ==================================================================
+    //  AND ONLY FOR A POLYGON CORE, WHICH COST A REGRESSION TO LEARN.
+    //
+    //  A 2-POINT CORE - every capsule, and every edge collider with a
+    //  thickness - HAS NO INTERIOR. A segment encloses nothing, so every
+    //  query point off it is outside it and the toward-the-query direction is
+    //  always right.
+    //
+    //  It also has TWO outward normals, the segment walked both ways, and the
+    //  loop above can keep only one: the two produce an identical foot and an
+    //  identical distance, and the comparison is strict. So consulting
+    //  bestOut for a 2-point core answers HALF THE PLANE ON THE WRONG SIDE.
+    //  Measured: a capsule 20 wide asked about a point 50 to its left
+    //  answered 10 to its RIGHT, and a character standing on an edge collider
+    //  was told the nearest point was five pixels UNDER the ground. The code
+    //  this replaced got both right; the test that went with it only
+    //  exercised a 4-point core, where bestOut really is the nearest edge's
+    //  normal, which is why nothing caught it.
+    //
+    //  AND IT IS ASKED OF THE WHOLE CORE, NOT OF ONE EDGE. The first attempt
+    //  tested the direction against the single normal the nearest-foot loop
+    //  kept, which is the same proxy the 2-point case had just punished - and
+    //  it failed again on a TIE. A query 9.999 above a corner is 400.0f from
+    //  the top edge and 400.000001 from the side one, which float32 rounds to
+    //  the same number: the side edge is kept, the dot against ITS normal is
+    //  -0.001, and a point plainly outside the core was answered on the side
+    //  face. furthestOutside above asks every edge, so no tie can move it.
+    // ==================================================================
     const Vec2  outward = point - best;
     const float length  = outward.Length();
-    if (length <= kTinyLength) {
-        return best;
+
+    // A 2-POINT CORE IS ALWAYS OUTSIDE: a segment encloses nothing.
+    const bool outsideCore = shape.count <= 2 || furthestOutside > 0.0f;
+
+    if (length > kTinyLength && outsideCore) {
+        return best + outward * (shape.radius / length);
     }
-    const float reach = std::min(length, shape.radius);
-    return best + outward * (reach / length);
+
+    // Standing exactly on the core, or inside a polygon one: there is no
+    // direction to take from the query point, so the surface normal at the
+    // nearest point is used.
+    return best + bestOut * shape.radius;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,56 +802,167 @@ bool Raycast(const Ray& ray, const ConvexShape& shape, RaycastHit& outHit) {
         return true;
     }
 
-    // ---- a capsule: the swept circle of its core segment
+    // ---- ANYTHING WITH A RADIUS: its core, grown outward by that radius --
+    //
+    //  SOLVED, NOT SAMPLED. Physics2D::CircleCast is built on this branch and
+    //  its header promises "EXACT, not stepped", so this has to be: the
+    //  boundary of a convex core grown by a radius is a handful of offset
+    //  segments and a handful of arcs, and both have a closed form.
+    //
+    //  This comment used to describe a stepping loop, because for a while
+    //  that is what was here - and a comment claiming a quarter-radius
+    //  sampling error on a routine that is exact is its own defect in a file
+    //  whose comments are the specification.
+    //
+    //  ======================================================================
+    //  THE CORE IS WHATEVER SHAPE IT IS, AND IT USED TO BE ASSUMED TO BE A
+    //  SEGMENT.
+    //
+    //  This branch took Segment{points[0], points[count - 1]}, which is right
+    //  for a capsule - two points - and wrong for everything else. For a
+    //  4-point rounded box that segment is the line from corner 0 to corner
+    //  3: ONE SIDE of the box. A ray at the other three sides missed.
+    //
+    //  AND IT WAS NOT A CORNER CASE, because of how CircleCast works.
+    //  Physics2D::CircleCast slides a circle by GROWING THE TARGET'S RADIUS
+    //  and firing a thin ray - the Minkowski trick, and the reason that
+    //  function is exact. But growing the radius is exactly what sends a
+    //  shape down this branch: so every BOX, POLYGON and TILEMAP collider in
+    //  the scene became "a capsule around one of its edges" the moment a
+    //  circle cast looked at it, and a character sweeping a circle at a wall
+    //  could pass straight through it.
+    // ----------------------------------------------------------------------
     if (shape.radius > kTinyLength) {
-        // Walked in small steps rather than solved. The exact answer is a
-        // quadratic per side plus one per end cap, and the stepping version is
-        // a dozen lines instead of sixty for an error no larger than the step.
-        //
-        // THE STEP IS IN WORLD UNITS, not a fixed count, so a long ray is not
-        // sampled more coarsely than a short one. The refinement afterwards is
-        // what keeps the reported point on the surface rather than up to one
-        // step inside it.
-        const Segment core{shape.points[0], shape.points[shape.count - 1]};
-        const float   step = std::max(shape.radius * 0.25f, 0.01f);
+        const ConvexShape core = CoreOf(shape);
 
-        float travelled = 0.0f;
-        bool  found     = false;
-        while (travelled <= ray.distance) {
-            const Vec2 at = ray.origin + ray.direction * travelled;
-            if (DistanceSquared(ClosestPointOnSegment(core, at), at) <=
-                shape.radius * shape.radius) {
-                found = true;
-                break;
-            }
-            travelled += step;
+        // STARTING INSIDE is a hit here and now, facing back - the same rule
+        // the circle branch above uses, and the same one the polygon clip
+        // below uses when its entry parameter is not positive.
+        if (Collide(core, ToConvex(Circle{ray.origin, shape.radius})).touching) {
+            outHit.hit      = true;
+            outHit.distance = 0.0f;
+            outHit.fraction = 0.0f;
+            outHit.point    = ray.origin;
+            outHit.normal   = -ray.direction;
+            return true;
         }
-        if (!found) {
+
+        // ==================================================================
+        //  EVERY PIECE OF THE BOUNDARY, AND THE NEAREST CROSSING WINS.
+        //
+        //  The shape is the Minkowski sum of its core with a disc, and the
+        //  boundary of that sum is made of exactly two kinds of piece: each
+        //  CORE EDGE pushed outward by the radius, and an ARC of that radius
+        //  around each CORE VERTEX. So the first crossing is the nearest of a
+        //  ray-against-segment solve per edge and a ray-against-circle solve
+        //  per vertex - at most eight of each, all exact, no stepping.
+        //
+        //  TAKING THE WHOLE CIRCLE RATHER THAN THE ARC IS HARMLESS. A point
+        //  on a vertex circle that is not on its arc lies strictly INSIDE the
+        //  shape, so the ray must have crossed the real boundary before
+        //  reaching it - and the nearest candidate is the one taken.
+        //
+        //  WHAT THIS REPLACES. The branch used to collapse any core to
+        //  Segment{points[0], points[count - 1]} and walk it in steps. For a
+        //  capsule - two points - that segment IS the capsule, so it worked.
+        //  For a 4-point rounded box it is the line from corner 0 to corner
+        //  3: one side. And growing the radius is precisely what
+        //  Physics2D::CircleCast does to every shape it tests, so every box,
+        //  polygon and tilemap collider in the scene became "a capsule around
+        //  one of its edges" the moment a circle cast looked at it - a
+        //  character sweeping a circle at a wall could pass straight through.
+        //
+        //  It was then fixed by stepping against the real core, which was
+        //  correct and still not good enough: Physics2D.h promises CircleCast
+        //  is "EXACT ... No stepping, no approximation", and a promise in a
+        //  header is a promise. A capsule falls out of the same arithmetic -
+        //  two offset edges and two end circles - so that case is exact now
+        //  as well, where the stepped version was good to a quarter of the
+        //  radius and never sampled the last partial step.
+        // ==================================================================
+        float best       = -1.0f;
+        Vec2  bestNormal = -ray.direction;
+
+        const auto consider = [&](float t, Vec2 normal) {
+            if (t >= 0.0f && (best < 0.0f || t < best)) {
+                best       = t;
+                bestNormal = normal;
+            }
+        };
+
+        // THE OFFSET EDGES. For a 2-point core the two edges are the segment
+        // and the same segment reversed, so their outward normals are
+        // opposites and the pair of them is exactly a capsule's two sides.
+        for (int i = 0; i < shape.count; ++i) {
+            const Vec2 outward = EdgeNormal(shape, i);
+            const Vec2 from    = shape.points[i] + outward * shape.radius;
+            const Vec2 to = shape.points[(i + 1) % shape.count] + outward * shape.radius;
+            consider(RaySegmentT(ray, from, to), outward);
+        }
+
+        // THE CORNER ARCS. The normal is radial, which is what makes a sweep
+        // glance off a corner rather than stopping square against it.
+        for (int i = 0; i < shape.count; ++i) {
+            const float t = RayCircleT(ray, shape.points[i], shape.radius);
+            if (t < 0.0f) {
+                continue;
+            }
+            const Vec2 at   = ray.origin + ray.direction * t;
+            const Vec2 away = at - shape.points[i];
+
+            // A SQUARED LENGTH NEEDS A SQUARED EPSILON, and comparing it
+            // against kTinyLength itself meant every radius below about a
+            // thousandth of a unit fell back to -ray.direction: a glancing
+            // hit on a corner arc reported a head-on normal, ninety degrees
+            // out, which a script sliding or reflecting on it would follow.
+            consider(t, away.LengthSquared() > kTinyLength * kTinyLength
+                            ? away.Normalized()
+                            : -ray.direction);
+        }
+
+        if (best < 0.0f || best > ray.distance) {
             return false;
         }
 
-        // Binary search back over the last step for the crossing point.
-        float outside = std::max(0.0f, travelled - step);
-        float inside  = travelled;
-        for (int i = 0; i < 16; ++i) {
-            const float mid = (outside + inside) * 0.5f;
-            const Vec2  at  = ray.origin + ray.direction * mid;
-            if (DistanceSquared(ClosestPointOnSegment(core, at), at) <=
-                shape.radius * shape.radius) {
-                inside = mid;
-            } else {
-                outside = mid;
-            }
+        outHit.hit      = true;
+        outHit.distance = best;
+        outHit.fraction = ray.distance > kTinyLength ? best / ray.distance : 0.0f;
+        outHit.point    = ray.origin + ray.direction * best;
+        outHit.normal   = bestNormal;
+        return true;
+    }
+
+    // ---- A BARE SEGMENT: a real ray-against-segment crossing -------------
+    //
+    //  NOT THE HALF-PLANE CLIP BELOW, which cannot express this. A 2-point
+    //  "polygon" has two edges - the segment, and the same segment traversed
+    //  backwards - so the clip produces two EXACTLY OPPOSITE half-planes, and
+    //  their intersection is the infinite LINE through the segment. Every ray
+    //  that crossed that line counted as a hit, including one crossing it a
+    //  mile past either end. An edge collider left at its default edgeRadius
+    //  of 0 is exactly this shape, so a raycast looking for the floor could
+    //  find a platform that was nowhere near it.
+    //
+    //  Solved rather than clipped, because for two segments it is four cross
+    //  products: the ray hits at parameter t along itself and u along the
+    //  segment, and it is a hit only when BOTH are in range.
+    if (shape.count == 2) {
+        const float t = RaySegmentT(ray, shape.points[0], shape.points[1]);
+        if (t < 0.0f || t > ray.distance) {
+            return false;
+        }
+
+        const Vec2 along = shape.points[1] - shape.points[0];
+        Vec2       normal = along.Perpendicular().Normalized();
+        if (Dot(normal, ray.direction) > 0.0f) {
+            normal = -normal;   // always faces the ray
         }
 
         outHit.hit      = true;
-        outHit.distance = inside;
-        outHit.fraction = ray.distance > kTinyLength ? inside / ray.distance : 0.0f;
-        outHit.point    = ray.origin + ray.direction * inside;
-
-        const Vec2 onCore = ClosestPointOnSegment(core, outHit.point);
-        outHit.normal     = (inside <= 0.0f) ? -ray.direction
-                                             : (outHit.point - onCore).Normalized();
+        outHit.distance = t;
+        outHit.fraction = ray.distance > kTinyLength ? t / ray.distance : 0.0f;
+        outHit.point    = ray.origin + ray.direction * t;
+        outHit.normal   = normal;
         return true;
     }
 
@@ -696,13 +1006,6 @@ bool Raycast(const Ray& ray, const ConvexShape& shape, RaycastHit& outHit) {
         if (nearest > furthest) {
             return false;
         }
-    }
-
-    // A 2-point core is a bare segment with no interior, so "inside every
-    // half-plane" is not a hit - only an actual crossing is. The clip above
-    // cannot express that, so it is rejected here.
-    if (shape.count == 2 && nearest <= 0.0f) {
-        return false;
     }
 
     if (nearest > ray.distance) {

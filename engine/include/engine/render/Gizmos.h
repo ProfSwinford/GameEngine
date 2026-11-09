@@ -47,6 +47,8 @@
 #include <engine/math/Vec2.h>
 #include <engine/render/Renderer.h>
 
+#include <cstddef>
+
 namespace eng {
 
 class Camera;
@@ -157,6 +159,27 @@ public:
     // Throws everything away immediately. Loading a new scene does this, or a
     // three-second marker would outlive the object it was marking.
     static void Clear();
+
+    // ======================================================================
+    //  HOW MANY SHAPES ARE QUEUED RIGHT NOW.
+    //
+    //  THIS EXISTS BECAUSE "NOTHING WAS DRAWN" WAS A REAL BUG AND COULD NOT BE
+    //  TESTED. The collider outlines used to be queued from the tail of
+    //  CollisionSystem::Update, which runs only when the clock asks for a
+    //  fixed step - so in the editor, where the clock is paused for the whole
+    //  time you are building a scene, no collider was ever drawn. Nothing
+    //  could ask whether a drawing call had produced anything, so nothing
+    //  noticed for as long as it took somebody to report it.
+    //
+    //  It counts COMMANDS and not pixels: one Line is one, and one Circle is
+    //  also one however many segments it is drawn with. That is the number
+    //  worth having - "did the thing that was supposed to draw, draw" - and it
+    //  is the same reason CollisionSystem::NarrowPhaseTests is public.
+    //
+    //  Nothing in the engine reads it. It is for tests and for an editor that
+    //  wants to show the cost of its own overlay.
+    // ======================================================================
+    static std::size_t QueuedCount();
 
     // ---- switches the Scene view's Gizmos menu drives ---------------------
     static void SetEnabled(bool on);

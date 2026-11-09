@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Engine2D Scripting API</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="The public API of the Engine2D 2D game engine: every type reachable from engine/Engine.h, with signatures taken from the headers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
+<link rel="stylesheet" href="api.css">
+</head>
+<body>
+
+<header class="topbar">
+    <button class="iconbtn" id="railtoggle" aria-label="Show the class list">&#9776;</button>
+    <div class="wordmark">
+        <a href="#">Engine2D</a>
+        <span class="kind">Scripting API</span>
+    </div>
+    <div class="searchwrap">
+        <input id="search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search types and members, or Entity.Find" aria-label="Search the reference">
+        <span class="slashhint">/</span>
+        <div class="results" id="results" hidden></div>
+    </div>
+    <button class="iconbtn" id="themetoggle" aria-label="Switch between light and dark">&#9682;</button>
+</header>
+
+<nav class="rail" id="rail" aria-label="Reference contents"></nav>
+<div class="scrim" aria-hidden="true"></div>
+
+<main>
+    <div class="page">
+        <article class="article" id="article">
+            <div class="nojs">
+                <h1>Engine2D Scripting API</h1>
+                <p>This reference needs JavaScript to render. Everything in it comes from the headers
+                   under <code>engine/include/engine/</code>, which you can read directly.</p>
+            </div>
+        </article>
+        <aside class="jumplist" id="jump" hidden></aside>
+    </div>
+</main>
+
+<!-- ======================================================================
+     THE GUIDE PAGES.
+
+     Hand-written, and kept as templates rather than as strings in the data
+     file so that they can be authored as real markup. Each one is listed in
+     api-data.js under `guides`, which is what puts it in the sidebar.
+     ================================================================== -->
+
+<template id="guide-start">
+    <p>A script is a C++ class. It is compiled into the project, not interpreted, which is the first
+       thing to know because it changes what saving a file does: nothing, until you build.</p>
+
+    <h2>The whole of it</h2>
+
+    <p>Put this in <code>assets/scripts/Spinner.cpp</code> in your project:</p>
+
+<pre><code>#include &lt;engine/Engine.h&gt;
+using namespace eng;
+
+namespace {
+
+class Spinner final : public MyScriptBehaviour {
+public:
+    float degreesPerSecond = 90.0f;   // shows up in the Inspector
+
+    void OnStart() {
+        Debug::Log("Spinner started on {}", name);
+    }
+
+    void OnFixedUpdate() {
+        transform-&gt;Rotate(degreesPerSecond * Time::FixedDeltaTime());
+    }
+};
+
+}   // namespace
+
+ENGINE_REGISTER_SCRIPT(Spinner)</code></pre>
+
+    <p>Four things are doing work there.</p>
+
+    <h3>One include</h3>
+
+    <p><code>&lt;engine/Engine.h&gt;</code> is the only engine header a script ever needs. It pulls in
+       all 59 public headers, which is the whole of this reference. There is nothing to add as you
+       reach for more of the engine.</p>
+
+    <h3>Inherit <code>MyScriptBehaviour</code></h3>
+
+    <p>That is a typedef for <code>eng::ScriptBehaviour</code>, Unity's <code>MonoBehaviour</code>.
+       <code>final</code> is worth writing: nothing derives from a script.</p>
+
+    <p>The anonymous <code>namespace { }</code> keeps the class name out of the rest of the project, so
+       two scripts may both have a private helper called <code>Clamp</code> without colliding. The name
+       the <em>engine</em> knows the script by is the one in the macro, not the linker symbol.</p>
+
+    <h3>Write only the hooks you want</h3>
+
+    <p>There is no <code>virtual</code> and no <code>override</code> anywhere. <code>ScriptBehaviour</code>
+       deliberately does not declare <code>OnStart</code> or any of the others, so the compiler can tell
+       which ones you actually wrote. A script with no hooks costs nothing per step, and a <em>misspelled</em>
+       hook is a compile error rather than a function that silently never runs.</p>
+
+    <p>See <a href="#guide-lifecycle">The lifecycle</a> for the full list.</p>
+
+    <h3>Register the name</h3>
+
+    <p><code>ENGINE_REGISTER_SCRIPT(Spinner)</code> is what lets a scene file and the Inspector find the
+       class by the string <code>"Spinner"</code>. <strong>Without that line the file compiles and the
+       script can never be attached.</strong></p>
+
+    <h2>Attaching it</h2>
+
+    <ol>
+        <li>Build the project, then start the editor again. A running editor will not pick up a changed
+            <code>.cpp</code>; scripts are a compiled library that is loaded once.</li>
+        <li>Drag the <code>.cpp</code> from the Assets panel onto an entity in the Hierarchy or the
+            Inspector.</li>
+    </ol>
+
+    <p>Until the build happens, the Inspector shows the script as <strong>not found</strong>. That is the
+       editor telling the truth rather than pretending: the scene refers to <code>"Spinner"</code> by
+       name, and nothing in this build answers to it. After the build it connects itself, and nothing
+       needs reattaching.</p>
+
+    <h2>What a script can reach</h2>
+
+    <p>From <code>OnStart</code> onwards, five handles and four accessors, all on the base class:</p>
+
+    <table>
+        <thead><tr><th>Spelled</th><th>Is</th><th>Unity</th></tr></thead>
+        <tbody>
+        <tr><td><code>transform</code></td><td><a href="#Transform2D"><code>Transform2D*</code></a> &mdash; position, rotation, scale</td><td><code>transform</code></td></tr>
+        <tr><td><code>gameObject</code></td><td><a href="#Entity"><code>Entity*</code></a> &mdash; this script's entity</td><td><code>gameObject</code></td></tr>
+        <tr><td><code>scene</code></td><td><a href="#Scene"><code>Scene*</code></a> &mdash; to find or make other entities</td><td><code>scene</code></td></tr>
+        <tr><td><code>name</code></td><td>this entity's name</td><td><code>name</code></td></tr>
+        <tr><td><code>tag</code></td><td>this entity's tag</td><td><code>tag</code></td></tr>
+        </tbody>
+    </table>
+
+    <p>They are reached with <code>-&gt;</code> and they are objects, not pointers: each holds only
+       <code>this</code> and asks the scene afresh on every use. That is why none of them can go stale
+       across a frame, across a script reload, or across the entity being destroyed. A destroyed entity
+       makes them answer null, or <code>""</code>, rather than crash.</p>
+
+    <p>The longer-named forms &mdash; <code>Transform()</code>, <code>Owner()</code>,
+       <code>GetScene()</code>, <code>OwnerId()</code> &mdash; are the same four things and are what
+       the handles call.</p>
+
+    <div class="note">
+        <span class="lbl">One standard-library name</span>
+        <p>A member called <code>transform</code> hides <code>std::transform</code> inside the class. If
+           you want the algorithm, write <code>std::transform</code> in full.</p>
+    </div>
+
+    <h2>Where to go next</h2>
+
+    <ul>
+        <li><a href="#guide-lifecycle">The lifecycle</a> &mdash; every hook, and which one to put a thing in.</li>
+        <li><a href="#guide-inspector">Variables in the Inspector</a> &mdash; a public field is a control, with no code.</li>
+        <li><a href="#guide-unity">Coming from Unity</a> &mdash; what is spelled the same and what is not.</li>
+        <li><a href="#ScriptBehaviour"><code>ScriptBehaviour</code></a> &mdash; the base class, member by member.</li>
+    </ul>
+</template>
+
+<template id="guide-lifecycle">
+    <p>Write only the hooks you want. No <code>virtual</code>, no <code>override</code>, no empty stubs.</p>
+
+    <h2>The frame</h2>
+
+    <p>The engine simulates at a steady rate and draws separately. That is one decision with
+       consequences everywhere, so it is worth seeing once:</p>
+
+    <svg viewBox="0 0 720 416" role="img" aria-label="Diagram of one drawn frame: eight simulation stages repeated zero or more times, then OnUpdate, then the render and gizmo stages." style="width:100%;max-width:100%;height:auto;margin:0 0 20px">
+        <rect x="8" y="8" width="704" height="400" rx="6" fill="none" stroke="var(--rule)" stroke-width="1"/>
+        <text x="24" y="31" font-family="var(--font-cond)" font-size="12.5" font-weight="600" fill="var(--ink-2)" letter-spacing="0.09em">ONE DRAWN FRAME</text>
+
+        <rect x="24" y="48" width="672" height="236" rx="5" fill="var(--surface-2)" stroke="var(--rule)" stroke-width="1"/>
+        <text x="40" y="69" font-family="var(--font-cond)" font-size="12" font-weight="600" fill="var(--accent)" letter-spacing="0.07em">REPEATED 0, 1 OR MORE TIMES &#8212; EACH A FIXED 1/60 s STEP</text>
+
+        <g font-family="var(--font-mono)" font-size="12.5">
+            <text x="40" y="94"  fill="var(--ink-3)">100</text><text x="86" y="94"  fill="var(--ink)">Input</text>
+            <text x="40" y="117" fill="var(--ink-3)">200</text><text x="86" y="117" fill="var(--ink)">Gameplay</text>
+            <text x="40" y="140" fill="var(--ink-3)">300</text><text x="86" y="140" fill="var(--ink)">Movement</text>
+            <text x="40" y="163" fill="var(--ink-3)">350</text><text x="86" y="163" fill="var(--ink)">Physics</text>
+            <text x="40" y="186" fill="var(--ink-3)">400</text><text x="86" y="186" fill="var(--ink)">Collision</text>
+            <text x="40" y="209" fill="var(--ink-3)">500</text><text x="86" y="209" fill="var(--ink)">CollisionResponse</text>
+            <text x="40" y="232" fill="var(--ink-3)">600</text><text x="86" y="232" fill="var(--ink)">Deferred</text>
+            <text x="40" y="255" fill="var(--ink-3)">700</text><text x="86" y="255" fill="var(--ink)">Camera</text>
+        </g>
+
+        <g font-family="var(--font-mono)" font-size="12.5">
+            <text x="286" y="117" fill="var(--script)" font-weight="500">OnFixedUpdate()</text>
+            <text x="286" y="209" fill="var(--script)" font-weight="500">OnCollisionEnter / OnTriggerEnter / ...</text>
+        </g>
+        <g font-family="var(--font-sans)" font-size="11.5" fill="var(--ink-3)">
+            <text x="286" y="94">keys and pointer are sampled</text>
+            <text x="286" y="163">bodies integrate, gravity applies</text>
+            <text x="286" y="186">contacts found, overlaps resolved</text>
+            <text x="286" y="232">queued destroys and spawns land</text>
+        </g>
+
+        <g font-family="var(--font-mono)" font-size="12.5">
+            <text x="40" y="314" fill="var(--ink-3)">&#8212;</text><text x="86" y="314" fill="var(--script)" font-weight="500">OnUpdate()</text>
+            <text x="40" y="340" fill="var(--ink-3)">800</text><text x="86" y="340" fill="var(--ink)">Render</text>
+            <text x="40" y="366" fill="var(--ink-3)">900</text><text x="86" y="366" fill="var(--ink)">Gizmos</text>
+        </g>
+        <g font-family="var(--font-sans)" font-size="11.5" fill="var(--ink-3)">
+            <text x="286" y="314">exactly once, and only while running</text>
+            <text x="286" y="340">sprites, tilemaps, UI</text>
+            <text x="286" y="366">debug drawing</text>
+        </g>
+    </svg>
+
+    <p>On a fast machine the loop runs once per frame. On a slow one it runs several times, or none.
+       That is what makes a game behave the same everywhere, and it is why movement goes in
+       <code>OnFixedUpdate</code> and a fade goes in <code>OnUpdate</code>.</p>
+
+    <h2>The hooks</h2>
+
+    <table>
+        <thead><tr><th>Hook</th><th>When</th></tr></thead>
+        <tbody>
+        <tr><td><code>void OnStart()</code></td><td>Once, on the first update of either kind after this script is attached and its entity is fully built. <strong>Not</strong> at attach time: while a scene loads, components arrive one at a time, so a component you look for at attach time may not exist yet.</td></tr>
+        <tr><td><code>void OnFixedUpdate()</code></td><td>Every fixed simulation step. Movement, physics, anything timed. Ask <a href="#Time-FixedDeltaTime"><code>Time::FixedDeltaTime()</code></a>.</td></tr>
+        <tr><td><code>void OnUpdate()</code></td><td>Once per drawn frame. Fades, menus, a camera that should move as smoothly as the display allows. Ask <a href="#Time-DeltaTime"><code>Time::DeltaTime()</code></a>.</td></tr>
+        <tr><td><code>void OnDestroy()</code></td><td>The entity is going away. Still safe to touch things here, and not afterwards.</td></tr>
+        <tr><td><code>void OnCollisionEnter/Stay/Exit(eng::EntityId other)</code></td><td>A solid contact, where neither side is a trigger.</td></tr>
+        <tr><td><code>void OnCollisionEnter/Stay/Exit(const eng::Collision2D&amp; hit)</code></td><td>The same, with <code>hit.normal</code>, <code>hit.point</code> and <code>hit.relativeVelocity</code> &mdash; which is how landing on something is told from walking into it.</td></tr>
+        <tr><td><code>void OnTriggerEnter/Stay/Exit(eng::EntityId other)</code></td><td>An overlap where either side has <em>trigger</em> ticked. Nothing is pushed apart.</td></tr>
+        <tr><td><code>void OnTriggerEnter/Stay(Collider2D other)</code></td><td>The same, handed the other <strong>collider</strong> &mdash; Unity's form. <code>other-&gt;Owner()</code> is the entity.</td></tr>
+        <tr><td><code>void OnTriggerEnter/Stay/Exit(const eng::Collision2D&amp; hit)</code></td><td>The same, with both colliders. <code>hit.thisCollider</code> is <strong>yours</strong>, so a compound body can tell which of its own triggers fired.</td></tr>
+        <tr><td><code>void OnExpose(eng::ScriptFields&amp;)</code></td><td>Not an event. Usually unnecessary &mdash; see <a href="#guide-inspector">Variables in the Inspector</a>.</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong>Nothing takes a delta.</strong> Ask the clock: <code>Time::FixedDeltaTime()</code> in a fixed
+       step, <code>Time::DeltaTime()</code> in a drawn frame, <code>Time::UnscaledDeltaTime()</code> for
+       something that must keep moving while the game is paused.</p>
+
+    <p>Where a hook has several forms, <strong>the richest one you write wins</strong>. An exit takes the
+       id or the contact and never a bare collider: the pair has already ended, so there is nothing left
+       to point at.</p>
+
+    <h2>The contact rules</h2>
+
+    <ul>
+        <li><strong>A pair of colliders sends collision events or trigger events, never both.</strong> A
+            script with <code>OnCollisionEnter</code> on a trigger collider is never called, and the
+            Console says so rather than leaving it silent.</li>
+        <li><strong>One event per collider pair</strong>, which is Unity's rule. An entity carrying three
+            colliders that all touch the same wall gets three <code>OnCollisionEnter</code> calls, each
+            naming that one wall.</li>
+        <li>An entity carrying a trigger collider <em>and</em> a solid one gets both families at once,
+            from the same pair of entities: the solid contact is resolved, the overlap is reported.</li>
+        <li>Two colliders on the <strong>same</strong> entity never report each other, so a compound body
+            may overlap itself freely.</li>
+        <li>An exit fires when the overlap ends &mdash; including when the other entity is destroyed while
+            still overlapping.</li>
+        <li>Both entities need a collider, and each one's <em>collides with</em> list has to include the
+            other's layer.</li>
+    </ul>
+
+    <div class="note caution">
+        <span class="lbl">An EntityId may already be gone</span>
+        <p>Look it up through the scene every time, with <a href="#Scene-Get"><code>scene-&gt;Get(other)</code></a>,
+           and check for null. Never keep a pointer to another entity across a step. By the time
+           <code>OnCollisionExit</code> arrives, the thing that left may have left by being destroyed.</p>
+    </div>
+
+    <h2>A hook that is not there</h2>
+
+    <p><code>OnEnable</code> and <code>OnDisable</code> do not exist, and writing one is a compile error
+       that says so. Compare <a href="#ScriptBehaviour-IsActive"><code>IsActive()</code></a> against what
+       it was last step. The same goes for <code>LateUpdate</code>: stage 700 already runs after all
+       gameplay and movement. The full list is in <a href="#guide-gaps">What is not here yet</a>.</p>
+
+    <div class="note caution">
+        <span class="lbl">A script that switches its own entity off stops running</span>
+        <p>It finishes the function it is in &mdash; nothing is torn down &mdash; and is not ticked again
+           until something else switches it back on. Which means it cannot switch itself back on. Worth
+           knowing before you write it rather than afterwards.</p>
+    </div>
+</template>
+
+<template id="guide-unity">
+    <p>The engine is modelled on Unity on purpose. The vocabulary differs in two places and matches
+       everywhere else.</p>
+
+    <h2>The names</h2>
+
+    <table>
+        <thead><tr><th>Unity</th><th>Here</th><th>Why</th></tr></thead>
+        <tbody>
+        <tr><td><code>GameObject</code></td><td><a href="#Entity"><code>eng::Entity</code></a></td><td>A name, an id and a bag of components &mdash; the same model under the older name for it.</td></tr>
+        <tr><td><code>Transform</code></td><td><a href="#Transform2D"><code>eng::Transform2D</code></a></td><td>Two dimensions, so one rotation angle rather than a quaternion.</td></tr>
+        <tr><td><code>MonoBehaviour</code></td><td><a href="#ScriptBehaviour"><code>eng::ScriptBehaviour</code></a></td><td>You inherit it and write only the hooks you want.</td></tr>
+        <tr><td><code>GetComponent&lt;T&gt;()</code></td><td><code>Find&lt;T&gt;()</code></td><td>House rule: a lookup that can legitimately come back empty is <code>Find</code>, never <code>Get</code>.</td></tr>
+        <tr><td><code>CompareTag</code></td><td><a href="#ScriptBehaviour-HasTag"><code>HasTag</code></a></td><td>Same job, house name.</td></tr>
+        <tr><td><code>FindObjectOfType&lt;T&gt;()</code></td><td><code>FindFirstComponent&lt;T&gt;()</code></td><td>Same job, house name.</td></tr>
+        <tr><td><code>Instantiate</code></td><td><code>Instantiate</code></td><td>The same name, because it is the same thing.</td></tr>
+        <tr><td><code>Debug.Log</code>, <code>Debug.DrawLine</code></td><td><a href="#Debug"><code>eng::Debug</code></a></td><td>The same class under the same name, and it fills the channel in for you. The engine's own <code>ENGINE_LOG_*</code> macros still require one. <code>print</code> stays absent: it throws the level away.</td></tr>
+        <tr><td><code>transform</code>, <code>gameObject</code>, <code>name</code>, <code>tag</code></td><td>the same, spelled the same</td><td>Bare handles on the base class, reached with <code>-&gt;</code>.</td></tr>
+        </tbody>
+    </table>
+
+    <p>The split is deliberate: <strong>the properties are spelled Unity's way, the methods are not</strong>,
+       and there are no Unity-spelled aliases for the methods. One spelling per thing.</p>
+
+    <h2>Three differences that are not just naming</h2>
+
+    <h3>An <code>EntityId</code> is not a reference</h3>
+
+    <p>Unity hands you a <code>GameObject</code> and lets you keep it. Here the thing you keep is an
+       <a href="#EntityId"><code>EntityId</code></a>, and you look it up through the scene every time you
+       use it. The id of a destroyed entity is a safe thing to hold and answers null on lookup; a
+       pointer to one is not.</p>
+
+    <h3>Nothing is destroyed in the middle of a step</h3>
+
+    <p><code>Destroy</code> queues. The entity goes away at stage 600, after every script has finished
+       the step. So a script may destroy something it is still iterating, and two scripts may destroy
+       each other in the same step, without either seeing a half-dead object. See
+       <a href="#DeferredOps"><code>DeferredOps</code></a>.</p>
+
+    <h3>Messages are typed and queued, not reflective</h3>
+
+    <p><code>SendMessage("TakeDamage", 10)</code> has no equivalent: there is no calling a method by its
+       name. <a href="#MessageBus"><code>MessageBus</code></a> is a queue of small typed structs with a
+       sender, a target and a few numbers. It costs you a <code>switch</code> and buys you a compiler
+       that notices when the other end changes.</p>
+
+    <h2>Units</h2>
+
+    <p><strong>One world unit is one pixel.</strong> Not Unity's metre. Default gravity is
+       <code>(0, -981)</code>, which is 9.81 m/s&sup2; read at 100 px to the metre, and a 32&times;32
+       sprite is 32 units across. Rotations are in <strong>degrees</strong>.</p>
+
+    <p>What is missing is listed plainly in <a href="#guide-gaps">What is not here yet</a> &mdash; audio,
+       coroutines, particles and joints among them &mdash; so that nobody spends an afternoon looking.</p>
+</template>
+
+<template id="guide-inspector">
+    <p>A <strong>public</strong> variable of a supported type is on screen, editable while the game runs,
+       and saved on each entity separately. No code at all.</p>
+
+<pre><code>class Gun final : public MyScriptBehaviour {
+public:
+    float          rateOfFire = 4.0f;   // shots per second
+    float          spread     = 0.1f;   // [0..1] how wide the cone is
+    eng::PrefabRef bullet;              // what to fire
+    eng::EntityRef muzzle;              // [TransformComponent] where from
+};</code></pre>
+
+    <p>The trailing comment becomes the tooltip. A marker at the <strong>start</strong> of that comment
+       says something extra:</p>
+
+    <table>
+        <thead><tr><th>Marker</th><th>On</th><th>What it does</th></tr></thead>
+        <tbody>
+        <tr><td><code>[0..10]</code></td><td>a number</td><td>a slider with those ends</td></tr>
+        <tr><td><code>[TypeName]</code></td><td>an <code>EntityRef</code></td><td>narrows the picker to entities carrying that component or script</td></tr>
+        <tr><td><code>[image]</code></td><td>a <code>std::string</code></td><td>an image path, drawn as a drop <strong>slot</strong> rather than a text box</td></tr>
+        <tr><td><code>[animation]</code></td><td>a <code>std::string</code></td><td>names an animation stored in a sheet</td></tr>
+        </tbody>
+    </table>
+
+    <p><code>[texture]</code> and <code>[sprite]</code> also mean an image, <code>[anim]</code> and
+       <code>[clip]</code> an animation, and case does not matter. A marker naming a kind the Inspector
+       has no slot for is reported in the Console and the variable is drawn as ordinary text &mdash; so a
+       tooltip accidentally written where the marker goes costs a message rather than a variable.</p>
+
+    <p><strong>A marker may also sit on the comment line directly above the declaration</strong>, which is
+       where the variables with the most to explain tend to keep their commentary:</p>
+
+<pre><code>// [animation] which clip to play walking left
+std::string walkLeft;</code></pre>
+
+    <p>One comment line, immediately above, starting with the bracket. A blank line or a banner line in
+       between breaks it, and a marker on the declaration's own line wins.</p>
+
+    <h2>What can be exposed</h2>
+
+    <p><code>float</code>, <code>int</code>, <code>bool</code>, <code>std::string</code>,
+       <a href="#Vec2"><code>eng::Vec2</code></a>, <a href="#Color"><code>eng::Color</code></a>,
+       <a href="#EntityRef"><code>eng::EntityRef</code></a>, <a href="#PrefabRef"><code>eng::PrefabRef</code></a>,
+       <a href="#AnimationRef"><code>eng::AnimationRef</code></a>, <a href="#ImageRef"><code>eng::ImageRef</code></a>
+       &mdash; <strong>or a fixed-size array of any of them</strong>, which draws as one row per element.</p>
+
+    <p>Anything else is left out, and the Console says which variable and why. That message is the
+       feature: a field you expected to see and cannot is explained rather than merely missing.</p>
+
+    <h2>A reference is a type, not a marked string</h2>
+
+    <p>The marked-string spellings are the older form and still work. The typed form is better: it
+       cannot be misspelled, and it survives the asset being renamed.</p>
+
+<pre><code>eng::AnimationRef walkLeft;               // one slot
+eng::AnimationRef walkDirections[4];      // four, one per direction
+eng::ImageRef     portrait;               // a picture
+eng::PrefabRef     bullet;                // a thing to spawn
+eng::EntityRef     target;                // another entity in this scene</code></pre>
+
+    <p>Each draws the same slot a Sprite's texture does: the asset's name, a drop target and a picker.
+       That is the difference between a reference you can drag onto and a path you have to type
+       correctly from memory.</p>
+
+    <h2>When you do want <code>OnExpose</code></h2>
+
+    <p>The automatic route reads your <code>.cpp</code> source, so it handles declarations and not
+       computation. Write <a href="#ScriptBehaviour"><code>OnExpose(eng::ScriptFields&amp;)</code></a> when
+       the set of controls depends on something &mdash; a different label, a conditional row, a value
+       derived rather than stored. See <a href="#ScriptFields"><code>ScriptFields</code></a>.</p>
+</template>
+
+<template id="guide-gaps">
+    <p>Said plainly, so that nobody spends an afternoon looking. Everything here is a thing Unity has
+       and this engine does not.</p>
+
+    <table>
+        <thead><tr><th>Unity</th><th>Status, and what to do instead</th></tr></thead>
+        <tbody>
+        <tr><td><code>AudioSource</code>, <code>AudioClip</code>, <code>PlayOneShot</code></td><td><strong>No audio at all.</strong> Not a gap in the scripting API &mdash; the subsystem does not exist.</td></tr>
+        <tr><td><code>Animator</code>, animation clips</td><td>No animator. A frame index advanced with a float and a modulo is the current answer; see <a href="#SpriteAnimationComponent"><code>SpriteAnimationComponent</code></a>.</td></tr>
+        <tr><td><code>ParticleSystem</code></td><td>None. Spawning entities works at the scale this engine targets.</td></tr>
+        <tr><td><code>StartCoroutine</code>, <code>WaitForSeconds</code></td><td>None. An <code>enum Phase</code> plus a float is the house pattern; <code>assets/scripts/GameRules.cpp</code> is the worked example.</td></tr>
+        <tr><td><code>Invoke</code>, <code>InvokeRepeating</code></td><td>None. Count down a float in <code>OnFixedUpdate</code>.</td></tr>
+        <tr><td><code>OnEnable</code>, <code>OnDisable</code></td><td>None. Writing one is a compile error that says so. Compare <code>IsActive()</code> against last step.</td></tr>
+        <tr><td><code>enabled</code>, <code>isActiveAndEnabled</code></td><td><strong>No per-component switch.</strong> <code>SetActive</code> / <code>IsActive</code> are the <em>entity's</em>, and <code>IsActive()</code> already means Unity's <code>activeInHierarchy</code> &mdash; a different thing, so it is left out rather than spelled misleadingly.</td></tr>
+        <tr><td><code>SendMessage</code>, <code>BroadcastMessage</code></td><td>A different model: <a href="#MessageBus"><code>MessageBus</code></a> is queued and typed rather than a reflective call by method name.</td></tr>
+        <tr><td><code>LateUpdate</code></td><td>None. Stage 700 already runs after all gameplay and movement.</td></tr>
+        <tr><td><code>Input.GetKey(KeyCode)</code></td><td>Deliberately absent. Use named actions on <a href="#InputMap"><code>InputMap</code></a>.</td></tr>
+        <tr><td>Gamepad, analog axes</td><td>Not wired up. <code>GetAxis</code> is currently Unity's <code>GetAxisRaw</code>.</td></tr>
+        <tr><td><code>DontDestroyOnLoad</code>, additive scenes</td><td>There is exactly one <a href="#Scene"><code>Scene</code></a> in the process. Carry state in a file-static, or save it.</td></tr>
+        <tr><td>Object pooling</td><td>None. Spawn and destroy.</td></tr>
+        <tr><td>Physics joints</td><td>None. Integrate one constraint by hand against <code>AddForce</code>.</td></tr>
+        <tr><td><code>PlayerPrefs</code></td><td>None.</td></tr>
+        <tr><td>Nested prefabs, prefab variants</td><td>Not supported. Making a prefab out of something already in one is refused rather than flattened.</td></tr>
+        </tbody>
+    </table>
+
+    <p>The absences are in the reference too, wherever a page would otherwise look like it covered one of
+       them.</p>
+</template>
+
+<template id="guide-reading">
+    <p>Every page here is generated from the header the type is declared in. Four things are worth
+       knowing about what that means.</p>
+
+    <h2>The signatures are the real ones</h2>
+
+    <p>Each <strong>Declaration</strong> block is the declaration as it is written in the header, copied
+       rather than rewritten, down to the <code>const</code> and the default arguments. Every page and
+       every member links back to the file and the line, because the header carries a longer commentary
+       than a reference page should &mdash; usually including <em>why</em> something works the way it
+       does, and what the alternative would have broken.</p>
+
+    <h2>Not everything here is for a script</h2>
+
+    <p><code>&lt;engine/Engine.h&gt;</code> is one include that makes the whole engine visible, which
+       means a script can see a good deal it has no business touching. Every page says which it is:</p>
+
+    <table>
+        <thead><tr><th></th><th>Means</th></tr></thead>
+        <tbody>
+        <tr><td><span class="chip script"><span class="dot script"></span>Scripting</span></td><td>A game script calls this directly. This is the part of the reference you live in.</td></tr>
+        <tr><td><span class="chip system"><span class="dot system"></span>Engine system</span></td><td>Runs itself, once per step or once per frame. Read the page to understand the frame order, or to find the component it drives.</td></tr>
+        <tr><td><span class="chip host"><span class="dot host"></span>Host only</span></td><td>The program that creates the window and drives the frame. A script never touches it.</td></tr>
+        </tbody>
+    </table>
+
+    <p>The dot in the sidebar repeats the mark, so a module's shape is visible before you open anything.</p>
+
+    <h2>Properties are a pair</h2>
+
+    <p>Where the engine has a getter and a setter for one thing &mdash; <code>Mass()</code> and
+       <code>SetMass()</code> &mdash; the reference lists them as one <strong>property</strong> and shows
+       both declarations. It is one idea and reads better as one row.</p>
+
+    <h2>Searching it</h2>
+
+    <p>Press <kbd>/</kbd> to jump to the search box. It matches type names, member names and guide titles.
+       <code>Entity.Find</code> searches the members of one type, which is the quick way through a class
+       with sixty of them.</p>
+</template>
+
+<script src="api-data.js"></script>
+<script src="api.js"></script>
+</body>
+</html>

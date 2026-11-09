@@ -183,6 +183,40 @@ public:
         // written once and committed.
         std::vector<std::string> includeDirs;
 
+        // THE COMPILER'S OWN HEADERS: <algorithm>, <string>, <windows.h>.
+        //
+        // MSVC DOES NOT KNOW WHERE THEY ARE. It reads the INCLUDE environment
+        // variable to find them - vcvars64.bat is what sets it, and
+        // AdoptMsvcEnvironment in the .cpp is what pulls it into this
+        // process. So every build script the editor writes inherits the whole
+        // toolchain without naming one directory of it, and for as long as
+        // the only consumer was a build script this list did not need to
+        // exist.
+        //
+        // AN IDE CONFIG FILE INHERITS NOTHING. Visual Studio reading a
+        // CppProperties.json has the include path that file gives it and no
+        // more, so a configuration naming only the engine resolves
+        // <engine/Engine.h> and then dies on the <algorithm> inside it.
+        // Measured with INCLUDE cleared, which is what IntelliSense has:
+        //
+        //     engine headers only   fatal error C1083: Cannot open include
+        //                           file: 'algorithm'
+        //     plus these            0 errors
+        //
+        // C1083 is FATAL, so it does not cost you <algorithm> - it ends the
+        // translation unit. Every std:: name, every eng:: name and every
+        // include in the file reads as an error at once, which is a symptom
+        // that looks like a broken install and is really a missing line in a
+        // generated file.
+        //
+        // Empty where there is nothing to read: on POSIX, where a compiler
+        // does know where its own headers live, and on Windows when the MSVC
+        // environment cannot be adopted at all - no Visual Studio, or
+        // vcvars64.bat ran and produced one whose headers are not there.
+        // Settings() adopts it rather than waiting for a build, so "not yet"
+        // is no longer one of the cases.
+        std::vector<std::string> toolchainIncludeDirs;
+
         // The header every generated translation unit includes BEFORE it
         // includes the script: "engine/Engine.h".
         //
@@ -208,8 +242,18 @@ public:
     };
 
     // The settings above, as they stand for this editor on this machine.
-    // Cheap, but it asks the filesystem whether a shipped include directory
-    // exists, so it is not a constant and must not be cached across installs.
+    //
+    // NOT CHEAP THE FIRST TIME IN A PROCESS, on Windows. If nothing has
+    // adopted the compiler's environment yet this adopts it, which runs
+    // vcvars64.bat in a child process - measured at 2.97 seconds - and
+    // creates the project's .build to cache the answer in. Every later call
+    // is a handful of filesystem checks. A build pays the same cost before it
+    // asks, so the only caller that can be the one waiting is one that
+    // describes the compile without building. DO NOT CALL IT FROM A PER-FRAME
+    // OR UI-DRAW PATH.
+    //
+    // Still not a constant and still must not be cached across installs: it
+    // asks the filesystem whether a shipped include directory exists.
     static CompileSettings Settings();
 
     // Where Visual Studio is installed, or empty - and always empty off

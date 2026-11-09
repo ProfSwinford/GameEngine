@@ -317,10 +317,38 @@ RaycastHit2D Physics2D::CircleCast(Vec2 origin, float radius, Vec2 direction,
             if (best.collider == nullptr || hit.distance < best.distance) {
                 best.collider = collider;
                 best.entity   = collider->OwnerId();
-                best.point    = hit.point;
                 best.normal   = hit.normal;
                 best.distance = hit.distance;
                 best.fraction = hit.fraction;
+
+                // ======================================================
+                //  BACK ONTO THE COLLIDER'S OWN SURFACE.
+                //
+                //  The ray was fired at the shape GROWN by the radius, so
+                //  hit.point is on that grown boundary - which is one radius
+                //  out in the world, where nothing is. It used to be copied
+                //  through unchanged, so `point` was where the circle's
+                //  CENTRE stopped rather than where it touched anything.
+                //
+                //  Unity reports the surface point as `point` and the centre
+                //  separately as `centroid`; RaycastHit2D here has no
+                //  centroid, so the surface point is the only thing `point`
+                //  can mean - and it is what it means for every other query,
+                //  including the thin Raycast beside this one. `distance` is
+                //  unchanged and still measures how far the CENTRE travelled,
+                //  which is what a caller moves the circle by.
+                // ======================================================
+                //  STARTED ALREADY OVERLAPPING is the one case this cannot
+                //  do. The ray code then reports distance 0 and a normal of
+                //  -direction, which is not a surface normal at all - stepping
+                //  back along it would put the point a radius AHEAD of the
+                //  origin, in mid-air. The collider is asked instead, which is
+                //  what BoxCast does for the same situation.
+                if (hit.distance > 0.0f) {
+                    best.point = hit.point - hit.normal * std::max(radius, 0.0f);
+                } else {
+                    best.point = collider->ClosestPoint(origin);
+                }
             }
         }
     }
@@ -358,12 +386,22 @@ RaycastHit2D Physics2D::BoxCast(Vec2 origin, Vec2 size, float angle, Vec2 direct
 
     float              travelled = 0.0f;
     ColliderComponent* found     = nullptr;
-    while (travelled <= distance) {
+    while (travelled < distance) {
         found = overlapsAt(travelled);
         if (found != nullptr) {
             break;
         }
         travelled += step;
+    }
+
+    // THE END OF THE SWEEP, ALWAYS. The loop advances in whole steps, so
+    // unless the distance happens to be an exact multiple of one it stops
+    // short of the destination - and the destination is the one place a
+    // caller asking "can I move there?" most needs tested. A move that
+    // finished just inside a wall reported clear.
+    if (found == nullptr) {
+        travelled = distance;
+        found     = overlapsAt(travelled);
     }
     if (found == nullptr) {
         return RaycastHit2D{};

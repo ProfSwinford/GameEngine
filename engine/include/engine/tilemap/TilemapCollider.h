@@ -67,6 +67,12 @@ public:
     int   WorldShapeCount() const override;
     float Area() const override;
 
+    // The box around every merged solid run, in the map's own space. A
+    // tilemap is scenery and almost never has a rigidbody, but "almost" is
+    // not "never" and a collider that cannot answer this would make one
+    // impossible to turn.
+    Vec2 LocalSize() const override;
+
     // ---- what the merge produced, for the editor and the tests ------------
 
     // Solid cells before merging, and boxes after. The second divided into the

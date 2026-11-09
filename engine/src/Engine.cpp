@@ -449,6 +449,18 @@ void Engine::RequestSceneByIndex(std::size_t index) {
     RequestScene(BuildScenes::PathAt(index));
 }
 
+void Engine::ForgetTheOldScene() {
+    DeferredOps::Clear();
+    MessageBus::ClearQueue();
+
+    // AND THE DEBUG FACADE'S THROTTLES. Debug::LogOnce remembers which
+    // messages it has already printed. One still remembered from the last
+    // play session is one the next session never sees, which looks exactly
+    // like a script that has stopped running - so the memory goes with the
+    // scene it was built up against. See debug/Debug.h.
+    Debug::ResetThrottles();
+}
+
 void Engine::ApplyPendingSceneRequest() {
     if (!m_hasSceneRequest) {
         return;
@@ -476,6 +488,12 @@ void Engine::ApplyPendingSceneRequest() {
         ENGINE_LOG_ERROR(Channels::kScene, "could not open the requested scene '{}': {}",
                          path, error);
     }
+
+    // AND AGAIN AFTERWARDS, because the unload itself queues things; see
+    // ForgetTheOldScene, which LoadScene also calls. The clear above stays:
+    // it is what stops a destroy QUEUED BY THE OLD SCENE from reaching the
+    // new one, which is a different thing.
+    ForgetTheOldScene();
 }
 
 bool Engine::LoadScene(std::string_view virtualPath, std::string& outError) {
@@ -486,6 +504,11 @@ bool Engine::LoadScene(std::string_view virtualPath, std::string& outError) {
     if (!m_scene->Load(virtualPath, outError)) {
         return false;
     }
+
+    // The unload that just happened queued the old scene's exit events; see
+    // ForgetTheOldScene.
+    ForgetTheOldScene();
+
     m_camera.SetPosition(m_scene->InitialCameraPosition());
     m_camera.SetZoom(m_scene->InitialCameraZoom());
     return true;
@@ -574,6 +597,14 @@ void Engine::ExitPlayMode() {
         } else {
             ENGINE_LOG_INFO(Channels::kEditor, "play mode stopped; scene restored");
         }
+
+        // AND AGAIN, AFTER THE RESTORE. Putting the snapshot back unloads the
+        // played scene, and that unload queues an exit event for every pair
+        // still touching when Stop was pressed - after the clear above, so
+        // they used to survive into the restored scene and arrive on the
+        // first frame of the NEXT play session. See ForgetTheOldScene.
+        ForgetTheOldScene();
+
         m_camera.SetPosition(m_scene->InitialCameraPosition());
         m_camera.SetZoom(m_scene->InitialCameraZoom());
     }
@@ -606,6 +637,18 @@ bool Engine::BeginFrame() {
     }
 
     m_camera.SetViewportSize(Renderer::OutputSize());
+
+    // "THIS FRAME" IN THE NAME, so the counter has to start again here.
+    //
+    // Nothing used to call this, so Physics2D::QueriesThisFrame reported every
+    // query since the process started - a number that only ever went up, and
+    // read as a frame cost in the editor's readout.
+    //
+    // HERE RATHER THAN IN Simulate, because queries are not confined to the
+    // simulation: a script's OnUpdate may fire one, and so may editor code
+    // drawing a panel. The start of a frame is the one point before all of
+    // them.
+    Physics2D::ResetQueryCounter();
 
     m_stepsThisFrame = m_clock.BeginFrame(delta);
     return !m_quitRequested;

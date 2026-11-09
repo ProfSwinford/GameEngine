@@ -22,6 +22,8 @@ set(ENGINE_SOURCES
     src/core/LogBuffer.cpp            # the copy the Console window shows
     src/core/Subsystem.cpp            # ordered start-up and shutdown
 
+    src/debug/Debug.cpp               # Unity's Debug: friendly logging and shapes
+
     src/fs/AssetArchive.cpp           # packing a folder of assets into one .bin
     src/fs/FileSystem.cpp             # finding and reading files
     src/fs/UserPaths.cpp              # where this user's own settings live
@@ -94,6 +96,7 @@ set(ENGINE_HEADERS
     include/engine/core/LogBuffer.h
     include/engine/core/Subsystem.h
     include/engine/core/Time.h
+    include/engine/debug/Debug.h
     include/engine/fs/FileSystem.h
     include/engine/fs/UserPaths.h
     include/engine/input/InputMap.h

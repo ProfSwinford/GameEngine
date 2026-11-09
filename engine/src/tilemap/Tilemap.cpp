@@ -426,6 +426,11 @@ std::size_t TilemapComponent::CompactPalette() {
         return 0;
     }
 
+    // The size in force BEFORE anything is dropped, for the comparison after
+    // the palette has been replaced. Worth nothing if the file stated one.
+    const bool derived = !m_cellSizeExplicit;
+    const Vec2 before  = derived ? CellSize() : Vec2{0.0f, 0.0f};
+
     for (auto& [chunkCoord, chunk] : m_chunks) {
         for (TileId& cell : chunk.cells) {
             cell = (cell < remap.size()) ? remap[cell] : kEmptyTile;
@@ -434,6 +439,34 @@ std::size_t TilemapComponent::CompactPalette() {
 
     m_palette = std::move(kept);
     RefreshPalette();
+
+    // ======================================================================
+    //  PIN THE CELL SIZE, BUT ONLY IF DROPPING THOSE ENTRIES MOVED IT.
+    //
+    //  A map with no "cellSize" in its file takes the size from the FIRST
+    //  palette entry that loads - and dropping an unused entry can change
+    //  which one that is. A palette of [rock (32px), grass (16px)] whose rock
+    //  cells have all been erased used to resize the entire map when this
+    //  ran: every cell halved on screen and the collider rebuilt every box at
+    //  half size, so the solid world moved out from under whatever was
+    //  standing on it. Nothing had been painted or erased, and this function
+    //  promises only to drop entries "no cell uses any more".
+    //
+    //  ONLY IF IT MOVED, and only if there is still a palette to derive from.
+    //  Pinning unconditionally was its own bug: compacting a map down to an
+    //  EMPTY palette wrote down the fallback size, or the dropped tile's own,
+    //  and the next tile painted was then drawn at that size for ever. There
+    //  is nothing to protect when nothing is left, and nothing to protect
+    //  when the entry the size came from survived.
+    // ======================================================================
+    if (derived && !m_palette.empty()) {
+        const Vec2 after = CellSize();
+        if (after.x != before.x || after.y != before.y) {
+            m_cellSize         = before;
+            m_cellSizeExplicit = true;
+        }
+    }
+
     return removed;
 }
 

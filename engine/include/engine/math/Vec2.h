@@ -28,6 +28,8 @@
 
 #include <algorithm>   // std::clamp, used by Clamp01 and InverseLerp below
 #include <cmath>
+#include <format>
+#include <string>
 
 namespace eng {
 
@@ -312,3 +314,49 @@ inline float SignedAngle(const Vec2& from, const Vec2& to) {
 }
 
 } // namespace eng
+
+// ---------------------------------------------------------------------------
+//  So that "{}" prints a Vec2.
+//
+//      Debug::Log("standing at {}", transform->WorldPosition());
+//      ENGINE_LOG_WARN(Channels::kPhysics, "normal was {}", hit.normal);
+//
+//  prints `standing at (120, 48.5)`. Without this, the two lines above are a
+//  wall of template errors ending in "the associated constraints are not
+//  satisfied", which says nothing about the actual problem - that a position
+//  is the single most commonly printed value in a 2D engine and there was no
+//  way to print one.
+//
+//  THE FORMAT SPECIFICATION IS HANDED TO THE NUMBERS, NOT TO THE FINISHED
+//  TEXT. So "{:.2f}" means two decimals on each of x and y - `(120.00,
+//  48.50)` - rather than trying to apply `.2f` to a string and failing. That
+//  is why this is a formatter written out rather than one inheriting from
+//  std::formatter<std::string>, which is how NameHandle and TagHandle do it
+//  in scene/ScriptComponent.h: for a name, padding the whole thing is what
+//  you want; for a pair of numbers it is not.
+//
+//  Verified at /std:c++20, which is what the editor compiles a project's
+//  scripts with. The engine itself is C++23, and that gap is exactly where a
+//  formatter breaks if it is written against the newer library.
+// ---------------------------------------------------------------------------
+template <>
+struct std::formatter<eng::Vec2> {
+    std::formatter<float> number;
+
+    constexpr auto parse(std::format_parse_context& context) {
+        return number.parse(context);
+    }
+
+    auto format(const eng::Vec2& value, std::format_context& context) const {
+        auto out = context.out();
+        *out++   = '(';
+        context.advance_to(out);
+        out    = number.format(value.x, context);
+        *out++ = ',';
+        *out++ = ' ';
+        context.advance_to(out);
+        out    = number.format(value.y, context);
+        *out++ = ')';
+        return out;
+    }
+};

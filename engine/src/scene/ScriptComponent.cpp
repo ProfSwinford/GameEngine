@@ -854,7 +854,8 @@ void ScriptComponent::FrameTick() {
     }
 }
 
-void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId other) {
+void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId other,
+                                        int pairToken) {
     // A contact arriving before the first tick would mean OnStart has not run
     // yet, and delivering OnCollisionEnter to a behaviour that has not started
     // is exactly the kind of surprise that makes scripting feel unreliable. It
@@ -903,9 +904,39 @@ void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId
     //  FindContact is SOLID-ONLY, so a non-null answer means exactly "there
     //  is a solid contact with this entity this step" - which is to say the
     //  collision hooks are about to run.
+    //  AND NOT WHEN THIS ENTITY HAS A SOLID COLLIDER AT ALL.
+    //
+    //  "No solid contact THIS STEP" is not proof that the collision hooks can
+    //  never run; it is only proof that nothing solid is touching right now.
+    //  A gate carrying a wide trigger sensor AND a small solid body is the
+    //  ordinary case: on the steps where the player is inside the sensor and
+    //  not yet against the gate, the guard saw a trigger event, no solid
+    //  contact and collision-only hooks, and printed an error saying none of
+    //  them would ever run - which was flatly false, and the comment above
+    //  says a false error in the Console is worse than no error at all.
+    //
+    //  Asking whether a SOLID COLLIDER EXISTS is the real question, and it is
+    //  the one the message is about: a script with OnCollision hooks on an
+    //  entity that has one is correctly written, whatever is overlapping it
+    //  at this instant.
+    const auto hasSolidCollider = [this]() {
+        const Entity* owner = Owner();
+        if (owner == nullptr) {
+            return false;
+        }
+        for (std::size_t i = 0; i < owner->ComponentCount(); ++i) {
+            const auto* collider =
+                dynamic_cast<const ColliderComponent*>(owner->ComponentAt(i));
+            if (collider != nullptr && !collider->IsTrigger()) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     if (isTrigger && !m_hooks.AnyTrigger() && m_hooks.AnyCollision() &&
         CollisionSystem::FindContact(OwnerId(), other) == nullptr &&
-        !m_warnedAboutTriggerMismatch) {
+        !hasSolidCollider() && !m_warnedAboutTriggerMismatch) {
         m_warnedAboutTriggerMismatch = true;
 
         const Entity* owner = Owner();
@@ -969,9 +1000,27 @@ void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId
         // nothing at all for a compound body carrying both kinds, which is
         // how this was caught: the trigger hooks were handed an empty contact
         // because FindContact answers only for solid pairs.
-        const Collision2D* found = isTrigger
-                                       ? CollisionSystem::FindTriggerContact(OwnerId(), other)
-                                       : CollisionSystem::FindContact(OwnerId(), other);
+        // ==================================================================
+        //  BY THE TOKEN THE EVENT CARRIES, which names the COLLIDER PAIR.
+        //
+        //  It used to be looked up by ENTITY pair, and that index holds one
+        //  contact per entity pair - the deepest. So a compound body's two or
+        //  three events against one wall were all handed the SAME contact:
+        //  `hit.thisCollider` named the same collider every time, and the
+        //  shallower pairs' contacts could not be reached from any API, while
+        //  Collider.h promises the opposite in as many words.
+        //
+        //  The entity lookups are still the right answer for a caller that
+        //  only has two entity ids - a script asking "am I touching that?" -
+        //  and they are still what FindContact is for. They are the fallback
+        //  here for a message that carries no token, which is anything not
+        //  sent by the collision system.
+        // ==================================================================
+        const Collision2D* found = CollisionSystem::ContactForEvent(pairToken);
+        if (found == nullptr) {
+            found = isTrigger ? CollisionSystem::FindTriggerContact(OwnerId(), other)
+                              : CollisionSystem::FindContact(OwnerId(), other);
+        }
         if (found != nullptr) {
             info = *found;
 
@@ -1313,8 +1362,8 @@ void ScriptSystem::SubscribeToCollisions() {
             if (std::string_view(component->TypeName()) != ScriptComponent::kTypeName) {
                 continue;
             }
-            static_cast<ScriptComponent*>(component)->DispatchCollision(message.type,
-                                                                        message.other);
+            static_cast<ScriptComponent*>(component)->DispatchCollision(
+                message.type, message.other, message.i0);
         }
     };
 
