@@ -28,7 +28,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class PhysicsProbe final : public eng::ScriptBehaviour {
 public:
@@ -215,6 +214,5 @@ private:
     }
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsProbe)

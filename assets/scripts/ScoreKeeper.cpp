@@ -40,7 +40,6 @@
 
 #include <string>
 
-namespace {
 
 class ScoreKeeper final : public eng::ScriptBehaviour {
 public:
@@ -98,6 +97,5 @@ private:
     bool                m_warnedAboutLabel = false;
 };
 
-} // namespace
 
 ENGINE_REGISTER_SCRIPT(ScoreKeeper)

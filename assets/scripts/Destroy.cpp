@@ -121,7 +121,6 @@
 
 using namespace eng;
 
-namespace {
 
 class Destroy final : public ScriptBehaviour {
 public:
@@ -161,7 +160,6 @@ private:
     float m_secondsAlive = 0.0f;
 };
 
-} // namespace
 
 // Registers the name "Destroy" so that a scene file and the editor can find it.
 // WITHOUT THIS LINE the file compiles and the script can never be attached.

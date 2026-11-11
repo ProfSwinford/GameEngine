@@ -108,6 +108,7 @@
 #include <engine/math/Vec2.h>
 #include <engine/render/Renderer.h>
 #include <engine/scene/AnimationRef.h>
+#include <engine/scene/ComponentRef.h>
 #include <engine/scene/EntityRef.h>
 #include <engine/scene/ImageRef.h>
 #include <engine/scene/PrefabRef.h>
@@ -414,6 +415,19 @@ template <> struct Traits<PrefabRef> {
     static constexpr bool            known = true;
     static constexpr ScriptFieldType type  = ScriptFieldType::Prefab;
 };
+// ONE SPECIALIZATION FOR EVERY COMPONENT TYPE, which is why it is partial.
+//
+// A ComponentRef IS an EntityRef - it derives from one, adds no members and
+// has no vtable - so it is stored, serialized, retargeted on a rename and
+// drawn by everything that already handles ScriptFieldType::Entity, and
+// AsEntityRef's unchecked cast stays valid because the base sits at offset 0.
+// The component type it is constrained to does not travel in the enum, which
+// holds one number per KIND; it travels in ScriptField::requiredType, which
+// the generated exposer fills in from the template argument.
+template <class T> struct Traits<ComponentRef<T>> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::Entity;
+};
 // THE WHOLE OF WHAT MAKES AnimationRef A FIRST-CLASS FIELD. Two independent
 // consumers need it and neither says so out loud if it is missing: Var's
 // `if constexpr (Traits<Clean>::known)` below, and the generated exposer's
@@ -467,7 +481,10 @@ public:
         static_assert(fields::Traits<Clean>::known,
                       "a script variable must be one of: float, int, bool, "
                       "std::string, eng::Vec2, eng::Color, eng::EntityRef, "
-                      "eng::PrefabRef, eng::AnimationRef, eng::ImageRef - or "
+                      "eng::PrefabRef, eng::AnimationRef, eng::ImageRef, or a "
+                      "reference to a component - eng::ComponentRef<T>, which is "
+                      "what Transform, SpriteRenderer, Rigidbody2D and Collider2D "
+                      "are - or "
                       "a FIXED-SIZE ARRAY of one of those, "
                       "which the exposer turns into one row per element. Those are "
                       "the ones the Inspector can draw and the scene file can "

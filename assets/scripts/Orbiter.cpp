@@ -34,7 +34,6 @@
 #include <engine/Engine.h>
 #include <cmath>
 
-namespace {
 
 class Orbiter final : public eng::ScriptBehaviour {
 public:
@@ -159,7 +158,6 @@ private:
     float     m_angle = 0.0f;
 };
 
-} // namespace
 
 // Registers the name "Orbiter". Without this line the file compiles perfectly
 // and the script can never be found.

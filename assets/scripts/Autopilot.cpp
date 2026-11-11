@@ -35,13 +35,20 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 // The same data-driven test GameRules uses: a collider on the "Pickup" layer.
 // Deliberately duplicated rather than shared, because scripts are compiled as
 // separate files with no header between them - and four lines repeated is a
 // smaller problem than a header that has to be kept in step.
-bool IsPickup(eng::Entity& entity) {
+//
+// `static` BECAUSE THERE IS NO LONGER A NAMESPACE HIDING IT. Scripts used to
+// sit in an anonymous namespace, which made this internal for free; now that
+// they share the global namespace so they can refer to each other, the
+// keyword is what keeps two copies of one helper from being two definitions
+// of one symbol - and the export links every script's object into a single
+// library. The duplication above is still the right call; it just has to say
+// so out loud.
+static bool IsPickup(eng::Entity& entity) {
     auto* collider = eng::FindCollider(entity);
     return collider != nullptr && collider->Layer() == "Pickup";
 }
@@ -111,7 +118,6 @@ private:
     static void Stop() { eng::InputMap::ClearInjectedActions(); }
 };
 
-} // namespace
 
 // Registers the name "Autopilot" so that a scene file and the editor can find
 // it. WITHOUT THIS LINE the file compiles and the script can never be attached.

@@ -125,6 +125,7 @@ set(ENGINE_HEADERS
     include/engine/resource/ResourceManager.h
     include/engine/scene/AnimationRef.h
     include/engine/scene/Component.h
+    include/engine/scene/ComponentRef.h           # Unity's object fields
     include/engine/scene/DeferredOps.h
     include/engine/scene/Entity.h
     include/engine/scene/EntityId.h

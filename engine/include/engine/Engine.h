@@ -157,8 +157,49 @@ typedef eng::Vec2 Vector2;
 // `GameObject self = Owner();`
 typedef eng::Entity* GameObject;
 
-//Internal Component Definitions
-typedef eng::Rigidbody2DComponent* Rigidbody2D;
+// ============================================================================
+//  UNITY'S COMPONENT NAMES, AND THEY ARE REFERENCES
+//
+//  In C# `public SpriteRenderer flash;` is a reference, drawn by the Inspector
+//  as a slot you drag onto - so that is what these are here. Each one is an
+//  eng::ComponentRef, which travels as the target entity's NAME and resolves
+//  on every access; scene/ComponentRef.h has the full argument for why it
+//  cannot be a pointer.
+//
+//  THESE WERE POINTER TYPEDEFS UNTIL NOW, and the four of them were used that
+//  way for a same-entity cache: `Rigidbody2D m_body = nullptr;` followed by
+//  `m_body = Find<...>()` in OnStart. That spelling no longer compiles. The
+//  cache is still right - and still safe, because it dies with the behaviour
+//  object that holds it - so write the component type and a star for it:
+//
+//      eng::Rigidbody2DComponent* m_body = nullptr;   // in a private section
+//
+//  assets/scripts/TilemapWalker.cpp is the worked example, and was the one
+//  file in this project that had to change.
+// ============================================================================
+
+typedef eng::ComponentRef<eng::Rigidbody2DComponent> Rigidbody2D;
+
+// ============================================================================
+//  AND WHY THIS ONE IS NOT CALLED `Transform`
+//
+//  Because it cannot be. ScriptBehaviour declares `Transform2D* Transform()`,
+//  and inside a script class that inherited MEMBER FUNCTION hides a
+//  namespace-scope TYPE of the same spelling - so `Transform anchor;` in the
+//  one place a field can be declared does not name this alias at all. MSVC
+//  reports it as "'anchor': unknown override specifier", which points
+//  nowhere near the cause.
+//
+//  That is the same hiding the long note above this block describes, and the
+//  reason `//using Transform = eng::Transform2D*;` is commented out rather
+//  than merely unused. `::Transform` would resolve, but the note explains why
+//  sending somebody there is worse than giving the alias a different name.
+//
+//  TransformRef it is, which is also the house spelling for a reference -
+//  EntityRef, PrefabRef, ImageRef, AnimationRef.
+// ============================================================================
+
+typedef eng::ComponentRef<eng::TransformComponent> TransformRef;
 
 // THERE WAS A MISSPELLED `Ridigbody2D` BESIDE THIS ONE, and taking it out left
 // assets/scripts/TilemapWalker.cpp unable to compile - it was the one file
@@ -169,10 +210,31 @@ typedef eng::Rigidbody2DComponent* Rigidbody2D;
 // fail the engine build or the test suite. Nothing tells you until somebody
 // opens the editor. Grep assets/scripts first.
 
-typedef eng::ColliderComponent*    Collider2D;
-typedef eng::SpriteComponent*      SpriteRenderer;
+typedef eng::ComponentRef<eng::SpriteComponent> SpriteRenderer;
 
-//using Transform = eng::Transform2D*;
+// ============================================================================
+//  COLLIDER STAYS A POINTER, and it is the engine that decides that, not a
+//  preference.
+//
+//  Entity::Find<T> is `static_cast<T*>(FindComponent(T::kTypeName))` - a
+//  lookup BY NAME, with no derived-to-base step. ColliderComponent is the
+//  abstract base of BoxCollider/CircleCollider/PolygonCollider/EdgeCollider
+//  and has no kTypeName of its own, so there is no name to look up and
+//  ComponentRef<eng::ColliderComponent> cannot resolve - it does not even
+//  compile. eng::FindCollider(Entity&) exists precisely because this question
+//  needs a hand-written answer; see physics/Collider.h.
+//
+//  So a reference to "whatever collider is on that entity" is not expressible
+//  by this mechanism. Name the concrete one you mean:
+//
+//      eng::ComponentRef<eng::BoxColliderComponent> area;
+//
+//  This typedef keeps its old meaning - a plain pointer, for a collider on
+//  THIS entity - and every use of the word in this project is in a comment
+//  about Unity's OnTriggerEnter signature, not a declaration.
+// ============================================================================
+
+typedef eng::ColliderComponent* Collider2D;
 
 typedef eng::InputMap Input;
 //using GameObject = eng::Entity;

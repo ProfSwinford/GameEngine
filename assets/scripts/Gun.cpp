@@ -39,7 +39,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class Gun final : public ScriptBehaviour {
 public:
@@ -94,6 +93,5 @@ private:
     float m_untilNext = 0.0f;
 };
 
-} // namespace
 
 ENGINE_REGISTER_SCRIPT(Gun)

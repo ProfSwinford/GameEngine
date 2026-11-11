@@ -88,6 +88,7 @@
 // ============================================================================
 
 #include <cstddef>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -380,6 +381,29 @@ public:
     // reports the count, and because it is the honest answer to "which files
     // does the editor think are scripts?".
     static Sources GatherSources();
+
+    // ======================================================================
+    //  EVERY SCRIPT CLASS THE PROJECT DEFINES, and the file that defines it.
+    //
+    //  READ FROM THE FILES, and NOT from eng::ScriptRegistry - which is the
+    //  whole reason this exists rather than the registry being asked. The
+    //  registry holds what is compiled AND LOADED, and a script that has just
+    //  been created, renamed or dropped in is by definition neither. The
+    //  Assets panel has to be able to refuse a name BEFORE it writes the file,
+    //  so the question has to be answerable about a file no compiler has seen.
+    //
+    //  The key is the class name as ScanScriptSource reads it. Where two files
+    //  define one class the FIRST IN SORTED ORDER wins, which is deliberately
+    //  the same answer ScriptRegistry::Register and
+    //  AssetDragDrop::ScriptPathFromName already give: three places disagreeing
+    //  about which of two duplicates is the real one would be worse than the
+    //  duplicate itself.
+    //
+    //  NOT FOR A PER-FRAME PATH. It walks all of assets/ and reads every
+    //  source. Call it when a dialog OPENS and keep the answer, which is what
+    //  the Assets panel does.
+    // ======================================================================
+    static std::map<std::string, std::string> GatherScriptClasses();
 
     // The three phases of a build. See the long note above BeginBuild in the
     // .cpp for which of them may run off the main thread - only Compile may.

@@ -54,6 +54,7 @@
 
 #include <engine/Engine.h>
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -458,6 +459,28 @@ private:
     // somebody's script with a blank template would be unforgivable.
     bool CreateScript(const std::string& name, std::string& outError);
 
+    // ======================================================================
+    //  IS THIS SCRIPT NAME ALREADY TAKEN? The file that has it, or nullptr.
+    //
+    //  TWO FILES CANNOT BOTH DEFINE ONE CLASS. They used to be able to: every
+    //  script sat in an anonymous namespace, which made the class internal to
+    //  its own file and two `class Player` definitions merely confusing.
+    //  Scripts share the global namespace now, so that they can refer to one
+    //  another, and a duplicate is a real one-definition-rule violation - in
+    //  the editor only the first registers and the other silently never runs,
+    //  and in an export every script is linked into ONE library, where the
+    //  linker folds the duplicate away without a word and can pair one
+    //  class's constructor with the other's layout.
+    //
+    //  So it is refused at the two moments a name is chosen rather than
+    //  reported afterwards.
+    //
+    //  `ignorePath` is the file being acted on, so that renaming a file to the
+    //  name it already has is not a clash with itself.
+    // ======================================================================
+    const std::string* ScriptNameTaken(const std::string& name,
+                                       const std::string& ignorePath) const;
+
     // Writes <the folder being browsed>/<name>.otile naming `art`. Refuses to
     // overwrite, like CreateScript, and for the same reason.
     //
@@ -525,6 +548,11 @@ private:
     bool  m_openNewTile       = false;
     char  m_newFolderName[64] = {};
     bool  m_openNewScript     = false;
+
+    // Class name -> the file that defines it, as of the last time a dialog
+    // that needs it was opened. Rebuilt there and not per frame: see
+    // ScriptBuild::GatherScriptClasses.
+    std::map<std::string, std::string> m_scriptClasses;
     bool  m_openNewFolder     = false;
     char  m_status[256]       = {};
 

@@ -32,8 +32,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
-
 class Bullet final : public eng::ScriptBehaviour {
 public:
     ImageRef sprite;                 // what the bullet looks like - drag a sprite here
@@ -105,8 +103,7 @@ public:
         Destroy(other);
         DestroySelf();
     }
-};
 
-} // namespace
+};
 
 ENGINE_REGISTER_SCRIPT(Bullet)

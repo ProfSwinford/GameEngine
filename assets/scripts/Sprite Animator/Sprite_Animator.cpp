@@ -120,7 +120,6 @@
 #include <engine/Engine.h>
 using namespace eng;
 
-namespace {
 
 class Sprite_Animator final : public ScriptBehaviour {
 public:
@@ -160,7 +159,6 @@ private:
     float m_secondsAlive = 0.0f;
 };
 
-} // namespace
 
 // Registers the name "Sprite_Animator" so that a scene file and the editor can find it.
 // WITHOUT THIS LINE the file compiles and the script can never be attached.

@@ -48,16 +48,21 @@
 
 #include <cstdio>
 
-namespace {
 
 // Is this entity one of the collectibles? Answered from the entity's own DATA -
 // a collider on the "Pickup" layer - rather than from its name. Somebody adding
 // an eleventh pickup to the scene file needs no code change at all, which is
 // the whole point of the component model.
-bool IsPickup(eng::Entity& entity) {
-    auto* collider = eng::FindCollider(entity);
-    return collider != nullptr && collider->Layer() == "Pickup";
-}
+//
+// `static` BECAUSE THERE IS NO LONGER A NAMESPACE HIDING IT. Scripts used to
+// sit in an anonymous namespace, which made this internal for free; now that
+// they share the global namespace so they can refer to each other, the
+// keyword is what keeps two copies of one helper from being two definitions
+// of one symbol - and the export links every script's object into a single
+// library. The duplication above is still the right call; it just has to say
+// so out loud.
+
+
 
 class GameRules final : public eng::ScriptBehaviour {
 public:
@@ -168,6 +173,12 @@ private:
     //  that releases every texture nothing else is using - the Console line
     //  about images still loaded is that happening.
     // -------------------------------------------------------------------------
+
+    bool IsPickup(eng::Entity& entity) {
+        auto* collider = eng::FindCollider(entity);
+        return collider != nullptr && collider->Layer() == "Pickup";
+    }
+
     void RequestWinScene() {
         if (m_requested) {
             return;   // asked already; this keeps running until the swap
@@ -265,7 +276,6 @@ private:
     static constexpr const char* kWinScene = "scenes/you_win.oscene";
 };
 
-} // namespace
 
 // Registers the name "GameRules" so that a scene file and the editor can find
 // it. WITHOUT THIS LINE the file compiles and the script can never be attached.

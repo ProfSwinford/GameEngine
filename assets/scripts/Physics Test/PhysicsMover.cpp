@@ -37,7 +37,6 @@
 
 #include <cmath>
 
-namespace {
 
 class PhysicsMover final : public eng::ScriptBehaviour {
 public:
@@ -134,6 +133,5 @@ private:
     bool      m_outbound = true;
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsMover)

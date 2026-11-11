@@ -37,7 +37,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class WinScreen final : public eng::ScriptBehaviour {
 public:
@@ -101,6 +100,5 @@ private:
     static constexpr const char* kGameScene = "scenes/collector.oscene";
 };
 
-} // namespace
 
 ENGINE_REGISTER_SCRIPT(WinScreen)

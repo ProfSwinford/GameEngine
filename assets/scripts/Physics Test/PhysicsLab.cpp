@@ -36,7 +36,6 @@
 
 #include <cstdio>
 
-namespace {
 
 class PhysicsLab final : public eng::ScriptBehaviour {
 public:
@@ -136,6 +135,5 @@ private:
     }
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsLab)

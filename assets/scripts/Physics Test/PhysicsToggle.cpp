@@ -22,7 +22,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class PhysicsToggle final : public eng::ScriptBehaviour {
 public:
@@ -73,6 +72,5 @@ private:
     float m_timer = 0.0f;
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsToggle)

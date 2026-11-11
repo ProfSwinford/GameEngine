@@ -22,7 +22,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class PhysicsLabel final : public eng::ScriptBehaviour {
 public:
@@ -61,6 +60,5 @@ public:
     }
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsLabel)

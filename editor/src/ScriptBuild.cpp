@@ -1208,6 +1208,28 @@ std::vector<std::string> ScriptBuild::Sources::All() const {
     return all;
 }
 
+std::map<std::string, std::string> ScriptBuild::GatherScriptClasses() {
+    const Sources sources = GatherSources();
+
+    // Both lists, because a script written entirely in a header is a script
+    // like any other - see Sources::headers.
+    std::vector<std::string> paths = sources.compiled;
+    paths.insert(paths.end(), sources.headers.begin(), sources.headers.end());
+    std::sort(paths.begin(), paths.end());
+
+    std::map<std::string, std::string> byName;
+    for (const std::string& path : paths) {
+        const eng::ScriptSourceInfo info =
+            eng::ScanScriptSource(ReadWholeFile(fs::path(eng::FileSystem::Resolve(path))));
+        if (info.className.empty()) {
+            continue;   // a .cpp with no script in it is just a file
+        }
+        // emplace and not insert_or_assign: the first one found keeps the name.
+        byName.emplace(info.className, path);
+    }
+    return byName;
+}
+
 ScriptBuild::Sources ScriptBuild::GatherSources() {
     Sources sources;
 
@@ -1591,6 +1613,32 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
     // ---- one unit per .cpp, scripts and helpers alike ---------------------
     std::vector<std::string> supportSources;
 
+    // ======================================================================
+    //  TWO FILES DEFINING ONE SCRIPT CLASS, caught while the sources are
+    //  already being read.
+    //
+    //  The Assets panel refuses a duplicate at the moment a script is named -
+    //  created, renamed or dropped in - which is where it belongs, because
+    //  that is the moment somebody can still choose another name. This is the
+    //  net under it, for the duplicate that was never named here at all: a
+    //  file copied in from outside the editor, a folder pasted into assets/,
+    //  or a project that predates the check.
+    //
+    //  IT MATTERS MORE THAN IT USED TO. Scripts used to sit in an anonymous
+    //  namespace, so two `class Player` definitions were separately compiled
+    //  and merely confusing. They share the global namespace now, so that they
+    //  can refer to one another, and a duplicate is a one-definition-rule
+    //  violation: here only the first registers and the other silently never
+    //  runs, and in an export - where every script is linked into ONE library,
+    //  see BuildBundle - the linker folds the duplicate away without a word
+    //  and can pair one class's constructor with the other's layout.
+    //
+    //  A WARNING AND NOT A REFUSAL, matching ScriptRegistry::Register, which
+    //  says the same thing one step later. Refusing the whole build would take
+    //  away the editor somebody needs in order to rename the file.
+    // ======================================================================
+    std::map<std::string, std::string> classOwners;
+
     for (const std::string& source : sources.compiled) {
         BuildUnit unit;
         unit.virtualSource = source;
@@ -1603,6 +1651,18 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
         const eng::ScriptSourceInfo info = eng::ScanScriptSource(ReadWholeFile(unit.realSource));
         unit.className                   = info.className;
         unit.isScript                    = !info.className.empty();
+
+        if (unit.isScript) {
+            const auto [owner, firstOne] = classOwners.emplace(info.className, source);
+            if (!firstOne && !dryRun) {
+                ENGINE_LOG_WARN(eng::Channels::kEditor,
+                                "'{}' and '{}' both define a script called '{}' - two "
+                                "files cannot both define one class, so only one of them "
+                                "can run, and an export of this project will link one of "
+                                "them away silently. Rename one.",
+                                owner->second, source, info.className);
+            }
+        }
 
         if (unit.isScript) {
             unit.libraryPath = ModuleDirectory() / (base + LibrarySuffix());

@@ -100,7 +100,6 @@
 #include <cmath>
 #include <string>
 
-namespace {
 
 // ---------------------------------------------------------------------------
 //  Which way the player is going, and therefore which slot of the array.
@@ -473,7 +472,7 @@ private:
     // since been removed from Engine.h, which left this file unable to compile
     // at all. A project's scripts are built by the EDITOR and not by the
     // engine's own build, so nothing reported it.
-    Rigidbody2D                m_body = nullptr;
+    eng::Rigidbody2DComponent* m_body = nullptr;
 
     bool                       m_grounded = false;
 
@@ -497,6 +496,5 @@ private:
     int                        m_showing = kNothingApplied;
 };
 
-} // namespace
 
 ENGINE_REGISTER_SCRIPT(TilemapWalker)

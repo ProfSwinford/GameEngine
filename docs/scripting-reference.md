@@ -120,6 +120,7 @@ The vocabulary is different in two places and the same everywhere else:
 | `Debug.Log`, `Debug.DrawLine` | `eng::Debug` | The same class under the same name, minus the channel the engine's own macros require. See **Drawing and logging**. |
 | `transform`, `gameObject`, `name`, `tag` | the same, spelled the same | Bare names on the base class, reached with `->`. See the next section. |
 | `SpriteRenderer.sprite` | `SetTexture(path)` or `SetTexture(ImageRef)` | A property there, a method here. The type is named for the asset - `ImageRef` - and the method for the component's own field, which is `"texture"` in the scene file. There is no `SetImage`. |
+| `public SpriteRenderer other;` | the same, spelled the same | A component reference, drawn as a slot you drag an entity onto. `Rigidbody2D` too. `Transform` is **`TransformRef`** here, because `Transform` cannot be a type name inside a script. See **A reference to a component on another entity**. |
 
 Everything else keeps its Unity name where there is one. The full mapping is at
 the bottom of this page, including the things that are **not here yet** and what
@@ -792,10 +793,23 @@ FindScriptIn<Chaser>(*GetScene())   // the one in the scene
 FindScriptNamedIn(*GetScene(), "ScoreKeeper")   // by name, no headers needed
 ```
 
-The typed forms need the class to be **nameable** from your file, and most are
-not - every script in `assets/scripts` sits in an `namespace { }`, which is what
-stops two scripts colliding. To point at one's members, move that class into a
-header both files include.
+The typed forms need the class to be **nameable** from your file. Scripts share
+the global namespace - they used to each sit in an anonymous `namespace { }`,
+and no longer do - so nothing hides the name any more; what a script still
+lacks is a **declaration** of the other class. C++ needs one in scope, and a
+full definition to call anything on it, and one `.cpp` cannot see into another.
+
+So to point at another script's members, put that class in a header both files
+include, with the methods you call **defined in the header**. A declaration
+there and the body in the `.cpp` will not link: nothing exports a script's
+symbols.
+
+**Two scripts cannot share a class name.** The anonymous namespace used to make
+a collision merely confusing; now it is a one-definition-rule violation - only
+one of them registers and the other silently never runs, and an export links
+every script into one library, where the duplicate is folded away without a
+word. The editor refuses the name when you create a script or rename one, and
+warns on every build if two files already define it.
 
 ---
 
@@ -980,6 +994,89 @@ Nothing in this project ever used the marker, which is the problem it had — a
 mechanism with no example anywhere, findable only by reading the engine's own
 headers.
 
+### A reference to a component on another entity
+
+Unity's object fields. Declare one, drag an entity from the Hierarchy onto the
+slot, and the script reaches the component on it:
+
+```cpp
+class Follower final : public MyScriptBehaviour {
+public:
+    TransformRef   anchor;   // drag the thing to follow here
+    SpriteRenderer flash;    // and the sprite to tint here
+
+    void OnFixedUpdate() {
+        if (anchor) {
+            transform->SetWorldPosition(anchor->WorldPosition());
+        }
+    }
+};
+```
+
+`TransformRef`, `SpriteRenderer` and `Rigidbody2D` are the short spellings.
+For anything else, name the component:
+
+```cpp
+eng::ComponentRef<eng::TilemapComponent> ground;
+eng::ComponentRef<eng::BoxColliderComponent> area;
+```
+
+**The slot only accepts an entity that has that component.** The picker lists
+only those, and the constraint comes from the type itself - there is no
+`// [SpriteComponent]` marker to write and none to get wrong.
+
+**`if (anchor)` is the question to ask**, and it is true only when the
+reference resolves *right now*. Empty, deleted, renamed away, or carrying no
+such component all read the same, because a caller does the same thing about
+all four. `IsSet()` asks the other question: whether anything was ever dropped
+on it.
+
+**`TransformRef` hands back the `Transform2D`**, not the component, so
+`anchor->WorldPosition()` is spelled exactly like the `transform->` you
+already write. Every other reference hands back the component itself.
+`GetComponent()` gets the component in either case.
+
+**It is not a pointer, and it cannot be.** A reference stores the target
+entity's *name* and resolves on every access. Two reasons, and the first is
+the one that decides it:
+
+- *A pointer could never be filled in.* The Inspector matters while you are
+  editing, and in edit mode the clock is paused - no script ticks and
+  `OnStart` never runs - so a `SpriteComponent*` field would read empty for
+  the whole session however many entities you dropped on it. A pointer also
+  has no form in a scene file, so there would be nowhere to save the drop.
+- *A pointer could never survive.* The behaviour object is destroyed and
+  rebuilt on Stop, on every undo step, on a scene change, on a script rebuild
+  and on a prefab re-save. Storing an `EntityId` instead is worse than
+  useless: unloading a scene restarts generations at `1`, so a stale id can be
+  *valid* and point at a different entity.
+
+The cost is a lookup by name per access - the same cost the rule below already
+asks for, and for a reference across entities it is not optional.
+
+**For a component on the *same* entity, this is the wrong tool.** Ask with
+`Find<T>()` where you use it, or cache the raw pointer in a `private:` member,
+which is safe there precisely because the cache and the script object die
+together:
+
+```cpp
+private:
+    eng::Rigidbody2DComponent* m_body = nullptr;   // filled in OnStart
+```
+
+**Two spellings that do not exist, and why:**
+
+| You might write | What happens | Instead |
+|---|---|---|
+| `Transform anchor;` | Does not compile, with an error that points nowhere near the cause. `ScriptBehaviour` declares `Transform2D* Transform()`, and inside a script class that inherited member function hides a namespace-scope type of the same name. | `TransformRef anchor;` |
+| `Collider2D area;` | Not a reference - it is still a plain pointer. `ColliderComponent` is the abstract base of the four collider types and has no `kTypeName`, and `Find<T>` looks a component up by exactly that name. | `eng::ComponentRef<eng::BoxColliderComponent>`, or `eng::FindCollider(entity)` for any collider |
+
+**A reference to another *script* is not expressible.** A script class lives in
+an anonymous namespace in its own file, so no other script can name the type.
+Use an `eng::EntityRef` with a `// [ScoreKeeper]` marker to get the slot, and
+`FindScriptNamedIn` or a message to do the talking — see **Talking to other
+scripts**.
+
 ### An array is one row per element
 
 ```cpp
@@ -1143,7 +1240,7 @@ nothing in them reaches past the scripting API.
 ```cpp
 // Gun.cpp
 #include <engine/Engine.h>
-namespace {
+
 class Gun final : public eng::ScriptBehaviour {
 public:
     eng::PrefabRef bullet;              // drag prefabs/bullet.oprefab onto this
@@ -1170,14 +1267,14 @@ public:
 private:
     float m_untilNext = 0.0f;
 };
-} // namespace
+
 ENGINE_REGISTER_SCRIPT(Gun)
 ```
 
 ```cpp
 // Bullet.cpp
 #include <engine/Engine.h>
-namespace {
+
 class Bullet final : public eng::ScriptBehaviour {
 public:
     int damage = 1;                      // how much it takes off
@@ -1197,14 +1294,14 @@ public:
         DestroySelf();
     }
 };
-} // namespace
+
 ENGINE_REGISTER_SCRIPT(Bullet)
 ```
 
 ```cpp
 // ScoreKeeper.cpp
 #include <engine/Engine.h>
-namespace {
+
 class ScoreKeeper final : public eng::ScriptBehaviour {
 public:
     eng::EntityRef label;                // [UITextComponent] where to show it
@@ -1240,7 +1337,7 @@ private:
     int m_score = 0;
     int m_shown = -1;
 };
-} // namespace
+
 ENGINE_REGISTER_SCRIPT(ScoreKeeper)
 ```
 

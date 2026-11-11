@@ -28,7 +28,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class PhysicsLauncher final : public eng::ScriptBehaviour {
 public:
@@ -145,6 +144,5 @@ private:
     int       m_sinceMark    = 0;
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsLauncher)

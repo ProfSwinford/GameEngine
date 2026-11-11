@@ -1474,6 +1474,10 @@ void AssetBrowserPanel::RequestRename(const Tile& tile) {
     m_renameOriginal  = tile.label;
     m_openRenamePopup = true;
     std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", tile.label.c_str());
+
+    // Read as the dialog is requested, for the reason the New Script popup
+    // reads it as the dialog opens.
+    m_scriptClasses = ScriptBuild::GatherScriptClasses();
 }
 
 void AssetBrowserPanel::RequestDelete(const Tile& tile) {
@@ -1563,8 +1567,38 @@ void AssetBrowserPanel::DrawRenamePopup() {
                            "name, and that is what scenes refer to.");
     }
 
+    // ---- and a script may not be renamed onto another script's name ------
+    //
+    // THE FILE STEM IS THE SCRIPT'S NAME as far as everything outside the
+    // file is concerned: AssetDragDrop::ScriptNameFromPath attaches a script
+    // by it, and the new-script template writes the stem into `class {0}` and
+    // into ENGINE_REGISTER_SCRIPT. So a stem that another script already owns
+    // is refused even though renaming the file does not itself rewrite the
+    // class - which is what the amber note above says, and is why the two
+    // things are worth keeping in step rather than letting them drift.
+    //
+    // IsValidScriptName is checked here too. It was not before, so
+    // `Bullet.cpp` could be renamed to `9 rocket!.cpp` - a name no class could
+    // ever have.
+    std::string scriptRefusal;
+    if (ClassifyAsset(m_renamePath) == AssetKind::Script) {
+        const std::string stem = fs::path(m_renameBuffer).stem().string();
+        std::string       why;
+        if (!stem.empty() && !IsValidScriptName(stem, why)) {
+            scriptRefusal = why;
+        } else if (const std::string* taken = ScriptNameTaken(stem, m_renamePath)) {
+            scriptRefusal = "'" + stem + "' is already the script in '" + *taken +
+                            "' - two scripts cannot share a name, so only one of "
+                            "them could ever run";
+        }
+        if (!scriptRefusal.empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s",
+                               scriptRefusal.c_str());
+        }
+    }
+
     const bool blank = m_renameBuffer[0] == '\0';
-    ImGui::BeginDisabled(blank);
+    ImGui::BeginDisabled(blank || !scriptRefusal.empty());
     if ((submitted && !blank) || ImGui::Button("Rename", ImVec2(120, 0))) {
         std::string error;
         if (eng::FileSystem::Rename(m_renamePath, m_renameBuffer, error)) {
@@ -1975,9 +2009,37 @@ void AssetBrowserPanel::Draw() {
     }
 }
 
+const std::string* AssetBrowserPanel::ScriptNameTaken(const std::string& name,
+                                                      const std::string& ignorePath) const {
+    const auto it = m_scriptClasses.find(name);
+    if (it == m_scriptClasses.end() || it->second == ignorePath) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
 bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outError) {
     if (!IsValidScriptName(name, outError)) {
         return false;
+    }
+
+    // ---- THE GATE, and it is asked again here on purpose -----------------
+    //
+    // The popup greys Create out while the name clashes, which is what the
+    // person sees - but this function is the one that writes the file, so it
+    // is the one that must not be talked past. Read fresh rather than from
+    // m_scriptClasses: a dialog can sit open while something else adds a
+    // script, and a stale map is exactly the case where a refusal matters.
+    {
+        const std::map<std::string, std::string> classes =
+            ScriptBuild::GatherScriptClasses();
+        const auto it = classes.find(name);
+        if (it != classes.end()) {
+            outError = "'" + name + "' is already the script in '" + it->second +
+                       "' - two files cannot both define one class, so only one of "
+                       "them could ever run";
+            return false;
+        }
     }
 
     // Into WHICHEVER FOLDER IS BEING BROWSED. The build walks all of assets/,
@@ -2033,6 +2095,11 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
     if (m_openNewScript) {
         ImGui::OpenPopup("New Script");
         m_openNewScript = false;
+
+        // Read ONCE, as the dialog opens. GatherScriptClasses walks all of
+        // assets/ and reads every source, which is nothing to do per frame
+        // while somebody types.
+        m_scriptClasses = ScriptBuild::GatherScriptClasses();
     }
 
     const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
@@ -2056,8 +2123,19 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
     const bool        nameOk = IsValidScriptName(m_newScriptName, error);
     const std::string path = JoinPath(m_directory, std::string(m_newScriptName) + ".cpp");
 
+    // Checked as it is typed for the same reason the name itself is: a clash
+    // discovered when Create is pressed would be reported into m_status, which
+    // is drawn BEHIND this still-open modal.
+    const std::string* taken = ScriptNameTaken(m_newScriptName, std::string());
+
     if (!nameOk) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", error.c_str());
+    } else if (taken != nullptr) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           "'%s' is already the script in '%s'", m_newScriptName,
+                           taken->c_str());
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           "Two files cannot both define one class.");
     } else {
         ImGui::TextDisabled("writes assets/%s", path.c_str());
     }
@@ -2069,7 +2147,7 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
                        "this window closes.");
     ImGui::Separator();
 
-    ImGui::BeginDisabled(!nameOk);
+    ImGui::BeginDisabled(!nameOk || taken != nullptr);
     if (submitted || ImGui::Button("Create", ImVec2(120, 0))) {
         std::string createError;
         if (CreateScript(m_newScriptName, createError)) {

@@ -42,7 +42,6 @@
 
 #include <cstdio>
 
-namespace {
 
 class PhysicsReporter final : public eng::ScriptBehaviour {
 public:
@@ -172,6 +171,5 @@ private:
     int m_triggerExit    = 0;
 };
 
-}   // namespace
 
 ENGINE_REGISTER_SCRIPT(PhysicsReporter)

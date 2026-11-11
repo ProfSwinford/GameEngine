@@ -39,7 +39,6 @@
 
 #include <engine/Engine.h>
 
-namespace {
 
 class Pickup final : public eng::ScriptBehaviour {
 public:
@@ -86,7 +85,6 @@ public:
     }
 };
 
-} // namespace
 
 // Registers the name "Pickup" so that a scene file and the editor can find it.
 // WITHOUT THIS LINE the file compiles and the script can never be attached.

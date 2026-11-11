@@ -109,8 +109,6 @@
 
 #include <engine/Engine.h>
 using namespace eng;
-namespace {
-using namespace eng;
 
 class PlayerMovement final : public MyScriptBehaviour {
 public:
@@ -157,7 +155,6 @@ private:
     eng::Vec2 direction;
 };
 
-} // namespace
 
 // Registers the name "PlayerMovement" so that a scene file and the editor can find it.
 // WITHOUT THIS LINE the file compiles and the script can never be attached.

@@ -369,19 +369,73 @@ TEST_CASE("a pointer to an undocumented type is reported as a pointer") {
     CHECK(Skipped(info, "bound")->reason.find("reference") != std::string::npos);
 }
 
-TEST_CASE("a pointer alias with no star is still a pointer") {
-    // Engine.h gives scripts Rigidbody2D, Collider2D, SpriteRenderer and
-    // GameObject, every one of them a pointer typedef, so a correct
-    // declaration has no star in it - assets/scripts/TilemapWalker.cpp writes
-    // this exact line. The by-value sentence below must not fire on it, and
-    // `= nullptr` is what rules it out: a value cannot be built from nullptr.
+TEST_CASE("an unknown alias initialised from nullptr is still a pointer") {
+    // THIS USED TO SAY `Rigidbody2D m_body = nullptr;`, and that line now means
+    // something else: Rigidbody2D is a component REFERENCE and the table
+    // recognises it, so it is a field rather than a skip - see the case below.
+    //
+    // The rule is still needed, because a project may typedef a pointer of its
+    // own and this parser cannot know the name. `= nullptr` is what tells it
+    // apart from a value, a value being the one thing that cannot be built
+    // from one.
     const ScriptSourceInfo info =
-        ScanScriptSource(Wrap("    Rigidbody2D m_body = nullptr;"));
+        ScanScriptSource(Wrap("    SomeHandleOfMyOwn m_thing = nullptr;"));
 
-    CHECK(Var(info, "m_body") == nullptr);
-    REQUIRE(Skipped(info, "m_body") != nullptr);
-    CHECK(Skipped(info, "m_body")->reason.find("pointer") != std::string::npos);
-    CHECK(Skipped(info, "m_body")->reason.find("by value") == std::string::npos);
+    CHECK(Var(info, "m_thing") == nullptr);
+    REQUIRE(Skipped(info, "m_thing") != nullptr);
+    CHECK(Skipped(info, "m_thing")->reason.find("pointer") != std::string::npos);
+    CHECK(Skipped(info, "m_thing")->reason.find("by value") == std::string::npos);
+}
+
+TEST_CASE("a component reference is a field, and constrains itself") {
+    // The whole point of ComponentRef: the component it is a reference TO
+    // rides the C++ type, so the constraint the Inspector filters its picker
+    // by cannot drift away from the thing the script actually calls. Nobody
+    // writes a `// [SpriteComponent]` marker and nobody can get it wrong.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
+    TransformRef   anchor;
+    SpriteRenderer flash;
+    Rigidbody2D    pushed;
+    eng::ComponentRef<eng::TilemapComponent> ground;
+    ComponentRef<BoxColliderComponent> area;
+)CPP"));
+
+    struct Expected {
+        const char* name;
+        const char* required;
+    };
+    for (const Expected e : {Expected{"anchor", "TransformComponent"},
+                             Expected{"flash", "SpriteComponent"},
+                             Expected{"pushed", "Rigidbody2DComponent"},
+                             Expected{"ground", "TilemapComponent"},
+                             Expected{"area", "BoxColliderComponent"}}) {
+        REQUIRE(Var(info, e.name) != nullptr);
+        CHECK(Var(info, e.name)->fieldType == ScriptFieldType::Entity);
+        CHECK(Var(info, e.name)->requiredType == e.required);
+    }
+
+    // Every one of them is a variable, so nothing was skipped and nothing was
+    // reported - which is the difference the owner asked for.
+    CHECK(info.skipped.empty());
+}
+
+TEST_CASE("a marker still beats the reference type's own constraint") {
+    // Narrowing a Rigidbody2D slot would be odd, but narrowing a collider one
+    // is not, and somebody who wrote a marker meant it. The type is the
+    // DEFAULT constraint, not an override of what was asked for.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    Rigidbody2D pushed;   // [BoxColliderComponent]"));
+
+    REQUIRE(Var(info, "pushed") != nullptr);
+    CHECK(Var(info, "pushed")->requiredType == "BoxColliderComponent");
+}
+
+TEST_CASE("a reference to something that is not a component is left alone") {
+    // ComponentRef<T> static_asserts on T, but that is a COMPILER's job and
+    // this parser never sees a type. An empty argument is not a declaration it
+    // can make sense of, so it falls through rather than inventing a field.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    ComponentRef<> nothing;"));
+    CHECK(Var(info, "nothing") == nullptr);
 }
 
 TEST_CASE("a component held by value says so, and says what to do") {
