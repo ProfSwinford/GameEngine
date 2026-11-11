@@ -106,6 +106,29 @@ struct EditorState {
 
     bool showImGuiDemo = false;
 
+    // ======================================================================
+    //  THE CONSOLE'S AUTO-CLEAR - Unity's "Clear on Play" and "Clear on
+    //  Recompile". Ticked in the Console's own toolbar.
+    //
+    //  HERE RATHER THAN IN ConsolePanel, for the reason this whole struct
+    //  exists: the things that have to ask are EditorApp and the Assets
+    //  panel, and neither of them holds a pointer to the Console. The
+    //  checkboxes still live in the Console, which is where anybody would
+    //  look for them - only the two bools moved out.
+    //  ConsolePanel::IsClearOnPlay reads them from here, so the panel is
+    //  still the thing that answers the question.
+    //
+    //  NOT REMEMBERED BETWEEN RUNS, and that is deliberate rather than
+    //  unfinished: no Console setting is. The level filter, the search box,
+    //  the auto-scroll tick and every channel tick all start fresh on each
+    //  launch, and persisting these two alone would give you an editor that
+    //  remembers whether to clear on Play but forgets that you set the
+    //  filter to errors only. If it is wanted it belongs in
+    //  .editor/session.json as one "console" object covering the lot.
+    // ======================================================================
+    bool clearConsoleOnPlay    = true;
+    bool clearConsoleOnCompile = true;
+
     // ---- working with the selection --------------------------------------
     //
     // These are the only places `selection` and `selected` are changed
@@ -291,6 +314,36 @@ private:
     bool               m_dirty      = false;
     unsigned long long m_editSerial = 0;
 };
+
+// ---- emptying the Console for a new session -------------------------------
+//
+// Each does nothing at all unless its box is ticked. See the note beside
+// clearConsoleOnPlay above for why the bools are not on the panel.
+//
+// CALL EITHER ONE BEFORE THE THING IT IS CLEARING FOR, NEVER AFTER. What is
+// worth reading about both events is written from inside the call that starts
+// them: EnterPlayMode logs "play mode started" itself, and a compile's first
+// lines come out of ScriptBuild::BeginBuild and then from the worker thread
+// the compiler runs on. A clear that lands afterwards deletes exactly what
+// the Console was opened to show - and on the compile path it races that
+// worker, so what survives is a random prefix of the build output.
+//
+// BOTH RESET Debug'S THROTTLE KEYS as well as emptying the buffer, and the
+// pairing is the point rather than a nicety. Debug::LogOnce remembers which
+// messages it has already printed. Empty the view without handing those keys
+// back and a once-only message is invisible AND spent: it will never print
+// again, so a script that is working reads as a script that has stopped. It
+// is not hypothetical - Build Scripts starts a compile without leaving play
+// mode, so every script object is destroyed and remade while the old
+// objects' keys are still used up.
+//
+// THE MANUAL Clear BUTTON DOES NOT DO THIS, and must not start to. Pressing
+// Clear tidies the view; it does not begin a new session. Nor does
+// Debug::ClearConsole, which game scripts can call - a script quietly
+// un-throttling every once-message mid-play is nobody's intention, and a
+// test pins it to emptying the buffer and nothing else.
+void ClearConsoleForPlay();
+void ClearConsoleForCompile();
 
 // ---- acting on the selection ----------------------------------------------
 
@@ -533,6 +586,10 @@ private:
     char m_saveAsPath[256] = {};
     bool m_openSaveAsPopup = false;
     char m_status[256]     = {};
+
+    // What IsInPlayMode said on the previous frame, so Run can notice the one
+    // frame on which a play session begins. See ClearConsoleForPlay.
+    bool m_wasInPlayMode = false;
 
     // ---- a scene change waiting on an answer -----------------------------
     //

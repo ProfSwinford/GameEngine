@@ -36,8 +36,42 @@ namespace {
 
 class Bullet final : public eng::ScriptBehaviour {
 public:
+    ImageRef sprite;                 // what the bullet looks like - drag a sprite here
+    SpriteComponent* m_renderer = nullptr; // the SpriteComponent beside this script
+
     int         damage = 1;          // how much this takes off the target
     std::string hits   = "Enemy";    // the tag of the things it damages
+
+    void OnStart() {
+        // ASKED FOR HERE RATHER THAN KEPT IN A MEMBER. A component dies with
+        // its entity, and the whole scene is rebuilt by Play, by Stop and by
+        // every undo step - so the rule in docs/scripting-reference.md is to
+        // ask with Find each time. This needs it once, on the way in, so a
+        // local is the whole of it.
+        m_renderer = Find<eng::SpriteComponent>();
+        if (m_renderer == nullptr) {
+            ENGINE_LOG_ERROR(eng::Channels::kGame,
+                             "Bullet on '{}' needs a SpriteComponent "
+                             "beside it, and there is none - it will not draw",
+                             name);
+            return;
+        }
+        // ONLY WHEN A PICTURE WAS ACTUALLY DRAGGED IN.
+        //
+        // An unset ImageRef holds an empty path, and SetTexture treats an
+        // empty path as "no picture" and clears the slot - deliberately, so
+        // that emptying the field in the Inspector works. bullet.oprefab
+        // already authors `"texture": "textures/checker_red.bmp"` on the
+        // SpriteComponent, so calling this unguarded on a prefab whose
+        // script slot was never filled in blanks that texture and every
+        // bullet fires invisibly.
+        //
+        // So the field is an OVERRIDE, not a requirement: leave it empty and
+        // the sprite keeps whatever the prefab gave it.
+        if (sprite.IsSet()) {
+            m_renderer->SetTexture(sprite);
+        }
+    }
 
     void OnTriggerEnter(eng::EntityId other) {
         eng::Entity* hit = FindEntity(other);

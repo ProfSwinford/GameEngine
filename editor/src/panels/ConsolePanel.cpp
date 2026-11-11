@@ -4,6 +4,8 @@
 
 #include "panels/ConsolePanel.h"
 
+#include "EditorApp.h"   // EditorState, which holds the two auto-clear ticks
+
 #include <engine/core/Log.h>
 
 #include <imgui.h>
@@ -46,6 +48,15 @@ bool ContainsIgnoringCase(const std::string& haystack, const char* needle) {
 
 } // namespace
 
+// Answered from EditorState, not from a member - see the note in the header.
+bool ConsolePanel::IsClearOnPlay() const {
+    return EditorState::Get().clearConsoleOnPlay;
+}
+
+bool ConsolePanel::IsClearOnCompile() const {
+    return EditorState::Get().clearConsoleOnCompile;
+}
+
 void ConsolePanel::Draw() {
     // ---- the filter bar along the top ------------------------------------
     static const char* kLevelNames[] = {"Info", "Warning", "Error"};
@@ -63,6 +74,16 @@ void ConsolePanel::Draw() {
     if (ImGui::Button("Clear")) {
         eng::LogBuffer::Clear();
     }
+    // Two ticks rather than one, because they are genuinely different
+    // moments: a playtest wants a Console holding only this run, while a
+    // compile wants one holding only this build's errors. Unity separates
+    // them for the same reason. What they do when ticked is
+    // ClearConsoleForPlay and ClearConsoleForCompile in EditorApp.h.
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::Checkbox("Clear on Play", &EditorState::Get().clearConsoleOnPlay);
+    ImGui::Checkbox("Clear on Compile", &EditorState::Get().clearConsoleOnCompile);
+    ImGui::EndGroup();
 
     // The channel list is asked for fresh every frame, so a channel invented
     // by game code appears here as soon as it logs anything.

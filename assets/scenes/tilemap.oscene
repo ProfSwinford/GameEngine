@@ -127,10 +127,55 @@
         {
           "script": "TilemapWalker",
           "type": "ScriptComponent"
+        },
+        {
+          "script": "Gun",
+          "type": "ScriptComponent",
+          "vars": {
+            "bullet": "prefabs/bullet.oprefab"
+          }
         }
       ],
       "name": "Player"
     }
   ],
-  "name": "<unnamed>"
+  "name": "<unnamed>",
+  "prefabInstances": [
+    {
+      "name": "Bullet",
+      "overrides": [
+        {
+          "component": "BoxColliderComponent",
+          "entity": 1,
+          "field": "halfExtents",
+          "value": [
+            6.0,
+            3.0
+          ]
+        },
+        {
+          "component": "BoxColliderComponent",
+          "entity": 1,
+          "field": "size",
+          "value": null
+        },
+        {
+          "component": "Rigidbody2DComponent",
+          "entity": 1,
+          "field": "mass",
+          "value": 1.0
+        },
+        {
+          "component": "TransformComponent",
+          "entity": 1,
+          "field": "position",
+          "value": [
+            512.0,
+            240.0
+          ]
+        }
+      ],
+      "prefab": "prefabs/bullet.oprefab"
+    }
+  ]
 }

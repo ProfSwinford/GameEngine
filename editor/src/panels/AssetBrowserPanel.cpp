@@ -714,6 +714,14 @@ void AssetBrowserPanel::DrawBreadcrumb() {
     ImGui::SameLine();
     ImGui::BeginDisabled(!ScriptBuild::HasCompiler());
     if (ImGui::SmallButton("Build Scripts")) {
+        // Emptied BEFORE the build is started - see ClearConsoleForCompile in
+        // EditorApp.h. Guarded on IsBuilding so that a second click, which
+        // BeginAsync then refuses because one is already running, cannot wipe
+        // the output of the build that is still going.
+        if (!ScriptBuild::IsBuilding()) {
+            ClearConsoleForCompile();
+        }
+
         // Started, not waited for - the editor keeps drawing while the
         // compiler runs. EditorApp collects the result once it is ready and
         // puts the summary in the menu bar. See ScriptBuild.h.
@@ -1989,6 +1997,12 @@ bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outEr
         return false;
     }
 
+    // A new script is compiled a few lines below, so this counts as a compile
+    // like any other. Emptied up here rather than beside that build, so that
+    // the "created" line below and the build's own output are what the Console
+    // is left holding.
+    ClearConsoleForCompile();
+
     ENGINE_LOG_INFO(eng::Channels::kEditor, "created the script '{}'", path);
 
     // Compiled AND registered straight away, rather than waiting for the next
@@ -2781,9 +2795,18 @@ void AssetBrowserPanel::ImportDroppedFiles() {
     // asked rather than testing the file extension: an imported image costs
     // nothing, and a dropped FOLDER with scripts inside it is noticed just as
     // readily as a single file would be.
-    if (imported > 0 && ScriptBuild::NeedsRebuild() && ScriptBuild::BeginAsync()) {
-        const std::string note = std::string(m_status) + " - building scripts...";
-        std::snprintf(m_status, sizeof(m_status), "%s", note.c_str());
+    if (imported > 0 && ScriptBuild::NeedsRebuild() && !ScriptBuild::IsBuilding()) {
+        // IsBuilding stands in for BeginAsync in the condition above so that
+        // the Console is emptied only when a build is really about to start -
+        // and before it, because the compiler's first lines arrive on a
+        // worker thread the moment BeginAsync returns. See
+        // ClearConsoleForCompile in EditorApp.h.
+        ClearConsoleForCompile();
+
+        if (ScriptBuild::BeginAsync()) {
+            const std::string note = std::string(m_status) + " - building scripts...";
+            std::snprintf(m_status, sizeof(m_status), "%s", note.c_str());
+        }
     }
 }
 

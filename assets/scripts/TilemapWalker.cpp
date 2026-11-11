@@ -195,7 +195,6 @@ public:
     // was worth answering in the file that asked it, and the answer is now
     // that there is nothing to add: a declaration of the type is the whole of
     // it. Delete them once that stops being useful.
-    eng::AnimationRef attackAnimations[4];
 
     void OnStart() {
         m_body = Find<eng::Rigidbody2DComponent>();
@@ -270,6 +269,8 @@ public:
         //m_body->SetVelocity(Vector2{m_movement.x * walkSpeed, velocity.y});
 
         m_body->SetVelocity(m_movement * walkSpeed);
+
+        Show(FacingFor(m_movement.x, m_movement.y));
 
         //m_grounded = IsOnGround();
         //

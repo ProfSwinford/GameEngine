@@ -41,9 +41,9 @@
 
 namespace {
 
-class Gun final : public eng::ScriptBehaviour {
+class Gun final : public ScriptBehaviour {
 public:
-    eng::PrefabRef bullet;              // what to fire - drag a prefab here
+    PrefabRef bullet;              // what to fire - drag a prefab here
     float          speed    = 600.0f;   // how fast it leaves the barrel
     float          cooldown = 0.2f;     // [0..2] seconds between shots
     float          muzzle   = 24.0f;    // how far in front of the gun it appears

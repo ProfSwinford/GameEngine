@@ -119,6 +119,7 @@ The vocabulary is different in two places and the same everywhere else:
 | `Instantiate` | `Instantiate` | The same name, because it is the same thing. |
 | `Debug.Log`, `Debug.DrawLine` | `eng::Debug` | The same class under the same name, minus the channel the engine's own macros require. See **Drawing and logging**. |
 | `transform`, `gameObject`, `name`, `tag` | the same, spelled the same | Bare names on the base class, reached with `->`. See the next section. |
+| `SpriteRenderer.sprite` | `SetTexture(path)` or `SetTexture(ImageRef)` | A property there, a method here. The type is named for the asset - `ImageRef` - and the method for the component's own field, which is `"texture"` in the scene file. There is no `SetImage`. |
 
 Everything else keeps its Unity name where there is one. The full mapping is at
 the bottom of this page, including the things that are **not here yet** and what

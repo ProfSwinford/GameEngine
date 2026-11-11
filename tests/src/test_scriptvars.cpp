@@ -341,6 +341,68 @@ TEST_CASE("a public pointer is reported whatever it is called") {
     REQUIRE(Skipped(info, "m_body") != nullptr);
 }
 
+TEST_CASE("a pointer to an undocumented type is reported as a pointer") {
+    // THE BUG THIS PINS. The "it is a pointer" message used to be reachable
+    // only for pointers to the eight types the Inspector draws, because it
+    // was asked after the type had already matched the table. A component
+    // pointer - the commonest pointer a script holds - fell through to the
+    // unknown-type branch and was told that its TYPE could not be drawn,
+    // with a list of scalars offered instead. The type was never the point.
+    //
+    // All three spellings mean one thing and must say one thing. The third
+    // used to be reported as nothing at all.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
+    SpriteComponent* starRight = nullptr;
+    SpriteComponent *starLeft = nullptr;
+    ColliderComponent& bound = *starRight;
+)CPP"));
+
+    for (const char* name : {"starRight", "starLeft"}) {
+        CHECK(Var(info, name) == nullptr);
+        REQUIRE(Skipped(info, name) != nullptr);
+        CHECK(Skipped(info, name)->reason.find("pointer") != std::string::npos);
+        CHECK(Skipped(info, name)->reason.find("not one the Inspector can draw") ==
+              std::string::npos);
+    }
+
+    REQUIRE(Skipped(info, "bound") != nullptr);
+    CHECK(Skipped(info, "bound")->reason.find("reference") != std::string::npos);
+}
+
+TEST_CASE("a pointer alias with no star is still a pointer") {
+    // Engine.h gives scripts Rigidbody2D, Collider2D, SpriteRenderer and
+    // GameObject, every one of them a pointer typedef, so a correct
+    // declaration has no star in it - assets/scripts/TilemapWalker.cpp writes
+    // this exact line. The by-value sentence below must not fire on it, and
+    // `= nullptr` is what rules it out: a value cannot be built from nullptr.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    Rigidbody2D m_body = nullptr;"));
+
+    CHECK(Var(info, "m_body") == nullptr);
+    REQUIRE(Skipped(info, "m_body") != nullptr);
+    CHECK(Skipped(info, "m_body")->reason.find("pointer") != std::string::npos);
+    CHECK(Skipped(info, "m_body")->reason.find("by value") == std::string::npos);
+}
+
+TEST_CASE("a component held by value says so, and says what to do") {
+    // The declaration that started this: four compiler errors, all of them on
+    // the three lines that USED the member and none on the line that declared
+    // it. This is the one place that sees the declaration, so it is the only
+    // place that can name it.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    SpriteComponent m_sprite;"));
+
+    CHECK(Var(info, "m_sprite") == nullptr);
+    REQUIRE(Skipped(info, "m_sprite") != nullptr);
+    const std::string& why = Skipped(info, "m_sprite")->reason;
+    CHECK(why.find("declares one by value") != std::string::npos);
+    CHECK(why.find("Find<eng::SpriteComponent>()") != std::string::npos);
+
+    // And the list it offers instead is the list the table really handles.
+    CHECK(why.find("ImageRef") != std::string::npos);
+    CHECK(why.find("AnimationRef") != std::string::npos);
+}
+
 TEST_CASE("a name that merely contains m_ is not hidden") {
     const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
     float warm_up = 1.0f;

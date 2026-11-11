@@ -418,6 +418,65 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
         }
         const std::string typeText = code.substr(0, space);
         const std::string nameText = TrimmedCopy(code.substr(space));
+
+        // ================================================================
+        //  IS IT A POINTER? ASKED HERE, AND THAT PLACEMENT IS THE FIX.
+        //
+        //  The branch further down that says "it is a pointer, and the
+        //  Inspector edits values" reads `afterType`, which only exists once
+        //  the type has MATCHED one of kTypeSpellings. For a type this file
+        //  has never heard of - every component, and every class a project
+        //  writes - it was therefore unreachable, and a perfectly ordinary
+        //  `SpriteComponent* m_sprite` was told that its TYPE is not one the
+        //  Inspector can draw, followed by a list of scalars to pick from
+        //  instead. The answer was never the type; it is that an address has
+        //  nothing to put in a box.
+        //
+        //  `SpriteComponent *m_sprite` was worse still: the star lands on the
+        //  front of nameText, failed the IsIdentChar test that used to be
+        //  here, and the member was reported as NOTHING AT ALL. Three
+        //  spellings of one intent gave two near-identical messages and a
+        //  silence, and silence is the outcome this file works hardest to
+        //  avoid - see the note at the top of ScriptVars.h.
+        //
+        //  THE STAR BELONGS TO WHICHEVER SIDE IT WAS WRITTEN ON, so both are
+        //  checked and neither spelling is the special case.
+        //
+        //  AND A POINTER NEED NOT HAVE A STAR AT ALL. Engine.h hands scripts
+        //  Unity-shaped aliases that are already pointers - Rigidbody2D,
+        //  Collider2D, SpriteRenderer, GameObject - so
+        //  `Rigidbody2D m_body = nullptr;` is correct, and
+        //  assets/scripts/TilemapWalker.cpp writes exactly that. Initialising
+        //  from nullptr is the one thing a value cannot do, which tells the
+        //  two apart without this parser having to know what any of those
+        //  names mean. It stays pure: no registry, no engine state. See
+        //  ScriptVars.h.
+        // ================================================================
+        const bool starOnType =
+            !typeText.empty() && (typeText.back() == '*' || typeText.back() == '&');
+        const bool starOnName =
+            !nameText.empty() && (nameText.front() == '*' || nameText.front() == '&');
+        const std::size_t assign = nameText.find('=');
+        const bool fromNullptr =
+            assign != std::string::npos &&
+            TrimmedCopy(nameText.substr(assign + 1)).starts_with("nullptr");
+
+        if (starOnType || starOnName || fromNullptr) {
+            const char mark = starOnType ? typeText.back()
+                            : starOnName ? nameText.front()
+                                         : '*';
+            const std::string rest =
+                starOnName ? TrimmedCopy(nameText.substr(1)) : nameText;
+            const std::size_t end = rest.find_first_not_of(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+            outSkipped.name   = end == std::string::npos ? rest : rest.substr(0, end);
+            outSkipped.reason = std::string("it is a ") +
+                                (mark == '*' ? "pointer" : "reference") +
+                                ", and the Inspector edits values";
+            outWasSkipped = !outSkipped.name.empty();
+            return false;
+        }
+
         if (typeText.empty() || nameText.empty() || !IsIdentChar(typeText.front()) ||
             !IsIdentChar(nameText.front())) {
             return false;
@@ -432,11 +491,25 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
             return false;
         }
 
+        // ImageRef AND AnimationRef WERE MISSING FROM THIS LIST, which the
+        // table at the top of this file has handled all along and the
+        // Inspector draws. The omission was visible in one build's output:
+        // Bullet.cpp declares `ImageRef sprite;`, the very next line read
+        // "exposing sprite, ...", and this sentence denied the type worked.
+        //
+        // THE SECOND SENTENCE IS CONDITIONAL ON PURPOSE. This branch sees any
+        // type it does not know, which includes a project's own plain structs,
+        // so it must not assert that the member IS a component - only say what
+        // follows if it is. A component held by value is never right: the
+        // entity owns it, and a script asks for it where it is used.
         outSkipped.name   = declarator;
         outSkipped.reason = "its type '" + typeText +
                             "' is not one the Inspector can draw - it handles float, "
-                            "int, bool, std::string, Vec2, Color, EntityRef and "
-                            "PrefabRef";
+                            "int, bool, std::string, Vec2, Color, EntityRef, "
+                            "PrefabRef, ImageRef and AnimationRef. If '" + typeText +
+                            "' is a component, this declares one by value, which is "
+                            "not how a script holds one - ask for it with Find<eng::" +
+                            typeText + ">() where you use it";
         outWasSkipped = true;
         return false;
     }

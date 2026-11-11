@@ -175,6 +175,8 @@ typedef eng::SpriteComponent*      SpriteRenderer;
 //using Transform = eng::Transform2D*;
 
 typedef eng::InputMap Input;
+//using GameObject = eng::Entity;
+//using GameObject = eng::PrefabRef;
 
 using namespace eng;
 namespace eng {

@@ -48,6 +48,16 @@ class ConsolePanel final : public Panel {
 public:
     const char* Title() const override { return "Console"; }
     void        Draw() override;
+    // Whether the Console empties itself when a play session starts, and when
+    // a compile does.
+    //
+    // The two bools are on EditorState rather than in here, because the code
+    // that has to ask is not holding a pointer to this panel - see
+    // ClearConsoleForPlay in EditorApp.h. These stay as the panel's own way
+    // of answering for them, and are out of line so that this header does not
+    // have to pull EditorApp.h in.
+    bool IsClearOnPlay() const;
+    bool IsClearOnCompile() const;
 
 private:
     // Which channels are ticked. Filled in as channels are discovered.

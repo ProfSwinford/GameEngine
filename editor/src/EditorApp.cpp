@@ -8,6 +8,8 @@
 
 #include "EditorApp.h"
 
+#include <engine/core/LogBuffer.h>
+#include <engine/debug/Debug.h>
 #include <engine/resource/ImportSettings.h>
 
 #include <algorithm>
@@ -263,6 +265,35 @@ bool IsPrefabChild(eng::EntityId id) {
 const char* PrefabChildRefusal() {
     return "that belongs to a prefab - the prefab would put it straight back. "
            "Unpack the instance first, or change the prefab itself.";
+}
+
+// ---- emptying the Console for a new session -------------------------------
+//
+// See the note beside these two in EditorApp.h, which is where the argument
+// for the throttle reset lives.
+
+namespace {
+
+void EmptyTheConsole() {
+    // The keys first, then the buffer. Neither call logs anything, so the
+    // order is not load-bearing - but clearing last means the very next line
+    // written is the first line of the new session.
+    eng::Debug::ResetThrottles();
+    eng::LogBuffer::Clear();
+}
+
+}   // namespace
+
+void ClearConsoleForPlay() {
+    if (EditorState::Get().clearConsoleOnPlay) {
+        EmptyTheConsole();
+    }
+}
+
+void ClearConsoleForCompile() {
+    if (EditorState::Get().clearConsoleOnCompile) {
+        EmptyTheConsole();
+    }
 }
 
 std::size_t DestroySelection() {
@@ -1615,6 +1646,22 @@ void EditorApp::RebuildScriptsIfChanged() {
         return;   // the usual case, and it costs only a few timestamp checks
     }
 
+    // ---- Unity's "Clear on Recompile" ------------------------------------
+    //
+    // BELOW BOTH GUARDS ABOVE AND ABOVE EVERYTHING BELOW, and the window is
+    // exactly that wide.
+    //
+    // Above them it would empty the Console on every focus regain - which
+    // includes a click back into the window - because that is when this
+    // function runs and both guards are what make it usually do nothing.
+    //
+    // Below the lines that follow it would eat "scripts changed, so play mode
+    // was stopped before rebuilding", which is the one sentence explaining
+    // why a playtest just ended, and then BeginBuild's "no scripts found" and
+    // "no C++ compiler", which are the only explanation of why nothing got
+    // compiled.
+    ClearConsoleForCompile();
+
     eng::Engine& engine = eng::Engine::Get();
 
     // Play mode is stopped first, the way Unity does when it recompiles.
@@ -1783,6 +1830,39 @@ void EditorApp::Run(int frameLimit) {
         //     frame behind.
         // ==================================================================
         EditorGui::BeginFrame();
+
+        // ==================================================================
+        //  THE ONE FRAME A PLAY SESSION BEGINS - Unity's "Clear on Play".
+        //
+        //  NOTICED HERE RATHER THAN WHERE PLAY IS PRESSED, for two reasons.
+        //
+        //  There are two ways in - the Toolbar's button and Ctrl+P - and the
+        //  two are already a verbatim copy of one another. A third identical
+        //  line in each is the drift this file argues against everywhere
+        //  else. And EnterPlayMode is allowed to refuse: with no scene open
+        //  it returns false having logged nothing at all, so a clear at the
+        //  call site would empty the Console and leave it empty with no
+        //  explanation of why. The flag turning true is the only thing that
+        //  means a session really started.
+        //
+        //  AND IT HAS TO SIT ABOVE Simulate, the next line. Play is entered
+        //  during DrawPanels or HandleShortcuts, both below this, so the
+        //  session's first simulation step is the one on the NEXT frame -
+        //  the line below. Clearing above it empties the Console before any
+        //  script has run. Clearing below it, beside FocusGameViewIfRequested
+        //  where it would otherwise belong, wipes the OnStart and first
+        //  OnUpdate output, which is the whole of what somebody who just
+        //  pressed Play is waiting to read.
+        //
+        //  "play mode started" is logged inside EnterPlayMode on the frame
+        //  before this one, so it does not survive the clear. Unity's
+        //  Console is empty at the start of a session too.
+        // ==================================================================
+        const bool inPlayMode = engine.IsInPlayMode();
+        if (inPlayMode && !m_wasInPlayMode) {
+            ClearConsoleForPlay();
+        }
+        m_wasInPlayMode = inPlayMode;
 
         engine.Simulate();
 
