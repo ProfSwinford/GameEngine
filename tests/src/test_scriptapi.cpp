@@ -468,6 +468,67 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+//  THE PROBE THAT DESTROYS A NEIGHBOUR MID-WALK
+//
+//  All three of ScriptSystem's walks step their list BY INDEX, and
+//  Scene::DestroyEntityImmediate takes an entity apart ON THE SPOT - OnDetach
+//  -> ScriptSystem::Unregister. So a script that destroys ANOTHER entity from
+//  inside a walk reaches into the very list the walk is holding a cursor into,
+//  which is what the two cases at the bottom of this file are about.
+//
+//  GetScene()->DestroyEntityImmediate AND NOT the Destroy(id) verb. That verb
+//  is deferred - it only queues the id, and nothing is detached until the
+//  queue is applied, long after the walk has ended. The immediate spelling is
+//  reachable from a script (GetScene() is public) and is the only one that
+//  reproduces this.
+//
+//  ONE VICTIM FIELD PER PASS, so a case can arm exactly the walk it is about
+//  and no other: OnFixedUpdate is reached only by the step walk, OnUpdate only
+//  by the update walk, and the coroutine only by the end-of-frame walk.
+// ---------------------------------------------------------------------------
+class Reaper final : public ScriptBehaviour {
+public:
+    std::string tag;
+    EntityId    victimOnFixedUpdate{};
+    EntityId    victimOnUpdate{};
+    EntityId    victimAtEnd{};
+
+    void OnStart() {}
+
+    // DELIBERATELY SILENT, unlike the two below. The end-of-frame case drives
+    // a step to get its OnStart, and a log line from here would show up in
+    // that case's expected order for no reason.
+    void OnFixedUpdate() {
+        Reap(victimOnFixedUpdate);
+    }
+
+    void OnUpdate() {
+        g_order.push_back(tag + ".update");
+        Reap(victimOnUpdate);
+    }
+
+    Coroutine ReapAtEnd() {
+        co_yield WaitForEndOfFrame();
+        g_order.push_back(tag + ".end");
+        Reap(victimAtEnd);
+    }
+
+    // NOT called Destroy: ScriptBehaviour already publishes Destroy(EntityId),
+    // and a member of that name here would quietly hide the verb.
+    void Reap(EntityId& victim) {
+        if (victim.IsNull()) {
+            return;
+        }
+        // NOT called scene: ScriptBehaviour publishes a scene handle of its
+        // own, and a local of that name here is a C4458 shadow.
+        if (Scene* world = GetScene(); world != nullptr) {
+            world->DestroyEntityImmediate(victim);
+        }
+        victim = EntityId{};
+    }
+};
+
 // Counts contact events, so the "a switched-off script hears nothing" claim
 // can be checked by sending one.
 class Touchy final : public ScriptBehaviour {
@@ -560,6 +621,7 @@ ENGINE_REGISTER_SCRIPT(Ticker)
 ENGINE_REGISTER_SCRIPT(Waiter)
 ENGINE_REGISTER_SCRIPT(Ender)
 ENGINE_REGISTER_SCRIPT(Mixer)
+ENGINE_REGISTER_SCRIPT(Reaper)
 
 namespace {
 
@@ -3391,4 +3453,154 @@ TEST_CASE("Time::DeltaTime at the end of the frame is the number OnUpdate saw") 
     CHECK(ender->deltaSeen == doctest::Approx(duringUpdate));
 
     clock.SetTimeScale(wasScale);
+}
+
+// ===========================================================================
+//  A WALK MUST NOT SKIP A COMPONENT BECAUSE ANOTHER ONE DIED INSIDE IT
+//
+//  ScriptSystem::Update, ::FrameUpdate and ::EndOfFrameUpdate all step their
+//  list BY INDEX with the size re-read each time, which is what lets a script
+//  ATTACH another one mid-walk. Removal is the other half of that and was
+//  missing: Unregister used to std::erase from those same vectors, so a
+//  component destroyed from inside a walk pulled every later entry down one
+//  place - PAST THE CURSOR - and the walk ended one component short with
+//  nothing reporting it.
+//
+//  Both cases below are arranged as [A, R, C] with the reaper in the MIDDLE
+//  killing the entry BEFORE it, because that is the shape that moves C down
+//  onto a cursor that has already passed. Both fail on the std::erase version.
+// ===========================================================================
+
+TEST_CASE("destroying an entity from inside the update pass does not skip the next script") {
+    Fixture world("walk-destroy-update");
+    g_order.clear();
+
+    // THE ORDER OF ATTACHMENT IS THE ORDER OF THE WALK - AddTo appends, and
+    // nothing has run yet to reorder anything.
+    const EntityId aId = world.scene.CreateEntity("A");
+    Mixer*         a   = AttachScript<Mixer>(world.scene, aId, "Mixer");
+    REQUIRE(a != nullptr);
+    a->tag = "A";
+
+    const EntityId rId    = world.scene.CreateEntity("R");
+    Reaper*        reaper = AttachScript<Reaper>(world.scene, rId, "Reaper");
+    REQUIRE(reaper != nullptr);
+    reaper->tag            = "R";
+    reaper->victimOnUpdate = aId;
+
+    const EntityId cId = world.scene.CreateEntity("C");
+    Mixer*         c   = AttachScript<Mixer>(world.scene, cId, "Mixer");
+    REQUIRE(c != nullptr);
+    c->tag = "C";
+
+    REQUIRE(ScriptSystem::FrameTickingCount() == 3);
+
+    // ONE pass: A updates, R updates and takes A out of the list from under
+    // the cursor, and C must still be reached.
+    ScriptSystem::FrameUpdate();
+
+    REQUIRE(world.scene.Get(aId) == nullptr);   // A really did go, synchronously
+
+    // THE LOAD-BEARING ASSERTION. On the std::erase version this is 0: C was
+    // never ticked at all, so it did not even get its OnStart.
+    CHECK(c->updates == 1);
+
+    const std::vector<std::string> expected{"A.update", "R.update", "C.update"};
+    CHECK(g_order == expected);
+
+    // And the dead slot does not outlive the walk - the sweep at the end of it
+    // takes the tombstone, so the count is honest straight afterwards.
+    CHECK(ScriptSystem::FrameTickingCount() == 2);
+}
+
+TEST_CASE("destroying an entity from inside the end-of-frame pass does not skip the next coroutine") {
+    // THE SHARPER HALF of the same defect, and the reason it is worth a second
+    // case. A resume skipped by the UPDATE pass is caught up by the next
+    // frame's update pass. A resume skipped HERE is not: the update pass steps
+    // over a WaitForEndOfFrame coroutine by design, so nothing but another
+    // end-of-frame pass can reach it, a whole frame late.
+    Fixture world("walk-destroy-eof");
+    g_order.clear();
+
+    const EntityId aId = world.scene.CreateEntity("A");
+    Mixer*         a   = AttachScript<Mixer>(world.scene, aId, "Mixer");
+    REQUIRE(a != nullptr);
+    a->tag = "A";
+
+    const EntityId rId    = world.scene.CreateEntity("R");
+    Reaper*        reaper = AttachScript<Reaper>(world.scene, rId, "Reaper");
+    REQUIRE(reaper != nullptr);
+    reaper->tag         = "R";
+    reaper->victimAtEnd = aId;
+
+    const EntityId cId = world.scene.CreateEntity("C");
+    Mixer*         c   = AttachScript<Mixer>(world.scene, cId, "Mixer");
+    REQUIRE(c != nullptr);
+    c->tag = "C";
+
+    // Lets OnStart fire for all three, so the coroutines below are started on
+    // behaviours that are already running - the ordinary case.
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    a->StartCoroutine(a->AtEnd(1));
+    reaper->StartCoroutine(reaper->ReapAtEnd());
+    c->StartCoroutine(c->AtEnd(1));
+
+    // The update pass resumes NONE of them - all three wait on the end of the
+    // frame - and leaves the list as [A, R, C].
+    ScriptSystem::FrameUpdate();
+    REQUIRE(a->endPhase == 0);
+    REQUIRE(c->endPhase == 0);
+    REQUIRE(ScriptSystem::FrameTickingCount() == 3);
+
+    // A resumes, R resumes and destroys A, and C must still be reached.
+    ScriptSystem::EndOfFrameUpdate();
+
+    REQUIRE(world.scene.Get(aId) == nullptr);
+
+    // THE LOAD-BEARING ASSERTION. On the std::erase version this is 0.
+    CHECK(c->endPhase == 1);
+
+    const std::vector<std::string> expected{"A.update", "R.update", "C.update",
+                                            "A.end",    "R.end",    "C.end"};
+    CHECK(g_order == expected);
+}
+
+TEST_CASE("destroying an entity from inside the fixed-step pass does not skip the next script") {
+    // THE THIRD WALK, and the one on the hot path: g_fixedTicking is stepped
+    // once per simulation step rather than once per drawn frame. Same shape as
+    // the two cases above, same arrangement, same single std::erase behind it.
+    Fixture world("walk-destroy-fixed");
+
+    const EntityId aId = world.scene.CreateEntity("A");
+    Probe*         a   = AttachScript<Probe>(world.scene, aId, "Probe");
+    REQUIRE(a != nullptr);
+
+    const EntityId rId    = world.scene.CreateEntity("R");
+    Reaper*        reaper = AttachScript<Reaper>(world.scene, rId, "Reaper");
+    REQUIRE(reaper != nullptr);
+    reaper->tag                 = "R";
+    reaper->victimOnFixedUpdate = aId;
+
+    const EntityId cId = world.scene.CreateEntity("C");
+    Probe*         c   = AttachScript<Probe>(world.scene, cId, "Probe");
+    REQUIRE(c != nullptr);
+
+    REQUIRE(ScriptSystem::TickingCount() == 3);
+
+    // ONE step: A ticks, R ticks and takes A out of the list from under the
+    // cursor, and C must still be reached.
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    REQUIRE(world.scene.Get(aId) == nullptr);
+
+    // THE LOAD-BEARING ASSERTIONS. On the std::erase version both are 0: C was
+    // never reached at all, so it did not even get its OnStart.
+    CHECK(c->fixedTicks == 1);
+    CHECK(c->starts == 1);
+
+    // A is gone and the other two still want stepping, tombstone swept.
+    CHECK(ScriptSystem::TickingCount() == 2);
 }

@@ -38,6 +38,29 @@ std::vector<ScriptComponent*> g_scripts;
 std::vector<ScriptComponent*> g_fixedTicking;
 std::vector<ScriptComponent*> g_frameTicking;
 
+// ---------------------------------------------------------------------------
+//  IS A WALK IN PROGRESS?
+//
+//  Asked by Unregister, and the answer decides whether a dying component is
+//  erased from the two lists above or merely written over with nullptr. The
+//  long version of why is on Unregister; the short version is that all three
+//  walks hold a cursor INTO one of these vectors, and an erase moves entries
+//  past it.
+//
+//  A COUNT AND NOT A BOOLEAN, so that a walk reached from inside another one
+//  cannot clear the flag on its way out and leave the outer cursor unguarded.
+// ---------------------------------------------------------------------------
+int g_walkDepth = 0;
+
+// Counts a walk in for as long as it is in scope, so that an early return out
+// of one cannot leave the count standing.
+struct WalkScope {
+    WalkScope() { ++g_walkDepth; }
+    ~WalkScope() { --g_walkDepth; }
+    WalkScope(const WalkScope&)            = delete;
+    WalkScope& operator=(const WalkScope&) = delete;
+};
+
 bool g_collisionsSubscribed = false;
 
 // std::map rather than std::unordered_map so that listing the scripts comes
@@ -1495,9 +1518,57 @@ void ScriptSystem::Register(ScriptComponent& script) {
 }
 
 void ScriptSystem::Unregister(ScriptComponent& script) {
+    // g_scripts IS ERASED, AND IT DOES NOT HAVE THE PROBLEM BELOW. Nothing
+    // walks it by index. The three helpers that can grow or shrink it while
+    // reading it - RebindRenamed, UnbindAll, RebindAll - already walk a copy,
+    // and the three that walk it directly - UnresolvedCount, CountUsing,
+    // RetargetRenamed - only reach calls that cannot register or unregister
+    // anything. Erasing also keeps Count() an exact size().
     std::erase(g_scripts, &script);
-    std::erase(g_fixedTicking, &script);
-    std::erase(g_frameTicking, &script);
+
+    // THE TICKING LISTS, WHICH DO HAVE IT.
+    //
+    // All three walks - Update, FrameUpdate and EndOfFrameUpdate - step their
+    // list BY INDEX with the size re-read each time, deliberately: a script is
+    // allowed to ATTACH another one mid-walk, and that appends to the very
+    // list being walked. REMOVAL IS THE OTHER HALF OF THAT, and it did not
+    // hold up. This function is reachable from INSIDE a walk - a script calls
+    // GetScene()->DestroyEntityImmediate, which is public and synchronous, and
+    // that reaches ScriptComponent::OnDetach and arrives here with a cursor
+    // live. An erase then pulls every later entry down one place, PAST THE
+    // CURSOR, and a live component is silently skipped for the whole frame:
+    //
+    //      [A, B, C], cursor on B, B destroys A
+    //      erase   -> [B, C], size 2, ++i == 2, 2 < 2 ends it: C NEVER TICKED
+    //      nullptr -> [-, B, C], size 3, ++i == 2: C ticked, only A skipped
+    //
+    // Writing nullptr changes neither the size nor anybody's position, so the
+    // cursor stays aligned and the only entry skipped is the dead one - which
+    // is what was wanted. The walks null-check, and the std::erase_if that
+    // each one ALREADY ran at its end now drops nulls too, so a tombstone is
+    // gone by the time the walk is. No extra pass and no allocation is added
+    // to the fixed-step path.
+    //
+    // THE END-OF-FRAME PASS IS WHAT MADE THIS WORTH MORE THAN A TIDY-UP. A
+    // coroutine waiting on WaitForEndOfFrame is stepped over by the update
+    // pass BY DESIGN, so a resume lost in the end-of-frame walk is not quietly
+    // caught up by the next frame's update pass: only another end-of-frame
+    // pass can reach it, a whole frame late.
+    //
+    // AND ERASED WHEN NOTHING IS WALKING, which is not an optimisation. Both
+    // tick paths are gated on an unpaused clock, so in EDIT MODE neither walk
+    // ever runs - and a tombstone written there would never meet a sweep. A
+    // session of adding and deleting script components would grow these
+    // vectors without bound and never shrink them. Outside a walk there is no
+    // cursor to protect, so the plain erase is both correct and self-limiting.
+    if (g_walkDepth > 0) {
+        ScriptComponent* const dead = nullptr;
+        std::replace(g_fixedTicking.begin(), g_fixedTicking.end(), &script, dead);
+        std::replace(g_frameTicking.begin(), g_frameTicking.end(), &script, dead);
+    } else {
+        std::erase(g_fixedTicking, &script);
+        std::erase(g_frameTicking, &script);
+    }
 }
 
 void ScriptSystem::Clear() {
@@ -1506,8 +1577,24 @@ void ScriptSystem::Clear() {
     g_frameTicking.clear();
 }
 std::size_t ScriptSystem::Count() { return g_scripts.size(); }
-std::size_t ScriptSystem::TickingCount()      { return g_fixedTicking.size(); }
-std::size_t ScriptSystem::FrameTickingCount() { return g_frameTicking.size(); }
+
+// NOT A size(), AND THAT IS THE TOMBSTONE SHOWING THROUGH. While a walk is in
+// progress a ticking list can hold nullptr entries for components that have
+// just been unregistered - see Unregister - so size() would over-report to
+// anything that asked from inside a hook. Both of these are introspection for
+// the editor and the tests rather than frame work, and the lists hold tens of
+// entries, so counting is the right price for an answer that is never wrong.
+// Count() above stays a size(): g_scripts is erased, never tombstoned.
+std::size_t ScriptSystem::TickingCount() {
+    return static_cast<std::size_t>(
+        std::count_if(g_fixedTicking.begin(), g_fixedTicking.end(),
+                      [](const ScriptComponent* script) { return script != nullptr; }));
+}
+std::size_t ScriptSystem::FrameTickingCount() {
+    return static_cast<std::size_t>(
+        std::count_if(g_frameTicking.begin(), g_frameTicking.end(),
+                      [](const ScriptComponent* script) { return script != nullptr; }));
+}
 
 std::size_t ScriptSystem::UnresolvedCount() {
     std::size_t count = 0;
@@ -1579,12 +1666,18 @@ void ScriptSystem::RebindAll() {
 }
 
 // ---------------------------------------------------------------------------
-//  The two walks.
+//  The three walks.
 //
-//  They are the same four lines twice rather than one shared helper taking a
-//  list and a member-function pointer. The shared version was written first
-//  and read considerably worse than this does, for no saving: the whole body
-//  is a loop and an erase_if.
+//  They are the same few lines three times rather than one shared helper
+//  taking a list and a member-function pointer. The shared version was written
+//  first and read considerably worse than this does, for no saving: the whole
+//  body is a loop and an erase_if.
+//
+//  ALL THREE OPEN A WalkScope, SKIP A NULL ENTRY, AND SWEEP NULLS AWAY AT THE
+//  END. That is the one invariant the three share and none of it is optional:
+//  Unregister tombstones a slot rather than erasing it precisely so that these
+//  loops can keep their cursor while a component dies underneath them. See the
+//  note on Unregister for what erasing did instead.
 // ---------------------------------------------------------------------------
 
 void ScriptSystem::Update(float /*fixedStepSeconds*/) {
@@ -1597,8 +1690,13 @@ void ScriptSystem::Update(float /*fixedStepSeconds*/) {
     // OnFixedUpdate is allowed to attach another script, which appends to
     // this very list. A range-for would be reading the list while it changed
     // underneath.
+    const WalkScope walking;
     for (std::size_t i = 0; i < g_fixedTicking.size(); ++i) {
-        g_fixedTicking[i]->FixedTick();
+        ScriptComponent* script = g_fixedTicking[i];
+        if (script == nullptr) {
+            continue;   // a tombstone - unregistered, perhaps inside this walk
+        }
+        script->FixedTick();
     }
 
     // Drop anything that no longer needs walking. This is where a script
@@ -1609,18 +1707,27 @@ void ScriptSystem::Update(float /*fixedStepSeconds*/) {
     // from a list while stepping through it by index skips whatever moves
     // into the gap.
     std::erase_if(g_fixedTicking, [](const ScriptComponent* script) {
-        return !script->NeedsFixedTick();
+        // THE NULL TEST FIRST, and it is load-bearing rather than defensive:
+        // a tombstone's component has already been destroyed, so asking it
+        // anything at all is a use-after-free.
+        return script == nullptr || !script->NeedsFixedTick();
     });
 }
 
 void ScriptSystem::FrameUpdate() {
     ++g_resumePass;
+    const WalkScope walking;
     for (std::size_t i = 0; i < g_frameTicking.size(); ++i) {
-        g_frameTicking[i]->FrameTick();
+        ScriptComponent* script = g_frameTicking[i];
+        if (script == nullptr) {
+            continue;   // a tombstone - unregistered, perhaps inside this walk
+        }
+        script->FrameTick();
     }
 
     std::erase_if(g_frameTicking, [](const ScriptComponent* script) {
-        return !script->NeedsFrameTick();
+        // The null test first, for the reason given in Update above.
+        return script == nullptr || !script->NeedsFrameTick();
     });
 }
 
@@ -1639,15 +1746,21 @@ void ScriptSystem::EndOfFrameUpdate() {
     // Walked by index with the size re-read, for the reason the loops above
     // are: a resumed coroutine may attach a script, which appends to this very
     // list, and a range-for would be reading it while it moved.
+    const WalkScope walking;
     for (std::size_t i = 0; i < g_frameTicking.size(); ++i) {
-        g_frameTicking[i]->EndOfFrameTick();
+        ScriptComponent* script = g_frameTicking[i];
+        if (script == nullptr) {
+            continue;   // a tombstone - unregistered, perhaps inside this walk
+        }
+        script->EndOfFrameTick();
     }
 
     // The same sweep, because this pass can be the one that finishes a
     // coroutine - and a component whose last one has just ended stops needing
     // to be walked from here on.
     std::erase_if(g_frameTicking, [](const ScriptComponent* script) {
-        return !script->NeedsFrameTick();
+        // The null test first, for the reason given in Update above.
+        return script == nullptr || !script->NeedsFrameTick();
     });
 }
 
