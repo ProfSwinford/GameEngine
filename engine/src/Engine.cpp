@@ -734,7 +734,11 @@ void Engine::Simulate() {
     //  Time::UnscaledDeltaTime(), because DeltaTime() is scaled and is
     //  therefore 0 for exactly as long as the game is stopped.
     // ======================================================================
-    if (!m_clock.IsPaused() || m_stepsThisFrame > 0) {
+    // DECIDED HERE AND REMEMBERED, because PresentFrame needs the very same
+    // answer for the end-of-frame coroutine pass and the pause can be toggled
+    // in between. See m_scriptsUpdatedThisFrame.
+    m_scriptsUpdatedThisFrame = !m_clock.IsPaused() || m_stepsThisFrame > 0;
+    if (m_scriptsUpdatedThisFrame) {
         ScriptSystem::FrameUpdate();
     }
 
@@ -853,6 +857,30 @@ void Engine::RenderFrame() {
 }
 
 void Engine::PresentFrame() {
+    // ======================================================================
+    //  THE END OF THE FRAME - the last thing before the picture is shown.
+    //
+    //  HERE, AND NOT AT THE CALL SITES. Every host presents through this one
+    //  function: Engine::Run, the standalone player's loop, and the editor once
+    //  its interface has drawn. So `co_yield WaitForEndOfFrame()` resumes at the
+    //  same instant in all of them, and a host written later cannot forget to
+    //  call it - which three call sites could.
+    //
+    //  AND NOT A RENDER STAGE, for the reason the per-frame update is not one:
+    //  the editor draws the world TWICE, once for the Game view and once for
+    //  the Scene view, so a stage would mean two moments in the editor and one
+    //  in the player. This is a point in the frame, not a point in a draw.
+    //
+    //  Behind Simulate's remembered answer rather than asking the clock again -
+    //  see m_scriptsUpdatedThisFrame for why asking twice is a bug and not a
+    //  tidiness matter. Cleared after use, so presenting twice in one frame
+    //  would resume nothing a second time.
+    // ======================================================================
+    if (m_scriptsUpdatedThisFrame) {
+        ScriptSystem::EndOfFrameUpdate();
+        m_scriptsUpdatedThisFrame = false;
+    }
+
     Renderer::Present();
 }
 

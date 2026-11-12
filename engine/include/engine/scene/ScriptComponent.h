@@ -118,6 +118,7 @@
 // ============================================================================
 
 #include <engine/scene/Component.h>
+#include <engine/scene/Coroutine.h>
 // Scene.h, because the templates on ScriptBehaviour below walk the scene and
 // the hierarchy, so Scene and Entity both have to be complete here rather
 // than merely named. Nothing Scene.h includes includes this file back.
@@ -638,6 +639,58 @@ public:
     void Destroy(EntityId id) const;
     void Destroy(Entity& entity) const;
 
+    // ======================================================================
+    //  COROUTINES - Unity's StartCoroutine. See scene/Coroutine.h.
+    //
+    //      Coroutine Blink() {
+    //          flash->SetTint(Color::Red());
+    //          co_yield WaitForSeconds(0.5f);
+    //          flash->SetTint(Color::White());
+    //      }
+    //      void OnStart() { StartCoroutine(Blink()); }
+    //
+    //  RESUMED ON THE MAIN THREAD, from the same place OnUpdate runs - so a
+    //  coroutine may touch the scene exactly as OnUpdate may, and no more.
+    //  There is no worker thread; Coroutine.h says why there must not be.
+    //
+    //  ONCE PER DRAWN FRAME, in one of TWO passes: the ordinary one inside
+    //  FrameTick, and the end-of-frame one in Engine::PresentFrame that only
+    //  `co_yield WaitForEndOfFrame()` uses. A coroutine belongs to exactly one
+    //  of them at a time, so it is resumed once a frame either way.
+    //
+    //  THE COROUTINE BELONGS TO THIS BEHAVIOUR and cannot outlive it: it is
+    //  destroyed when the entity goes, when the component is removed, when the
+    //  scene is replaced, when play stops, on every undo step and on every
+    //  script rebuild. That is not politeness - a coroutine written as a member
+    //  function holds `this` inside its frame, so an orphaned one is a dangling
+    //  `this` rather than a leak.
+    //
+    //  CONST like every other verb here, and for a reason worth knowing: the
+    //  frames live on the ScriptComponent and not in this object, which is what
+    //  lets them be destroyed in the right order - while the behaviour is still
+    //  whole, rather than from a destructor that has already run.
+    //
+    //  The id is there for StopCoroutine and is ignorable, so
+    //  `StartCoroutine(Blink());` is the ordinary spelling. A behaviour with no
+    //  component yet - the gap between construction and bind - gets
+    //  CoroutineId::None and the frame is freed rather than leaked.
+    // ======================================================================
+    CoroutineId StartCoroutine(Coroutine routine) const;
+
+    // True if it was running. A coroutine that already finished is not an
+    // error to stop: ids are never reused, so this is simply false.
+    bool StopCoroutine(CoroutineId id) const;
+
+    void        StopAllCoroutines() const;
+    std::size_t RunningCoroutineCount() const;
+
+    // Unity's string form, DELETED rather than absent so that
+    // StartCoroutine("Blink") points at this note instead of at a conversion
+    // error. It needs reflection, and this engine has none and can have none:
+    // a `requires` expression can ask whether a NAMED member exists, and no
+    // C++ construct can ask what members a class has. Call the function.
+    CoroutineId StartCoroutine(std::string_view) const = delete;
+
     // Unity's Destroy(obj, t). The delay is GAME time, so it stops while the
     // game is paused, and the thing behaves completely normally until it
     // fires - see QueueDestroyAfter in DeferredOps.h for why that sentence
@@ -742,6 +795,17 @@ public:
         // pointing at a name that no longer exists.
         std::string sourceFile;
     };
+
+    // How many times a registration has turned out to be a script that was
+    // already registered from the SAME file - which is what happens to every
+    // library but the first when a script class lives in a shared header.
+    //
+    // Only ScriptLibrary::Load has any business with this: it reads the number
+    // either side of a load so that it can tell "this library registered
+    // nothing because it has no ENGINE_REGISTER_SCRIPT" from "this library
+    // registered nothing because somebody else got there first". Those want
+    // very different things said about them.
+    static std::size_t RepeatCount();
 
     static void Register(std::string_view scriptName, CreateFn create,
                          const ScriptHooks& hooks, std::string_view sourceFile);
@@ -921,8 +985,15 @@ public:
         return m_behaviour != nullptr && (!m_started || m_hooks.fixedUpdate != nullptr);
     }
     bool NeedsFrameTick() const {
-        return m_behaviour != nullptr && (!m_started || m_hooks.update != nullptr);
+        return m_behaviour != nullptr &&
+               (!m_started || m_hooks.update != nullptr || !m_coroutines.empty());
     }
+
+    // WITHOUT THE COROUTINE TEST ABOVE the feature would appear to work once
+    // and then stop. A script whose only hook is OnStart leaves g_frameTicking
+    // on its first frame - that is what the erase_if after the walk is for -
+    // and a coroutine started in OnStart would never be resumed again.
+    bool HasLiveCoroutines() const { return !m_coroutines.empty(); }
 
     // Called by ScriptSystem only.
     //
@@ -931,6 +1002,17 @@ public:
     // it wants, and gets the right answer for whichever of these it is in.
     void FixedTick();
     void FrameTick();
+
+    // THE SECOND PER-FRAME PASS, after everything has been drawn and just
+    // before the picture is shown. It resumes the coroutines that asked for
+    // WaitForEndOfFrame, and does nothing else whatever.
+    //
+    // NO HOOK, AND NO EnsureStarted. There is no OnEndOfFrame for a script to
+    // write - this exists only so that `co_yield WaitForEndOfFrame()` has
+    // somewhere to land - and a script that has not started by now must not
+    // fire its OnStart after its first frame has already been drawn. Whichever
+    // ordinary tick reaches it first still owns that.
+    void EndOfFrameTick();
     // `pairToken` names WHICH COLLIDER PAIR the event is for; see
     // CollisionSystem::ContactForEvent. It defaults to "none", which falls
     // back to looking the contact up by entity pair - right for a caller that
@@ -967,6 +1049,87 @@ private:
     std::unique_ptr<ScriptBehaviour> m_behaviour;
     ScriptHooks                      m_hooks;
     bool                             m_started = false;
+
+    // ---- running coroutines ---------------------------------------------
+    //
+    // HERE RATHER THAN ON ScriptBehaviour, which would die with the object on
+    // every path for free and is the tempting answer. It is wrong by one step
+    // of destruction order: ~ScriptBehaviour runs AFTER the derived script's
+    // destructor, so a suspended frame's locals would be destroyed with the
+    // script's own members already gone. Unbind() destroys them while the
+    // behaviour is still whole.
+    //
+    // HERE RATHER THAN IN A REGISTRY KEYED BY ENTITY, too. An entity may carry
+    // several ScriptComponents, so an EntityId does not identify a behaviour;
+    // and entity slots are recycled, so a stale key can match a brand new
+    // entity. The component is the thing being destroyed, so it is the key
+    // that needs no generation counter - and nothing has to be told anything,
+    // which is the failure mode this codebase keeps rediscovering.
+    //
+    // Made of addresses inside the compiled script library, exactly like
+    // m_hooks and m_fields, and emptied in the same place for the same reason.
+    struct RunningCoroutine {
+        CoroutineId       id     = CoroutineId::None;
+        Coroutine::Handle handle = {};
+
+        // Marked by StopCoroutine and swept after the walk, never destroyed
+        // in place: a coroutine may stop itself, and the frame being resumed
+        // has to outlive its own resume() call.
+        bool stopRequested = false;
+
+        // ==================================================================
+        //  WHICH RESUME PASS LAST TOUCHED THIS, so that no pass can resume one
+        //  frame twice. Compared against a counter the ScriptSystem bumps at
+        //  the top of each pass; an entry already stamped with the current one
+        //  is stepped over.
+        //
+        //  THE SNAPSHOT ALONE WAS NOT ENOUGH, and the gap is worth spelling
+        //  out. ResumeCoroutines takes the size of THIS component's list
+        //  before walking it, which stops a coroutine that starts another on
+        //  ITSELF from being resumed twice. But StartCoroutine is reachable on
+        //  ANOTHER behaviour - FindScriptIn<T>() hands you one, and the header
+        //  recommends it - and AddCoroutine resumes the new coroutine
+        //  immediately. If that other component has not been walked yet, its
+        //  own snapshot is taken afterwards and includes the brand new entry,
+        //  which is then resumed a second time in the same pass. A
+        //  `while (true) { Draw(); co_yield WaitForEndOfFrame(); }` would run
+        //  twice in one frame, and nothing would report it.
+        //
+        //  Stamped by AddCoroutine as well as by the walk, so a coroutine is
+        //  never resumed again in the pass that created it.
+        // ==================================================================
+        std::uint64_t resumedInPass = 0;
+    };
+    std::vector<RunningCoroutine> m_coroutines;
+
+    // Never reused, so an id that has finished is simply not found - which is
+    // what makes StopCoroutine on a dead id a no-op instead of a wrong hit.
+    std::uint64_t m_nextCoroutineId = 1;
+
+    // WHICH WAITS A RESUME PASS MAY CONTINUE.
+    //
+    // There are two passes in a frame and every coroutine belongs to exactly
+    // one of them: Update runs inside FrameTick and carries nullptr, 0 and the
+    // two timed waits; EndOfFrame runs from Engine::PresentFrame and carries
+    // nothing but WaitForEndOfFrame. Both walk the SAME list and each steps
+    // over what the other owns, which is what makes one `co_yield
+    // WaitForEndOfFrame()` resume exactly once in a frame without anything
+    // being moved between lists to be forgotten in.
+    enum class ResumePhase : unsigned char { Update, EndOfFrame };
+
+    CoroutineId AddCoroutine(Coroutine&& routine);
+    void        ResumeCoroutines(ResumePhase phase);
+    void        DestroyAllCoroutines();
+
+    // Frees the frames that have finished or been stopped. Phase-blind on
+    // purpose: StopCoroutine only MARKS, and whichever pass next sweeps should
+    // free it whatever the entry was waiting for.
+    //
+    // ALSO RUN ON A SWITCHED-OFF ENTITY, where the two ticks return early -
+    // sweeping is bookkeeping and not running the game. Without that, a
+    // coroutine stopped while its entity was off kept its frame, and its
+    // `this`, for as long as the entity stayed off, with nothing reporting it.
+    void SweepFinishedCoroutines();
 
     // Rebuilt on every bind and emptied on every unbind, exactly like
     // m_hooks: both are made of pointers into the compiled script library.
@@ -1021,13 +1184,19 @@ private:
 //  about scripts; scripts know about the reference.
 //
 //  ==========================================================================
-//  THE TYPED FORM NEEDS THE CLASS TO BE NAMEABLE, which most are not.
+//  THE TYPED FORM NEEDS A DECLARATION OF THE CLASS, which most files have not
+//  got.
 //
-//  Every script in assets/scripts sits in an `namespace { }`, so no other file
-//  can mention its type at all - that is what keeps two scripts from colliding
-//  and it is the right default. To point at a script's own members from
-//  another script, that class has to move into a header both files include;
-//  the registry already supports it (see Entry::sourceFile).
+//  Nothing HIDES a script's name any more - they share the global namespace,
+//  and used to each sit in an anonymous `namespace { }`. What Chaser.cpp lacks
+//  is a DECLARATION of a class defined in Bullet.cpp, and C++ needs a complete
+//  type to call anything on one. Two scripts are kept from colliding by the
+//  duplicate-name machinery instead: refused when a script is created or
+//  renamed, reported by the build, and warned about by the registry.
+//
+//  So to point at a script's own members from another script, that class moves
+//  into a header both files include - which is what eng::ScriptRef<T> is for;
+//  see scene/ScriptRef.h. The registry already expects it (Entry::sourceFile).
 //
 //  MOST REFERENCES DO NOT NEED IT. "Which entity, and does it have a Chaser on
 //  it" is answered by a reference constrained to "Chaser" plus a transform or
@@ -1087,14 +1256,14 @@ ScriptComponent* FindScriptNamedOn(Entity& entity, std::string_view scriptName);
 //                       exists - and enough to send it a message.
 //
 //    FindScriptIn<T>    hands back the script OBJECT, so its own members and
-//                       methods can be called. It needs T to be NAMEABLE from
-//                       the calling file, and most scripts are not: every
-//                       script in assets/scripts sits in an `namespace { }`,
-//                       which is the right default and is what stops two
-//                       scripts colliding. To point at one's members from
-//                       elsewhere, move that class into a header both files
-//                       include. The registry already supports it - see
-//                       Entry::sourceFile.
+//                       methods can be called. It needs a DECLARATION of T in
+//                       the calling file, which most files have not got -
+//                       nothing hides a script's name, but one .cpp has no
+//                       declaration of a class defined in another. To point at
+//                       one's members from elsewhere, move that class into a
+//                       header both files include; eng::ScriptRef<T> is the
+//                       reference that does it, in scene/ScriptRef.h. The
+//                       registry already expects it - see Entry::sourceFile.
 //
 //  BOTH SKIP ANYTHING QUEUED FOR DESTRUCTION, because a scorekeeper that died
 //  this tick is not the scorekeeper.
@@ -1161,6 +1330,13 @@ public:
     // only when the game is actually running - see Engine::Simulate for the
     // gate and why it is the one Unity uses.
     static void FrameUpdate();
+
+    // The end-of-frame half, called by Engine::PresentFrame ONLY and exactly
+    // once per frame, behind the same gate FrameUpdate is behind - decided once
+    // in Simulate and remembered, because the Toolbar's Pause button runs in
+    // between the two. It resumes WaitForEndOfFrame coroutines and nothing
+    // else; scene/Coroutine.h says what that does and does not promise.
+    static void EndOfFrameUpdate();
 
     static void        Register(ScriptComponent& script);
     static void        Unregister(ScriptComponent& script);

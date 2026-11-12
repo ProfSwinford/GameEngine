@@ -184,11 +184,16 @@ ScriptSourceInfo ScanScriptSource(std::string_view source);
 // then registers an exposer for it.
 //
 // INCLUDES THE ORIGINAL RATHER THAN COPYING IT, and that is the whole trick.
-// Line numbers, __FILE__ and the file's anonymous namespace all stay exactly
+// Line numbers, __FILE__ and the file's own `static` helpers all stay exactly
 // as they were, so a compiler error still points at the line you wrote and
 // ScriptRegistry still records the real source path. A rewritten copy would
 // have needed #line directives to manage half of that and would have got the
 // other half wrong.
+//
+// __FILE__ IS LOAD-BEARING AND NOT MERELY TIDY: it is what
+// ScriptRegistry::Register compares two registrations of one name by, which is
+// how a script class shared through a header registers once rather than
+// reporting a clash with itself.
 //
 // `includePath` is the original source, as the generated file should spell it.
 std::string GenerateExposerUnit(const ScriptSourceInfo& info,

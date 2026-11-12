@@ -511,12 +511,115 @@ fs::path GeneratedHeaderUnit() {
     return BuildDirectory() / "_headers.cpp";
 }
 
-// Is this text somewhere in the file? Used for two cheap checks that catch
-// real mistakes: a file that declares a script but never registers it, and a
-// header that is a script rather than a helper.
+// Is this text somewhere in the file? Used for one cheap check that catches a
+// real mistake: a file that declares a script but never registers it.
+//
+// A RAW SUBSTRING SEARCH, COMMENTS AND ALL, so do not reach for it to ask
+// whether a file IS a script - a file that merely mentions the macro in a
+// comment answers yes. FileRegistersAScript below is the question-asking one.
 bool FileContains(const fs::path& path, std::string_view needle) {
     const std::string text = ReadWholeFile(path);
     return text.find(needle) != std::string::npos;
+}
+
+// Does this file actually register a script? Asked of every header, to tell a
+// script written in one from a plain helper being included.
+//
+// THROUGH THE REAL SCANNER rather than a substring search, because a substring
+// search gets this wrong in the one case that matters most. A shared header
+// holding a class for other scripts to point at will very naturally carry a
+// comment saying where the registrar goes - "ENGINE_REGISTER_SCRIPT lives in
+// the .cpp" - and that comment alone used to promote the header to a compiled
+// translation unit of its own. ScanScriptSource strips comments first and takes
+// the name only from a real macro call, which is the same answer the duplicate
+// -name guard and the registry give.
+bool FileRegistersAScript(const fs::path& path) {
+    return !eng::ScanScriptSource(ReadWholeFile(path)).className.empty();
+}
+
+// ---------------------------------------------------------------------------
+//  A SCRIPT'S OWN QUOTED INCLUDES, concatenated, for the variable scan.
+//
+//  The scanner reads ONE file and takes the class name from
+//  ENGINE_REGISTER_SCRIPT, then looks for that class's body in the same text.
+//  That is exactly right until a script class moves into a header so another
+//  script can point at it - which is what eng::ScriptRef<T> asks for. Then the
+//  .cpp holds the macro and the header holds the body, the scan finds a name
+//  and no class, and EVERY public variable of that script silently leaves the
+//  Inspector with nothing said about it.
+//
+//  So the caller widens the text. QUOTED INCLUDES ONLY - an <engine/...> one
+//  would drag the whole engine in and is never where a script class lives -
+//  and resolved against the directory of the file that wrote the line, which
+//  is the rule the compiler itself applies. ONE LEVEL DEEP, deliberately: a
+//  header that includes another header that holds the class is past the point
+//  where guessing is kind, and the scan reports what it could not find.
+//
+//  Line numbers survive this because nothing in ScriptSourceInfo carries one -
+//  a skipped variable is reported by NAME. See tools/ScriptVars.h.
+// ---------------------------------------------------------------------------
+std::string QuotedIncludeText(const fs::path& source, const std::string& sourceText) {
+    const fs::path folder = source.parent_path();
+    std::string    joined;
+
+    std::size_t at = 0;
+    while ((at = sourceText.find("#include", at)) != std::string::npos) {
+        const std::size_t lineEnd = sourceText.find('\n', at);
+        const std::string line =
+            sourceText.substr(at, lineEnd == std::string::npos ? std::string::npos
+                                                               : lineEnd - at);
+        at = lineEnd == std::string::npos ? sourceText.size() : lineEnd + 1;
+
+        const std::size_t openQuote = line.find('"');
+        if (openQuote == std::string::npos) {
+            continue;   // <engine/Engine.h> and friends
+        }
+        const std::size_t closeQuote = line.find('"', openQuote + 1);
+        if (closeQuote == std::string::npos || closeQuote <= openQuote + 1) {
+            continue;
+        }
+        const std::string spelled = line.substr(openQuote + 1, closeQuote - openQuote - 1);
+
+        std::error_code ec;
+        const fs::path  resolved = fs::weakly_canonical(folder / spelled, ec);
+        if (ec || !fs::exists(resolved, ec)) {
+            continue;   // not ours to diagnose; the compiler will say so
+        }
+        joined += ReadWholeFile(resolved);
+        joined += '\n';
+    }
+    return joined;
+}
+
+// The variables and hooks of the script in `source`, looking into the headers
+// it includes when the class is not in the file that registers it.
+eng::ScriptSourceInfo ScanScriptWithIncludes(const fs::path& source) {
+    const std::string    sourceText = ReadWholeFile(source);
+    eng::ScriptSourceInfo info      = eng::ScanScriptSource(sourceText);
+
+    // Nothing registered here, or the class was found and read - either way
+    // there is nothing to widen for. Both lists empty is the signature of "the
+    // name is here and the body is not"; a class with genuinely no variables
+    // looks the same and simply gains nothing below.
+    if (info.className.empty() || !info.vars.empty() || !info.skipped.empty()) {
+        return info;
+    }
+
+    const std::string headers = QuotedIncludeText(source, sourceText);
+    if (headers.empty()) {
+        return info;
+    }
+
+    // THE HEADERS FIRST, then the file that registers the class. One text with
+    // the macro in it AND the class body in it is all the scanner wants.
+    const eng::ScriptSourceInfo widened = eng::ScanScriptSource(headers + "\n" + sourceText);
+    if (widened.className != info.className) {
+        return info;   // a different class came first; do not guess
+    }
+    if (widened.vars.empty() && widened.skipped.empty() && !widened.hasOnExpose) {
+        return info;   // genuinely nothing there
+    }
+    return widened;
 }
 
 // Turns a real path back into the short form the rest of the engine uses, so
@@ -1269,8 +1372,9 @@ ScriptBuild::Sources ScriptBuild::GatherSources() {
         } else if (ext == ".h" || ext == ".hpp" || ext == ".hxx") {
             // A header that registers a script is compiled through the
             // generated unit; every other header is only watched for changes.
-            // See Sources.
-            if (FileContains(entry.path(), "ENGINE_REGISTER_SCRIPT")) {
+            // See Sources - and FileRegistersAScript for why this is not a
+            // substring search.
+            if (FileRegistersAScript(entry.path())) {
                 sources.headers.push_back(ToVirtualPath(entry.path()));
             } else {
                 sources.helpers.push_back(ToVirtualPath(entry.path()));
@@ -1311,10 +1415,11 @@ ScriptBuild::Sources ScriptBuild::GatherSources() {
 //  ==========================================================================
 //  EVERY SOURCE IS COMPILED THROUGH A GENERATED UNIT THAT #includes IT.
 //
-//  Not copied - included. Line numbers, __FILE__ and the file's own anonymous
-//  namespace all stay exactly as they were, so a compiler error still points
-//  at the line you wrote. ScriptVars.h makes the same point about the exposer
-//  it generates, and this is the same trick applied to every file.
+//  Not copied - included. Line numbers, __FILE__ and the file's own `static`
+//  helpers all stay exactly as they were, so a compiler error still points at
+//  the line you wrote. ScriptVars.h makes the same point about the exposer it
+//  generates, and this is the same trick applied to every file - and says why
+//  __FILE__ in particular is load-bearing rather than merely tidy.
 //
 //  The reason EVERY file gets one, even a helper with nothing to expose, is
 //  duller: the units are compiled in a single `cl /c /MP` so that one process
@@ -1648,7 +1753,7 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
         unit.unitPath          = UnitDirectory() / (base + ".cpp");
         unit.objectPath        = ObjectDirectory() / (base + ".obj");
 
-        const eng::ScriptSourceInfo info = eng::ScanScriptSource(ReadWholeFile(unit.realSource));
+        const eng::ScriptSourceInfo info = ScanScriptWithIncludes(unit.realSource);
         unit.className                   = info.className;
         unit.isScript                    = !info.className.empty();
 
@@ -1743,10 +1848,41 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
             WritePchInclude(out);
             out << "// Written by the editor. Do not edit - it is regenerated on every\n";
             out << "// build from the .h files under assets/ that register a script.\n";
+
+            // ---- AND THEIR EXPOSERS, not just the includes ---------------
+            //
+            // This loop used to write nothing but #include lines, which meant
+            // a script written entirely in a header could never have a single
+            // Inspector variable - GenerateExposerUnit was called in exactly
+            // one place and that place walked the .cpp list only. The failure
+            // was silent in the way this build is careful about everywhere
+            // else: a clean compile, a script that runs, and an empty panel.
+            //
+            // The generated text includes the header itself and names the
+            // class only inside its own EngineAutoExpose_<Class>, so any
+            // number of these concatenate into one unit. The repeated standard
+            // includes are idempotent.
             for (const std::string& header : sources.headers) {
-                out << "#include \""
-                    << fs::path(eng::FileSystem::Resolve(header)).generic_string()
-                    << "\"\n";
+                const fs::path real(eng::FileSystem::Resolve(header));
+                const eng::ScriptSourceInfo info = ScanScriptWithIncludes(real);
+
+                if (!info.className.empty() && !info.hasOnExpose && !info.vars.empty()) {
+                    out << eng::GenerateExposerUnit(info, real.generic_string());
+                } else {
+                    out << "#include \"" << real.generic_string() << "\"\n";
+                }
+
+                // The same report the .cpp path gives, for the same reason:
+                // "my variable did not appear" is hardest to answer when
+                // there is no Inspector row to compare against.
+                if (!info.hasOnExpose) {
+                    for (const eng::ScriptVarSkipped& skipped : info.skipped) {
+                        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                                        "{}: '{}' is not shown in the Inspector "
+                                        "because {}",
+                                        header, skipped.name, skipped.reason);
+                    }
+                }
             }
         }
 

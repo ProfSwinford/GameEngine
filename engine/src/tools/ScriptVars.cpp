@@ -423,27 +423,42 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
     }
 
     // ======================================================================
-    //  THE LONG SPELLING, eng::ComponentRef<eng::SpriteComponent>.
+    //  THE LONG SPELLINGS: eng::ComponentRef<eng::SpriteComponent> for a
+    //  component the engine defines, and eng::ScriptRef<Bullet> for a class
+    //  the game defines.
     //
     //  A PREFIX, so the table above cannot hold it: every entry there is an
-    //  exact word match. The component is lifted out of the template argument
-    //  textually and becomes the constraint, which is the one place in this
-    //  file where a type name is read rather than recognised.
+    //  exact word match. The component or the script is lifted out of the
+    //  template argument textually and becomes the constraint, which is the
+    //  one place in this file where a type name is read rather than
+    //  recognised.
     //
     //  NO REGISTRY IS CONSULTED AND NONE COULD BE - this parser is pure, and
     //  the exposer is generated with no scene and no components registered.
     //  ScriptFields::AddRef already warns about a constraint naming nothing,
     //  in the one place that can actually answer the question.
     //
+    //  THE TEXT IS ALREADY THE RIGHT STRING FOR BOTH, which is why one branch
+    //  serves them: `eng::SpriteComponent` loses its `eng::` and equals
+    //  SpriteComponent::kTypeName, and `Bullet` is already character-for-
+    //  character what ENGINE_REGISTER_SCRIPT(Bullet) stringizes, what the
+    //  registry keys on, and what ScriptComponent::ScriptName() hands
+    //  EntityHasNamed. So a script constraint lands already matching.
+    //
     //  The synthetic entry carries the WHOLE spelling, so the substr below
     //  steps past `ComponentRef<...>` without this branch having to know how.
     // ======================================================================
-    std::string  componentRefSpelling;
-    std::string  componentRefArgument;
+    // Named for the two of them, not for ComponentRef alone. NOTE that
+    // `synthetic` below holds string_views INTO these, so anything factoring
+    // this branch into a helper that returns a TypeSpelling returns dangling
+    // views.
+    std::string  refSpelling;
+    std::string  refArgument;
     TypeSpelling synthetic{};
     if (matched == nullptr) {
         for (const std::string_view prefix :
-             {std::string_view("eng::ComponentRef"), std::string_view("ComponentRef")}) {
+             {std::string_view("eng::ComponentRef"), std::string_view("ComponentRef"),
+              std::string_view("eng::ScriptRef"), std::string_view("ScriptRef")}) {
             if (!WordAt(code, 0, prefix)) {
                 continue;
             }
@@ -451,21 +466,44 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
             if (open == std::string::npos) {
                 break;
             }
-            const std::size_t close = code.rfind('>');
-            if (close == std::string::npos || close < open) {
+
+            // ---- THE MATCHING '>', COUNTED RATHER THAN GUESSED AT ---------
+            //
+            // rfind('>') reaches into the initialiser, and the result is the
+            // one outcome this file works hardest to avoid: a variable that
+            // vanishes with nothing reported. In
+            //
+            //     ScriptRef<Bullet> t = other.Get<Thing>();
+            //
+            // the last '>' is the one inside Get<Thing>, so the argument came
+            // out as `Bullet> t = other.Get<Thing`, the synthetic spelling
+            // swallowed the name, and the member was neither exposed nor
+            // listed as skipped. Depth-counting from the opening '<' is the
+            // whole fix, and it was wrong for ComponentRef the same way.
+            std::size_t close = std::string::npos;
+            for (std::size_t i = open, depth = 0; i < code.size(); ++i) {
+                if (code[i] == '<') {
+                    ++depth;
+                } else if (code[i] == '>') {
+                    if (--depth == 0) {
+                        close = i;
+                        break;
+                    }
+                }
+            }
+            if (close == std::string::npos) {
                 break;
             }
-            componentRefArgument = TrimmedCopy(code.substr(open + 1, close - open - 1));
-            if (componentRefArgument.starts_with("eng::")) {
-                componentRefArgument.erase(0, 5);
+            refArgument = TrimmedCopy(code.substr(open + 1, close - open - 1));
+            if (refArgument.starts_with("eng::")) {
+                refArgument.erase(0, 5);
             }
-            if (componentRefArgument.empty()) {
+            if (refArgument.empty()) {
                 break;
             }
-            componentRefSpelling = code.substr(0, close + 1);
-            synthetic = TypeSpelling{componentRefSpelling, ScriptFieldType::Entity,
-                                     componentRefArgument};
-            matched   = &synthetic;
+            refSpelling = code.substr(0, close + 1);
+            synthetic   = TypeSpelling{refSpelling, ScriptFieldType::Entity, refArgument};
+            matched     = &synthetic;
             break;
         }
     }
@@ -538,13 +576,15 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
             outSkipped.name   = end == std::string::npos ? rest : rest.substr(0, end);
             outSkipped.reason =
                 std::string("it is a ") + (mark == '*' ? "pointer" : "reference") +
-                ", and the Inspector edits values. For a component on ANOTHER "
+                ", and the Inspector edits values. For something on ANOTHER "
                 "entity, that you drag an entity onto, the type to write is a "
-                "reference - TransformRef, SpriteRenderer, Rigidbody2D, or "
-                "eng::ComponentRef<TheComponent> for the rest; see "
-                "scene/ComponentRef.h. For one on THIS entity, which is what a "
-                "pointer beside a script usually is, ask with Find<T>() where you "
-                "use it";
+                "reference: TransformRef, SpriteRenderer, Rigidbody2D or "
+                "eng::ComponentRef<TheComponent> for a component the engine "
+                "defines, and eng::ScriptRef<TheScript> for another script - see "
+                "scene/ComponentRef.h and scene/ScriptRef.h. For one on THIS "
+                "entity, which is what a pointer beside a script usually is, ask "
+                "with Find<T>() where you use it, or eng::FindScriptOn<T>() for a "
+                "script";
             outWasSkipped = !outSkipped.name.empty();
             return false;
         }
@@ -1018,8 +1058,8 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
     out += "// regenerated from the script's own source every time it builds.\n";
     out += "//\n";
     out += "// It INCLUDES the script rather than copying it, so every line number,\n";
-    out += "// every __FILE__ and the file's own anonymous namespace stay exactly as\n";
-    out += "// they were - a compiler error still points at the line you wrote.\n";
+    out += "// every __FILE__ and the file's own static helpers stay exactly as they\n";
+    out += "// were - a compiler error still points at the line you wrote.\n";
     out += "//\n";
     out += "// Three of the standard headers are for the loop an ARRAY variable\n";
     out += "// expands to - std::size, std::to_string and std::size_t - and\n";

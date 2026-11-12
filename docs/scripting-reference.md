@@ -870,9 +870,14 @@ One comment line, immediately above, starting with the bracket: a blank line or
 a banner line in between breaks it. A marker on the declaration's own line wins.
 
 Supported: `float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color`,
-`eng::EntityRef`, `eng::PrefabRef`, `eng::AnimationRef`, `eng::ImageRef` —
-**or a fixed-size array of any of them**. Anything else is left out, and the
-Console says which and why.
+`eng::EntityRef`, `eng::PrefabRef`, `eng::AnimationRef`, `eng::ImageRef`, and
+the two typed references — `eng::ComponentRef<T>` for a component the engine
+defines and `eng::ScriptRef<T>` for another script — **or a fixed-size array of
+any of them**. Anything else is left out, and the Console says which and why.
+
+A `[TypeName]` marker narrows a plain `eng::EntityRef`; the two typed
+references take that constraint from the type instead, so it cannot drift away
+from what the script actually calls.
 
 ### An animation is a type, not a marked string
 
@@ -994,6 +999,140 @@ Nothing in this project ever used the marker, which is the problem it had — a
 mechanism with no example anywhere, findable only by reading the engine's own
 headers.
 
+### Coroutines
+
+Unity's `StartCoroutine`, with C++20's `co_yield` in place of `yield return`:
+
+```cpp
+Coroutine Blink() {
+    while (true) {
+        flash->SetTint(Color::Red());
+        co_yield WaitForSeconds(0.5f);           // yield return new WaitForSeconds(.5f)
+        flash->SetTint(Color::White());
+        co_yield WaitForSecondsRealtime(0.5f);   // ignores timeScale
+        co_yield nullptr;                        // yield return null  -> next frame
+        co_yield 0;                              // yield return 0     -> next frame
+        co_yield WaitForEndOfFrame();            // after every OnUpdate, after every draw
+    }
+}
+
+void OnStart() { StartCoroutine(Blink()); }
+```
+
+| | |
+|---|---|
+| `co_yield WaitForSeconds(s)` | **Game** time. Stops dead at `timeScale` 0, which is what makes it right for anything the player can see. |
+| `co_yield WaitForSecondsRealtime(s)` | **Real** time. Ignores `timeScale` - the same split `Time::DeltaTime` and `Time::UnscaledDeltaTime` make. |
+| `co_yield nullptr` or `co_yield 0` | Next frame. Both spellings work, because both are Unity's. |
+| `co_yield WaitForEndOfFrame()` | **No time at all.** Still *this* frame, after every script's `OnUpdate` and after every next-frame resume. An ordering barrier, not a drawing opportunity - see below. |
+
+**There is no thread, and there must not be one.** A coroutine is resumed on the
+main thread, from the same place `OnUpdate` runs - which is what Unity does too:
+`yield return` suspends a state machine and the player loop resumes it between
+updates. There are two resume points in a drawn frame and any one coroutine uses
+exactly one of them - the ordinary pass where `OnUpdate` runs, and the
+end-of-frame pass that only `WaitForEndOfFrame` uses - so a coroutine is resumed
+once per frame either way. So a coroutine may do exactly what `OnUpdate`
+may do, no more and no less, and that equivalence is the whole value of it. A
+coroutine on another thread could not touch a transform or a component safely;
+this engine has `DeferredOps` because that is not even safe from the *main*
+thread partway through a frame.
+
+**The body starts inside `StartCoroutine`**, running up to its first
+`co_yield`, exactly as in Unity. A `Coroutine` nobody starts runs nothing at all
+and frees itself, so a forgotten `StartCoroutine` is a no-op rather than a leak -
+and the compiler mentions the unused result.
+
+**It dies with the script that started it**: when the entity is destroyed, the
+component removed, the scene replaced, play stopped, on every undo step, and on
+every script rebuild. That is not politeness. A coroutine written as a member
+function holds `this` inside its frame, so one outliving its script would be a
+dangling `this` rather than a leak.
+
+```cpp
+CoroutineId id = StartCoroutine(Blink());
+StopCoroutine(id);        // true if it was running
+StopAllCoroutines();      // and this one needs no id
+RunningCoroutineCount();  // how many are live right now
+```
+
+The id is ignorable - `StartCoroutine(Blink());` is the ordinary spelling.
+Stopping one that already finished is simply `false`, never a wrong hit: ids are
+never reused.
+
+**Two differences from Unity, both deliberate:**
+
+- **Nothing ticks while the game is paused**, including `WaitForSecondsRealtime`.
+  The resume runs from the frame update, which the engine does not call at all
+  while the clock is paused with no simulation steps. A paused game is frozen,
+  and a coroutine is part of the game.
+- **Switching the entity off pauses its coroutines; it does not lose them.**
+  Unity destroys a GameObject's coroutines when it is deactivated. Here every
+  other thing on a disabled entity resumes where it left off, so a coroutine
+  that silently evaporated would be the one exception. Switch it back on and it
+  carries on.
+
+**Do not destroy your own entity from inside a coroutine with
+`Scene::DestroyEntityImmediate`** - the frame being resumed would be freed
+underneath the resume. Use `DestroySelf()`, which defers to stage 600, after the
+resume pass. That is the rule `Scene.h` already states for every other piece of
+game code, for the same reason.
+
+**What `co_yield` will not take** is anything else, and that is on purpose.
+Unity treats an unrecognised object as "next frame", so `yield return 0.5f`
+silently waits one frame instead of half a second; here it does not compile, and
+the error says what to write. There is no `WaitUntil` or `WaitWhile` yet, no
+`yield return` of another coroutine yet, and no `StartCoroutine("Blink")` -
+that needs reflection this engine does not have.
+
+**`co_yield WaitForEndOfFrame()` is an ordering primitive, not a rendering
+one.** It resumes in the same frame, from `Engine::PresentFrame()` - the one
+call every host makes, so it is the same instant in the editor and in the
+standalone player - strictly after every script's `OnUpdate` and after every
+`co_yield nullptr` resume of that frame.
+
+That barrier is the whole of what it buys, and `co_yield nullptr` cannot give it
+to you: that one resumes a coroutine inside its *own* component's frame tick, so
+it lands before a later component's `OnUpdate`. Reach for `WaitForEndOfFrame`
+when a coroutine reads something any script might still have been changing this
+frame - a score several objects add to, a flag another script raises in its
+`OnUpdate` - where the answer would otherwise depend on the order things were
+attached in.
+
+**What it does not buy is anything to do with the picture.** Drawing is over by
+then in both hosts, and `Gizmos::EndFrame` has already aged the gizmo queue, so
+a gizmo issued there appears a frame *late*. A direct `Renderer::` call is worse
+than late: it lands on top of everything already drawn, which in the editor
+means on top of the editor's own panels, because the Game view drew into its own
+texture while the window now holds the interface. Draw from `OnUpdate`. Unity's
+reason for this wait is `ScreenCapture`/`ReadPixels` on the finished back buffer,
+and this engine exposes no framebuffer readback at all - so that use does not
+exist here, and the resume is before the swap rather than after it, which makes
+it no kind of "the frame has been shown" signal either.
+
+**It promises a phase, not a priority.** "After every `OnUpdate`" is exact and
+the same in both hosts. Which of two coroutines both waiting here goes first is
+not: that is the order their components were attached in, which is an accident
+of the scene file, is reset wholesale by every script rebuild, and has no API to
+read or set. Use it to be after *everybody*, never to be before one particular
+script.
+
+`Time::DeltaTime()` there is the same number `OnUpdate` saw - the frame is over
+and the clock has not moved on - so a coroutine that resumes in both passes of
+one frame and adds `DeltaTime()` each time has counted that frame twice. The end
+of a frame is not a new slice of time.
+
+There is no `WaitUntil` or `WaitWhile` yet, no `yield return` of another
+coroutine yet, and no `StartCoroutine("Blink")` - that needs reflection this
+engine does not have. Each is a named compile error rather than a silent wrong
+answer.
+
+**The `enum Phase` pattern is not obsolete.** A state machine you can watch in
+the Inspector beats a suspended frame you cannot, so it is still the better
+answer for anything a designer needs to see or a save file needs to store.
+`assets/scripts/GameRules.cpp` remains the worked example for it. Coroutines are
+for sequences in time, not for the game's state.
+
 ### A reference to a component on another entity
 
 Unity's object fields. Declare one, drag an entity from the Hierarchy onto the
@@ -1071,11 +1210,73 @@ private:
 | `Transform anchor;` | Does not compile, with an error that points nowhere near the cause. `ScriptBehaviour` declares `Transform2D* Transform()`, and inside a script class that inherited member function hides a namespace-scope type of the same name. | `TransformRef anchor;` |
 | `Collider2D area;` | Not a reference - it is still a plain pointer. `ColliderComponent` is the abstract base of the four collider types and has no `kTypeName`, and `Find<T>` looks a component up by exactly that name. | `eng::ComponentRef<eng::BoxColliderComponent>`, or `eng::FindCollider(entity)` for any collider |
 
-**A reference to another *script* is not expressible.** A script class lives in
-an anonymous namespace in its own file, so no other script can name the type.
-Use an `eng::EntityRef` with a `// [ScoreKeeper]` marker to get the slot, and
-`FindScriptNamedIn` or a message to do the talking — see **Talking to other
-scripts**.
+### A reference to a script on another entity
+
+The same slot, pointed at a class the *game* defines instead of one the engine
+does:
+
+```cpp
+#include "Door.h"
+
+class DoorSwitch final : public eng::ScriptBehaviour {
+public:
+    ScriptRef<Door> door;        // drag the door this plate opens
+
+    void OnTriggerEnter(eng::EntityId) {
+        if (door) {
+            door->Open();        // Door's own method
+        }
+    }
+};
+```
+
+The Inspector draws it exactly as a component reference: a drop target, a
+picker offering only the entities that carry a `Door`, the name in red when it
+stops resolving, and the saved value following a rename. It stores the target
+entity's **name** and resolves on every access, for the same four reasons a
+component reference does.
+
+`assets/scripts/Door.h`, `Door.cpp` and `DoorSwitch.cpp` are the worked example.
+
+**The class has to be visible, and that is the one thing this costs.** Scripts
+share the global namespace, so nothing hides the name — but `DoorSwitch.cpp`
+still has no *declaration* of a class defined in `Door.cpp`, and C++ needs a
+complete type to call a method on one. So a script you intend to point at lives
+in a header beside the others:
+
+```
+assets/scripts/Door.h          the class, and nothing else
+assets/scripts/Door.cpp        #include "Door.h" + ENGINE_REGISTER_SCRIPT(Door)
+assets/scripts/DoorSwitch.cpp  #include "Door.h"
+```
+
+A quoted include resolves against the directory of the file that writes it, so
+`#include "Door.h"` beside the script works with no build setting to change.
+From a sub-folder, count the `../` yourself.
+
+**Three rules about that header, each of which bites silently if broken:**
+
+| | |
+|---|---|
+| The registrar goes in **one `.cpp`** | Put `ENGINE_REGISTER_SCRIPT` in the header instead and it registers once per file that includes it. That works — the registry recognises the repeat — but which library owns the class then depends on load order. Putting it in *both* is a redefinition error, so only that mistake is loud. |
+| Methods are defined **in the class**, or `inline` | Each script compiles into its own library and nothing exports a script's symbols, so a body left in `Door.cpp` compiles and then fails to link from `DoorSwitch`'s library. |
+| It still needs a **lifecycle hook** | A class with no `OnStart`, `OnUpdate`, `OnFixedUpdate`, `OnDestroy` or collision hook is refused at compile time — "nothing would ever call it". `OnExpose` does not count. Easy to trip when writing a script that exists purely to be driven by another one. |
+
+**It cannot cross a scene.** A reference resolves against the scene that is
+running, so one pointed into a level that is not loaded is simply null.
+
+**When not to reach for it.** A reference is one slot somebody drags once.
+
+- *One-to-many, or open-ended* — "every pickup in the scene" is a collider layer
+  and a query, and `assets/scripts/GameRules.cpp` is right to be data-driven:
+  adding an eleventh pickup needs no code change. `Autopilot.cpp`'s nearest
+  pickup changes every step and cannot be dragged at all.
+- *A target that does not exist yet* — a bullet spawned from a prefab at runtime
+  cannot have had a scorekeeper dragged onto it. `Bullet.cpp` sends a message
+  instead, and the payload *is* the whole content: there is no method to call.
+- *Just asking whether something is there* — an `eng::EntityRef` with a
+  `// [Door]` marker gives you the same filtered slot with no header at all.
+  `ScriptRef` earns its keep when you call the other script's own methods.
 
 ### An array is one row per element
 
@@ -1421,11 +1622,12 @@ Said plainly, so that nobody spends an afternoon looking:
 | `AudioSource`, `AudioClip`, `PlayOneShot` | **No audio at all.** Not a gap in the scripting API - the subsystem does not exist. |
 | `Animator`, animation clips | No animator. A frame index advanced with a float and a modulo is the current answer. |
 | `ParticleSystem` | None. Spawning entities works at the scale this engine targets. |
-| `StartCoroutine`, `WaitForSeconds` | None. An `enum Phase` plus a float is the house pattern, and `assets/scripts/GameRules.cpp` is the worked example. |
+| `StartCoroutine`, `WaitForSeconds`, `WaitForEndOfFrame` | **Here**, spelled with `co_yield`. See **Coroutines** - though `WaitForEndOfFrame` is an ordering barrier only, because there is no framebuffer readback for Unity's actual use of it. No `WaitUntil`/`WaitWhile`, no nesting and no string overload - each is a named compile error rather than a silent wrong answer. |
 | `Invoke`, `InvokeRepeating` | None. Count down a float in `OnFixedUpdate`. |
 | `OnEnable`, `OnDisable` | None. Writing one is a compile error that says so. Compare `IsActive()` against last step. |
 | `enabled`, `isActiveAndEnabled` | **No per-component switch.** `SetActive` / `IsActive` are the *entity's*, and `IsActive()` already means Unity's `activeInHierarchy` - a different thing from `enabled`, so it is left out rather than spelled misleadingly. |
 | `GetComponent<T>`, `CompareTag`, `FindObjectOfType<T>` | The same jobs under house names - `Find<T>`, `HasTag`, `FindFirstComponent<T>`. The *properties* are spelled Unity's way; the *methods* are not, and there are no Unity-spelled aliases for them. |
+| `public Bullet target;` and `public SpriteRenderer flash;` — object fields | **Here**, as `ScriptRef<Bullet> target;` and `SpriteRenderer flash;`. Unity's bare field works because it is a managed reference its serializer fixes up; this engine has no VM and no reflection, so a reference stores the target entity's *name* and resolves on every access — which is what the wrapper type is for. The common component ones are typedef'd to their Unity names, and a script's own is one `using` line if you want it spelled the same. See **A reference to a script on another entity**. |
 | `SendMessage`, `BroadcastMessage` | Different model: `eng::MessageBus` is queued and typed rather than a reflective call by method name. See **Talking to other scripts**. |
 | `print` | Deliberately absent. `eng::Debug::Log` is the one to use - it keeps the level, which `print` throws away, and fills in the channel so you do not have to. `ENGINE_LOG_INFO` and friends are still there for engine code, which means a different channel on almost every line. |
 | `LateUpdate` | None. Stage 700 already runs after all gameplay and movement; see `SystemOrder.h`. |

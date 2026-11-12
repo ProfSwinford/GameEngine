@@ -1614,11 +1614,15 @@ lookup, and the entity may have been destroyed since last frame. That is the
 same rule the rest of the engine follows for `EntityId`.
 
 To reach another **script's own members** you need its class in a header both
-files include, because a script in `assets/scripts` sits in an anonymous
-namespace and no other file can name its type. Most references do not need
-that: `fields.Ref(..., "DoorSwitch", ...)` plus a transform or a message gets
-you there with no headers at all. See `engine/include/engine/scene/EntityRef.h`
-and `FindScriptOn` in `ScriptComponent.h`.
+files include - not because anything hides the name, but because one `.cpp` has
+no declaration of a class defined in another, and C++ needs a complete type to
+call anything on it. `eng::ScriptRef<T>` is the reference that does it, and
+`assets/scripts/Door.h` with `DoorSwitch.cpp` is the worked example.
+
+Most references do not need that: `fields.Ref(..., "DoorSwitch", ...)` plus a
+transform or a message gets you there with no headers at all. See
+`engine/include/engine/scene/ScriptRef.h`, `EntityRef.h`, and `FindScriptOn` in
+`ScriptComponent.h`.
 
 `assets/scripts/GameRules.cpp` is the worked example — its three HUD labels
 used to be names written in the C++.

@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include <engine/core/Log.h>
+#include <engine/core/Time.h>
 #include <engine/math/Transform2D.h>
 #include <engine/scene/Messaging.h>
 #include <engine/scene/Scene.h>
@@ -12,6 +13,7 @@
 #include <engine/scene/ScriptComponent.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <string_view>
 #include <map>
 #include <vector>
@@ -61,6 +63,19 @@ void AddTo(std::vector<ScriptComponent*>& list, ScriptComponent* script) {
         list.push_back(script);
     }
 }
+
+// ---------------------------------------------------------------------------
+//  WHICH RESUME PASS IS RUNNING, counted so that no coroutine frame is resumed
+//  twice within one of them. Bumped by ScriptSystem at the top of each pass and
+//  stamped onto an entry when it is resumed or created; see
+//  ScriptComponent::RunningCoroutine::resumedInPass for the case that needs it.
+//
+//  NEVER RESET, and it does not need to be: at one pass per frame per phase it
+//  takes some five thousand million years at 60fps to wrap a 64-bit counter.
+//  Zero is the value a fresh entry carries, and the first pass is 1, so an
+//  entry made before any pass ran is always eligible for the next one.
+// ---------------------------------------------------------------------------
+std::uint64_t g_resumePass = 0;
 
 void AddToTicking(ScriptComponent* script) {
     if (script->NeedsFixedTick()) { AddTo(g_fixedTicking, script); }
@@ -352,14 +367,48 @@ std::string DescribeHooks(const ScriptHooks& hooks) {
 //  ScriptRegistry
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// ---------------------------------------------------------------------------
+//  ONE SPELLING FOR ONE FILE, which __FILE__ does not give you.
+//
+//  Every file that includes a header gets its own __FILE__ for it, and the
+//  compiler does not spell them alike. Measured, for one header included three
+//  ways:
+//
+//      C:\dev\proj\assets\scripts\Bullet.h              from Bullet.cpp
+//      C:/dev/proj/assets/scripts/Bullet.h              from the headers unit
+//      C:\dev\proj\assets\scripts\Enemies\../Bullet.h   from a sub-folder
+//
+//  Compared raw, that one file is three, and the duplicate check below then
+//  reports a clash between a file and itself - telling somebody to "rename one
+//  of them" when only one of them exists. Which is exactly the happy path of a
+//  shared script class, so it has to be right rather than nearly right.
+// ---------------------------------------------------------------------------
+std::string NormalizedSourcePath(std::string_view spelled) {
+    if (spelled.empty()) {
+        return {};
+    }
+    return std::filesystem::path(spelled).lexically_normal().generic_string();
+}
+
+// How many registrations have been recognised as the SAME script arriving
+// again. Read either side of a library load; see ScriptRegistry::RepeatCount.
+std::size_t g_repeatRegistrations = 0;
+
+} // namespace
+
+std::size_t ScriptRegistry::RepeatCount() { return g_repeatRegistrations; }
+
 void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
                               const ScriptHooks& hooks, std::string_view sourceFile) {
     if (scriptName.empty() || create == nullptr) {
         return;
     }
 
-    ScriptTable&      table = Table();
+    ScriptTable&      table  = Table();
     const std::string name(scriptName);
+    const std::string source = NormalizedSourcePath(sourceFile);
 
     if (table.contains(name)) {
         const Entry& already = table.at(name);
@@ -368,7 +417,13 @@ void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
         // written in a .h and included by two .cpp files registers once per
         // file that included it. Same name, same file, same class - the second
         // one has nothing to add.
-        if (already.sourceFile == sourceFile) {
+        //
+        // COUNTED, because a library whose scripts ALL arrive this way has not
+        // failed - it has been beaten to them by whoever included the header
+        // first - and the loader would otherwise warn that nothing in it can
+        // run. See ScriptLibrary::Load.
+        if (already.sourceFile == source) {
+            ++g_repeatRegistrations;
             return;
         }
 
@@ -378,14 +433,14 @@ void ScriptRegistry::Register(std::string_view scriptName, CreateFn create,
         ENGINE_LOG_WARN(Channels::kScene,
                         "two different files both define a script called '{}' ('{}' and "
                         "'{}') - only the first can run, so rename one of them",
-                        scriptName, already.sourceFile, sourceFile);
+                        scriptName, already.sourceFile, source);
         return;
     }
 
     Entry entry;
     entry.create     = create;
     entry.hooks      = hooks;
-    entry.sourceFile = std::string(sourceFile);
+    entry.sourceFile = source;
     table[name]      = entry;
 }
 
@@ -605,6 +660,13 @@ void ScriptComponent::RebindAfterReload() {
 }
 
 void ScriptComponent::Bind() {
+    // Nothing reaches Bind with a live behaviour today, but it would replace
+    // one silently - m_behaviour is a unique_ptr and the assignment below has
+    // no hook. A frame outliving the object it points into is not a leak, it
+    // is a dangling `this` resumed on a later frame, so the guard is written
+    // rather than reasoned about. RebindAll is public.
+    DestroyAllCoroutines();
+
     m_hooks = ScriptHooks{};
 
     if (const ScriptRegistry::Entry* entry = ScriptRegistry::Find(m_scriptName);
@@ -633,6 +695,20 @@ void ScriptComponent::Bind() {
 }
 
 void ScriptComponent::Unbind() {
+    // FIRST, while the behaviour is still whole. A suspended frame holds the
+    // script's `this` and its own locals, and those locals are destroyed by
+    // handle.destroy() - which must therefore happen before the object they
+    // point into. It is also what keeps destroy() from being called after the
+    // script's DLL has been unloaded: ScriptLibrary::Unload runs UnbindAll
+    // before SDL_UnloadObject, so this line is step one of a reload.
+    //
+    // ONE LINE FOR EVERY TEARDOWN PATH. Scene unload (open scene, Stop, every
+    // undo step, a script-driven scene change), a script rebuild, a prefab
+    // apply or revert, the stage-600 destroy drain, Inspector "Remove
+    // Component", SetScriptName and ~ScriptComponent all reach OnDetach or the
+    // destructor, and both call this.
+    DestroyAllCoroutines();
+
     if (m_behaviour != nullptr) {
         m_behaviour->m_component = nullptr;
         m_behaviour.reset();
@@ -845,13 +921,241 @@ void ScriptComponent::FrameTick() {
         return;
     }
     if (!OwnerIsActive()) {
-        return;   // see FixedTick above
+        // STILL SWEPT, THOUGH. A coroutine stopped while this entity was
+        // switched off would otherwise keep its frame - and the script's
+        // `this` inside it - until the entity came back, and would keep this
+        // component in the frame-ticking list to be walked twice a frame
+        // doing nothing. Freeing a stopped frame is bookkeeping, not running
+        // the game, so it is safe here and nothing else about the entity
+        // resumes. See SweepFinishedCoroutines.
+        SweepFinishedCoroutines();
+
+        // See FixedTick above - and note what this means for coroutines: a
+        // switched-off entity PAUSES them rather than losing them, which is
+        // this engine's rule for a disabled entity everywhere else. Unity
+        // destroys a GameObject's coroutines when it is deactivated; the local
+        // rule wins here because every other thing on a disabled entity
+        // resumes where it left off, and a coroutine that silently evaporated
+        // would be the one exception.
+        return;
     }
     EnsureStarted();
 
     if (m_hooks.update != nullptr) {
         m_hooks.update(m_behaviour.get());
     }
+
+    // AFTER the update hook, which is where Unity resumes too: `yield return
+    // null` continues once every MonoBehaviour has had its Update. There is no
+    // LateUpdate in this engine to come before.
+    ResumeCoroutines(ResumePhase::Update);
+}
+
+void ScriptComponent::EndOfFrameTick() {
+    if (m_behaviour == nullptr) {
+        return;
+    }
+    if (!OwnerIsActive()) {
+        // Paused, not lost - the rule FrameTick follows above, for the same
+        // reason. A coroutine waiting for the end of the frame on an entity
+        // that was switched off mid-frame waits for the end of a later one.
+        return;
+    }
+
+    // NO EnsureStarted AND NO UPDATE HOOK; see the declaration. OnStart belongs
+    // to whichever ordinary tick gets there first, and firing it here would run
+    // a script's first line after its first frame had already been drawn.
+    ResumeCoroutines(ResumePhase::EndOfFrame);
+}
+
+// ---------------------------------------------------------------------------
+//  Coroutines
+// ---------------------------------------------------------------------------
+
+CoroutineId ScriptComponent::AddCoroutine(Coroutine&& routine) {
+    Coroutine::Handle handle = routine.Release();
+    if (!handle) {
+        return CoroutineId::None;
+    }
+
+    const CoroutineId id = static_cast<CoroutineId>(m_nextCoroutineId++);
+
+    // STAMPED WITH THE PASS THAT IS RUNNING, which is what stops the walk from
+    // resuming this a second time in the pass that created it - including when
+    // the creator is a coroutine on a DIFFERENT component that has not been
+    // walked yet. See RunningCoroutine::resumedInPass. Outside a pass this is
+    // the last completed one, which no later pass matches, so the coroutine is
+    // eligible on the next one.
+    m_coroutines.push_back(RunningCoroutine{id, handle, false, g_resumePass});
+
+    // STARTED NOW, not next frame, because that is what Unity does: the body
+    // runs up to its first yield inside StartCoroutine. initial_suspend is
+    // suspend_always precisely so that this call is the thing that begins it.
+    handle.resume();
+
+    // AND BACK ON THE FRAME LIST. A coroutine started from a collision hook or
+    // from OnStart belongs to a component that may have been dropped from
+    // g_frameTicking already - it is only kept there while it has an update
+    // hook or has not started. Register is idempotent.
+    ScriptSystem::Register(*this);
+    return id;
+}
+
+void ScriptComponent::ResumeCoroutines(ResumePhase phase) {
+    if (m_coroutines.empty()) {
+        return;
+    }
+
+    using Wait = Coroutine::promise_type::Wait;
+
+    const bool endOfFramePass = phase == ResumePhase::EndOfFrame;
+
+    // Only the update pass spends time, so only it asks what the deltas were.
+    const float scaled   = endOfFramePass ? 0.0f : Time::DeltaTime();
+    const float unscaled = endOfFramePass ? 0.0f : Time::UnscaledDeltaTime();
+
+    // THE SIZE IS TAKEN ONCE, BEFORE THE WALK. A coroutine may start another
+    // one, which appends here; that one has already been resumed by
+    // AddCoroutine and must not be resumed twice on the same frame.
+    //
+    // AND NOTHING IS ERASED INSIDE THE WALK. A resume can call back into this
+    // component - StopCoroutine on itself, StopAllCoroutines, or starting
+    // another coroutine, which may reallocate the vector. So the entry is
+    // re-read by index each time and nothing is held across resume().
+    const std::size_t count = m_coroutines.size();
+    for (std::size_t i = 0; i < count && i < m_coroutines.size(); ++i) {
+        if (m_coroutines[i].stopRequested) {
+            continue;
+        }
+        // ALREADY RESUMED IN THIS PASS. The snapshot above cannot see a
+        // coroutine that another component's resume started on THIS component
+        // before the walk got here; the stamp can. See
+        // RunningCoroutine::resumedInPass.
+        if (m_coroutines[i].resumedInPass == g_resumePass) {
+            continue;
+        }
+        Coroutine::Handle handle = m_coroutines[i].handle;
+        if (!handle || handle.done()) {
+            continue;
+        }
+
+        Coroutine::promise_type& promise = handle.promise();
+
+        // ---- THE PHASE FILTER ------------------------------------------
+        //
+        // A filter and not an assertion: both passes walk this same list and
+        // each steps over the entries the other one owns. So a WaitForEndOfFrame
+        // coroutine is invisible to the update pass and everything else is
+        // invisible to the end-of-frame pass, and neither can resume a coroutine
+        // the other already did.
+        if ((promise.wait == Wait::EndOfFrame) != endOfFramePass) {
+            continue;
+        }
+
+        if (promise.wait == Wait::Scaled) {
+            promise.remaining -= scaled;
+            if (promise.remaining > 0.0f) {
+                continue;
+            }
+        } else if (promise.wait == Wait::Unscaled) {
+            promise.remaining -= unscaled;
+            if (promise.remaining > 0.0f) {
+                continue;
+            }
+        }
+
+        // STAMPED BEFORE THE RESUME, and by index. The resume may reallocate
+        // m_coroutines, so there is no entry left to stamp afterwards.
+        m_coroutines[i].resumedInPass = g_resumePass;
+
+        handle.resume();
+        // m_coroutines may have moved. Nothing of it is touched here.
+    }
+
+    // ---- the sweep, after the walk --------------------------------------
+    //
+    // The same discipline the two tick loops use, and here it is what makes a
+    // coroutine able to stop itself: the frame is freed now, not during its
+    // own resume.
+    SweepFinishedCoroutines();
+}
+
+void ScriptComponent::SweepFinishedCoroutines() {
+    // PHASE-BLIND, and that is deliberate rather than an oversight. A coroutine
+    // suspended on WaitForEndOfFrame has a live handle and is not done, so
+    // neither pass's sweep can mistake it for finished - while a STOPPED one
+    // must be freed by whichever pass sweeps next, whatever it was waiting for.
+    // Narrowing this to "entries this pass touched" would leave a frame, and
+    // the locals in it, alive until the other pass came round.
+    std::erase_if(m_coroutines, [](const RunningCoroutine& running) {
+        const bool finished = !running.handle || running.handle.done();
+        if (finished || running.stopRequested) {
+            if (running.handle) {
+                running.handle.destroy();
+            }
+            return true;
+        }
+        return false;
+    });
+}
+
+void ScriptComponent::DestroyAllCoroutines() {
+    // Walked and cleared rather than erase_if, because every one of them goes
+    // and the vector is about to be empty either way.
+    for (RunningCoroutine& running : m_coroutines) {
+        if (running.handle) {
+            running.handle.destroy();
+        }
+    }
+    m_coroutines.clear();
+}
+
+CoroutineId ScriptBehaviour::StartCoroutine(Coroutine routine) const {
+    if (m_component == nullptr) {
+        // The gap between construction and bind. The frame is destroyed by
+        // ~Coroutine on the way out of this function, so this is a no-op and
+        // not a leak - which is what the class contract above promises.
+        return CoroutineId::None;
+    }
+    return m_component->AddCoroutine(std::move(routine));
+}
+
+bool ScriptBehaviour::StopCoroutine(CoroutineId id) const {
+    if (m_component == nullptr || id == CoroutineId::None) {
+        return false;
+    }
+    for (ScriptComponent::RunningCoroutine& running : m_component->m_coroutines) {
+        if (running.id == id && !running.stopRequested) {
+            // MARKED, NOT DESTROYED. This may be reached from inside the very
+            // coroutine being stopped; the sweep at the end of the resume pass
+            // frees it.
+            running.stopRequested = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+void ScriptBehaviour::StopAllCoroutines() const {
+    if (m_component == nullptr) {
+        return;
+    }
+    for (ScriptComponent::RunningCoroutine& running : m_component->m_coroutines) {
+        running.stopRequested = true;
+    }
+}
+
+std::size_t ScriptBehaviour::RunningCoroutineCount() const {
+    if (m_component == nullptr) {
+        return 0;
+    }
+    std::size_t live = 0;
+    for (const ScriptComponent::RunningCoroutine& running : m_component->m_coroutines) {
+        if (!running.stopRequested && running.handle && !running.handle.done()) {
+            ++live;
+        }
+    }
+    return live;
 }
 
 void ScriptComponent::DispatchCollision(const std::string& messageType, EntityId other,
@@ -1310,10 +1614,38 @@ void ScriptSystem::Update(float /*fixedStepSeconds*/) {
 }
 
 void ScriptSystem::FrameUpdate() {
+    ++g_resumePass;
     for (std::size_t i = 0; i < g_frameTicking.size(); ++i) {
         g_frameTicking[i]->FrameTick();
     }
 
+    std::erase_if(g_frameTicking, [](const ScriptComponent* script) {
+        return !script->NeedsFrameTick();
+    });
+}
+
+void ScriptSystem::EndOfFrameUpdate() {
+    // A PASS OF ITS OWN, counted separately from the update pass above so that
+    // a coroutine resumed in one is not a candidate in the other. See
+    // g_resumePass.
+    ++g_resumePass;
+
+    // THE SAME LIST, and that is the design rather than an economy. A component
+    // stays in g_frameTicking for as long as it holds ANY coroutine, because
+    // NeedsFrameTick asks - so a coroutine waiting for the end of the frame
+    // keeps its own component walkable here, and there is no second registry to
+    // fall out of step with this one.
+    //
+    // Walked by index with the size re-read, for the reason the loops above
+    // are: a resumed coroutine may attach a script, which appends to this very
+    // list, and a range-for would be reading it while it moved.
+    for (std::size_t i = 0; i < g_frameTicking.size(); ++i) {
+        g_frameTicking[i]->EndOfFrameTick();
+    }
+
+    // The same sweep, because this pass can be the one that finishes a
+    // coroutine - and a component whose last one has just ended stops needing
+    // to be walked from here on.
     std::erase_if(g_frameTicking, [](const ScriptComponent* script) {
         return !script->NeedsFrameTick();
     });

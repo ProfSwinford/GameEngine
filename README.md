@@ -283,11 +283,16 @@ public:
 };
 ```
 
-`float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color` and
-`eng::EntityRef`. The trailing comment becomes the tooltip; a `[low..high]` at
-its start makes a slider, and a `[TypeName]` narrows a reference to entities
-carrying that component or script. Keep one off screen by making it `private`;
-the name is not consulted.
+`float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color`,
+`eng::EntityRef`, `eng::PrefabRef`, `eng::ImageRef`, `eng::AnimationRef`, and a
+reference to something on another entity - `eng::ComponentRef<T>` for a
+component the engine defines (spelled `TransformRef`, `SpriteRenderer` or
+`Rigidbody2D` for the common three) and `eng::ScriptRef<T>` for another script.
+The trailing comment becomes the tooltip; a `[low..high]` at its start makes a
+slider, and a `[TypeName]` narrows a plain `eng::EntityRef` to entities carrying
+that component or script - which the two typed references do from the type
+itself, so it cannot drift. Keep one off screen by making it `private`; the name
+is not consulted.
 
 **This is the one thing the compiler cannot do for us.** `requires` can ask
 whether a *named* member exists; nothing in C++ can ask what members exist. So

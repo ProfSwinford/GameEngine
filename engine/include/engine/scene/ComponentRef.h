@@ -83,15 +83,17 @@
 //  A COMPONENT ON THE SAME ENTITY. Ask for that where you use it -
 //  `Find<eng::Rigidbody2DComponent>()` - or cache the raw pointer in a
 //  private member, which is safe there for the reason it is not safe here:
-//  the cache and the behaviour object die together. assets/scripts has four
-//  of those and they are all correct.
+//  the cache and the behaviour object die together.
 //
-//  ANOTHER SCRIPT. A script class sits in an anonymous namespace in its own
-//  .cpp, so no other file can name the type - which is why FindScriptOn
-//  cannot live in EntityRef.h either, and why the worked example in
-//  assets/scripts/Bullet.cpp reaches a ScoreKeeper by message instead. Use
-//  eng::EntityRef with a `// [ScoreKeeper]` marker to get the slot, and
-//  FindScriptNamedIn or a eng::Message to do the talking.
+//  ANOTHER SCRIPT, which is a sibling mechanism and not this one:
+//  eng::ScriptRef<T>, in scene/ScriptRef.h. It could not be folded in here,
+//  and the reason is the include graph rather than a preference. Resolving a
+//  script ends in FindScriptOn<T>, which needs the COMPLETE ScriptBehaviour;
+//  that lives in scene/ScriptComponent.h, which includes this file's
+//  neighbour EntityRef.h and so cannot be included back. A component also
+//  carries T::kTypeName and a script class carries nothing of the kind, so
+//  the one line that makes this class worth having - taking the Inspector's
+//  constraint FROM the type - has no equivalent to share.
 // ============================================================================
 
 #include <engine/scene/Component.h>

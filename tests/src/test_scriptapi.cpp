@@ -59,8 +59,11 @@
 
 #include <doctest/doctest.h>
 
+#include <engine/Engine.h>
 #include <engine/core/Config.h>
+#include <engine/core/GameClock.h>
 #include <engine/core/Json.h>
+#include <engine/core/Time.h>
 #include <engine/core/LogBuffer.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/input/Pointer.h>
@@ -318,6 +321,153 @@ public:
     void OnFixedUpdate() { DestroySelf(); }
 };
 
+// ---------------------------------------------------------------------------
+//  COROUTINE PROBES
+//
+//  ONLY OnStart, DELIBERATELY. A script whose only hook is OnStart is dropped
+//  from the per-frame list on its first frame - that is what the erase_if
+//  after the walk is for - so a coroutine started in OnStart is exactly the
+//  case that stops being resumed if NeedsFrameTick forgets to ask about
+//  coroutines. The feature appearing to work once and then dying is the
+//  failure this shape catches.
+// ---------------------------------------------------------------------------
+class Ticker final : public ScriptBehaviour {
+public:
+    int         resumes = 0;
+    bool        finished = false;
+    CoroutineId id       = CoroutineId::None;
+
+    Coroutine Count(int times) {
+        for (int i = 0; i < times; ++i) {
+            ++resumes;
+            co_yield nullptr;
+        }
+        finished = true;
+    }
+
+    // The other next-frame spelling, so both are exercised by running them.
+    Coroutine CountWithZero(int times) {
+        for (int i = 0; i < times; ++i) {
+            ++resumes;
+            co_yield 0;
+        }
+        finished = true;
+    }
+
+    void OnStart() {}
+};
+
+// Waits by time rather than by frame, one of each kind.
+class Waiter final : public ScriptBehaviour {
+public:
+    int afterScaled   = 0;
+    int afterUnscaled = 0;
+
+    Coroutine Scaled(float seconds) {
+        co_yield WaitForSeconds(seconds);
+        ++afterScaled;
+    }
+    Coroutine Unscaled(float seconds) {
+        co_yield WaitForSecondsRealtime(seconds);
+        ++afterUnscaled;
+    }
+
+    void OnStart() {}
+};
+
+// ---------------------------------------------------------------------------
+//  END-OF-FRAME PROBES
+//
+//  A SHARED LOG, because the claim WaitForEndOfFrame exists to make is a
+//  RELATIVE ORDER between two different components' events, and no per-object
+//  counter can express one. Two counters can only say that both things
+//  happened. Every case that touches this clears it first - it is a file
+//  static, so a case that leaves entries behind hands them to the next one.
+// ---------------------------------------------------------------------------
+std::vector<std::string> g_order;
+
+// ONLY OnStart, DELIBERATELY - the same shape as Ticker and for a sharper
+// version of the same reason. A component whose only live coroutine waits on
+// the end of the frame has to survive BOTH sweeps: the one at the end of
+// FrameUpdate and the new one at the end of EndOfFrameUpdate. If
+// NeedsFrameTick ever stops asking about coroutines, this probe stops being
+// resumed and the feature dies after one frame.
+class Ender final : public ScriptBehaviour {
+public:
+    std::string tag;                 // set by the test, for the shared log
+    Ender*      partner = nullptr;   // for the cross-component case
+
+    int   updatePhase = 0;    // resumes that happened inside FrameUpdate
+    int   endPhase    = 0;    // resumes that happened inside EndOfFrameUpdate
+    bool  finished    = false;
+    float deltaSeen   = -1.0f;
+
+    Coroutine AtEnd(int times) {
+        for (int i = 0; i < times; ++i) {
+            co_yield WaitForEndOfFrame();
+            ++endPhase;
+            deltaSeen = Time::DeltaTime();
+            g_order.push_back(tag + ".end");
+        }
+        finished = true;
+    }
+
+    // One next-frame resume, then one end-of-frame resume, round and round.
+    Coroutine Interleaved(int rounds) {
+        for (int i = 0; i < rounds; ++i) {
+            co_yield nullptr;
+            ++updatePhase;
+            g_order.push_back(tag + ".next");
+            co_yield WaitForEndOfFrame();
+            ++endPhase;
+            g_order.push_back(tag + ".end");
+        }
+        finished = true;
+    }
+
+    // Starts one on ITSELF from inside the end-of-frame pass.
+    Coroutine SpawnOnSelf() {
+        co_yield WaitForEndOfFrame();
+        StartCoroutine(AtEnd(1));
+    }
+
+    // Starts one on ANOTHER behaviour from inside the end-of-frame pass. This
+    // is the case the per-component size snapshot cannot see: the partner's own
+    // snapshot is taken after this runs and includes the brand new entry.
+    Coroutine SpawnOnPartner() {
+        co_yield WaitForEndOfFrame();
+        if (partner != nullptr) {
+            partner->StartCoroutine(partner->AtEnd(1));
+        }
+    }
+
+    void OnStart() {}
+};
+
+// The same, but WITH an OnUpdate - so the phase boundary can be asserted
+// against a real update hook and not only against another resume.
+class Mixer final : public ScriptBehaviour {
+public:
+    std::string tag;
+
+    int updates  = 0;
+    int endPhase = 0;
+
+    Coroutine AtEnd(int times) {
+        for (int i = 0; i < times; ++i) {
+            co_yield WaitForEndOfFrame();
+            ++endPhase;
+            g_order.push_back(tag + ".end");
+        }
+    }
+
+    void OnStart() {}
+    void OnUpdate() {
+        ++updates;
+        g_order.push_back(tag + ".update");
+    }
+};
+
 // Counts contact events, so the "a switched-off script hears nothing" claim
 // can be checked by sending one.
 class Touchy final : public ScriptBehaviour {
@@ -406,6 +556,10 @@ ENGINE_REGISTER_SCRIPT(Touchy)
 ENGINE_REGISTER_SCRIPT(Seeker)
 ENGINE_REGISTER_SCRIPT(TriggerByCollider)
 ENGINE_REGISTER_SCRIPT(TriggerByContact)
+ENGINE_REGISTER_SCRIPT(Ticker)
+ENGINE_REGISTER_SCRIPT(Waiter)
+ENGINE_REGISTER_SCRIPT(Ender)
+ENGINE_REGISTER_SCRIPT(Mixer)
 
 namespace {
 
@@ -2405,4 +2559,836 @@ TEST_CASE("a trigger exit carries the partner and no colliders at all") {
     CHECK(probe->lastExit.separation == doctest::Approx(0.0f));
     CHECK(probe->lastExit.normal.x == doctest::Approx(0.0f));
     CHECK(probe->lastExit.normal.y == doctest::Approx(0.0f));
+}
+
+// ===========================================================================
+//  PART 8 - COROUTINES
+//
+//  Every case here drives the resume passes by hand, because that is what
+//  resumes a coroutine: on the main thread, once per DRAWN frame. No test needs
+//  a thread because the feature does not have one.
+//
+//  THERE ARE TWO PASSES AND A CASE MUST DRIVE BOTH. ScriptSystem::FrameUpdate()
+//  carries nullptr, 0 and the timed waits; ScriptSystem::EndOfFrameUpdate()
+//  carries WaitForEndOfFrame and nothing else. A case that yields
+//  WaitForEndOfFrame and calls only FrameUpdate gets a coroutine that never
+//  advances AND NO COMPLAINT FROM ANYTHING: NeedsFrameTick stays true,
+//  RunningCoroutineCount keeps answering 1, and the component is walked to no
+//  effect for ever. It reads like a bug in the feature rather than a missing
+//  call, so PumpFrame below does both and is what a whole frame should be
+//  spelled as unless a case is specifically about one pass.
+// ===========================================================================
+
+namespace {
+// One whole drawn frame, in the order Engine runs them.
+void PumpFrame() {
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::EndOfFrameUpdate();
+}
+} // namespace
+
+TEST_CASE("a coroutine starts immediately and resumes once per frame") {
+    Fixture world("coro-next-frame");
+
+    const EntityId id     = world.scene.CreateEntity("Blinker");
+    Ticker*        ticker = AttachScript<Ticker>(world.scene, id, "Ticker");
+    REQUIRE(ticker != nullptr);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);   // lets OnStart fire
+
+    // THE BODY RUNS INSIDE StartCoroutine, up to its first yield - which is
+    // what Unity does. initial_suspend is suspend_always precisely so that
+    // this call, and not the declaration, is what begins it.
+    ticker->StartCoroutine(ticker->Count(3));
+    CHECK(ticker->resumes == 1);
+    CHECK(ticker->RunningCoroutineCount() == 1);
+
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == 2);
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == 3);
+
+    // The fourth resume runs off the end of the loop, so the body returns and
+    // the frame is swept.
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->finished);
+    CHECK(ticker->RunningCoroutineCount() == 0);
+
+    // AND IT KEPT BEING RESUMED THROUGHOUT, with no update hook of its own.
+    // Ticker has only OnStart, so it is dropped from the frame list on its
+    // first frame unless NeedsFrameTick asks about coroutines.
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == 3);   // nothing more, and nothing crashed
+}
+
+TEST_CASE("co_yield 0 is the same as co_yield nullptr") {
+    Fixture world("coro-zero");
+
+    const EntityId id     = world.scene.CreateEntity("Blinker");
+    Ticker*        ticker = AttachScript<Ticker>(world.scene, id, "Ticker");
+    REQUIRE(ticker != nullptr);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    ticker->StartCoroutine(ticker->CountWithZero(2));
+    CHECK(ticker->resumes == 1);
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == 2);
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->finished);
+}
+
+TEST_CASE("WaitForSeconds counts game time and WaitForSecondsRealtime does not") {
+    Fixture world("coro-waits");
+
+    const EntityId id     = world.scene.CreateEntity("Waiter");
+    Waiter*        waiter = AttachScript<Waiter>(world.scene, id, "Waiter");
+    REQUIRE(waiter != nullptr);
+
+    GameClock& clock = Engine::Get().Clock();
+    const float wasScale = clock.TimeScale();
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    // ---- a tenth of a second per frame, at normal speed ------------------
+    clock.SetTimeScale(1.0f);
+    clock.BeginFrame(0.1);
+
+    waiter->StartCoroutine(waiter->Scaled(0.25f));
+    CHECK(waiter->afterScaled == 0);   // started, and waiting
+
+    ScriptSystem::FrameUpdate();       // 0.10 of 0.25
+    CHECK(waiter->afterScaled == 0);
+    ScriptSystem::FrameUpdate();       // 0.20
+    CHECK(waiter->afterScaled == 0);
+    ScriptSystem::FrameUpdate();       // 0.30 - due
+    CHECK(waiter->afterScaled == 1);
+
+    // ---- TIME STOPPED: the scaled wait stops, the real one does not ------
+    //
+    // This is the whole difference between the two, and the reason Unity has
+    // both. At timeScale 0 a WaitForSeconds never comes due; a
+    // WaitForSecondsRealtime is unaffected.
+    clock.SetTimeScale(0.0f);
+    clock.BeginFrame(0.1);
+
+    waiter->StartCoroutine(waiter->Scaled(0.2f));
+    waiter->StartCoroutine(waiter->Unscaled(0.2f));
+    const int scaledBefore = waiter->afterScaled;
+
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+
+    CHECK(waiter->afterScaled == scaledBefore);   // frozen
+    CHECK(waiter->afterUnscaled == 1);            // ran anyway
+
+    clock.SetTimeScale(wasScale);
+}
+
+TEST_CASE("a coroutine can be stopped, by id and all at once") {
+    Fixture world("coro-stop");
+
+    const EntityId id     = world.scene.CreateEntity("Blinker");
+    Ticker*        ticker = AttachScript<Ticker>(world.scene, id, "Ticker");
+    REQUIRE(ticker != nullptr);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    const CoroutineId first = ticker->StartCoroutine(ticker->Count(100));
+    CHECK(first != CoroutineId::None);
+    CHECK(ticker->RunningCoroutineCount() == 1);
+
+    CHECK(ticker->StopCoroutine(first));
+    ScriptSystem::FrameUpdate();            // the sweep happens here
+    CHECK(ticker->RunningCoroutineCount() == 0);
+
+    const int after = ticker->resumes;
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == after);        // stopped means stopped
+
+    // STOPPING A DEAD ID IS NOT AN ERROR. Ids are never reused, so this is
+    // simply false rather than a wrong hit on a recycled slot.
+    CHECK(!ticker->StopCoroutine(first));
+
+    ticker->StartCoroutine(ticker->Count(100));
+    ticker->StartCoroutine(ticker->Count(100));
+    CHECK(ticker->RunningCoroutineCount() == 2);
+    ticker->StopAllCoroutines();
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->RunningCoroutineCount() == 0);
+}
+
+TEST_CASE("a coroutine is paused by switching the entity off, not lost") {
+    // Unity destroys a GameObject's coroutines when it is deactivated. This
+    // engine's rule for a switched-off entity is that it PAUSES and nothing is
+    // torn down, which every other thing on the component honours - so a
+    // coroutine follows the local rule. Written down because the two differ.
+    Fixture world("coro-inactive");
+
+    const EntityId id     = world.scene.CreateEntity("Blinker");
+    Entity*        entity = world.scene.Get(id);
+    Ticker*        ticker = AttachScript<Ticker>(world.scene, id, "Ticker");
+    REQUIRE(ticker != nullptr);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ticker->StartCoroutine(ticker->Count(100));
+    const int started = ticker->resumes;
+
+    entity->SetActive(false);
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == started);              // paused
+    CHECK(ticker->RunningCoroutineCount() == 1);    // and still there
+
+    entity->SetActive(true);
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == started + 1);          // carried on
+}
+
+TEST_CASE("a coroutine dies with the script that started it") {
+    // The frame holds the script's `this` and its own locals, so an orphaned
+    // coroutine is a dangling `this` rather than a leak. Unbind destroys them
+    // while the behaviour is still whole.
+    Fixture world("coro-teardown");
+
+    const EntityId id     = world.scene.CreateEntity("Blinker");
+    Entity*        entity = world.scene.Get(id);
+    Ticker*        ticker = AttachScript<Ticker>(world.scene, id, "Ticker");
+    REQUIRE(ticker != nullptr);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ticker->StartCoroutine(ticker->Count(100));
+    CHECK(ticker->RunningCoroutineCount() == 1);
+
+    // Swapping the script name unbinds, which is one of the paths - and the
+    // one a test can reach without destroying the entity under itself.
+    ScriptComponent* component = entity->Find<ScriptComponent>();
+    REQUIRE(component != nullptr);
+    component->SetScriptName("Probe");
+
+    // Nothing to resume, and nothing reads the freed frame.
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+
+    // And destroying the entity outright is safe too.
+    world.scene.DestroyEntityImmediate(id);
+    ScriptSystem::FrameUpdate();
+}
+
+TEST_CASE("a coroutine nobody starts runs nothing") {
+    Fixture world("coro-unstarted");
+
+    const EntityId id     = world.scene.CreateEntity("Blinker");
+    Ticker*        ticker = AttachScript<Ticker>(world.scene, id, "Ticker");
+    REQUIRE(ticker != nullptr);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    {
+        // Built and dropped on the floor. initial_suspend is suspend_always,
+        // so not one line of the body has run; ~Coroutine frees the frame.
+        Coroutine unused = ticker->Count(5);
+        (void)unused;
+    }
+    CHECK(ticker->resumes == 0);
+    CHECK(ticker->RunningCoroutineCount() == 0);
+
+    ScriptSystem::FrameUpdate();
+    CHECK(ticker->resumes == 0);
+}
+
+// ===========================================================================
+//  PART 9 - WaitForEndOfFrame
+//
+//  The feature promises a PHASE and refuses a PRIORITY, and the cases are
+//  written to pin the first without enshrining the second. Where attach order
+//  is relied on it is said so out loud, because that order is an accident of
+//  the scene file and is reset wholesale by every script rebuild.
+// ===========================================================================
+
+TEST_CASE("WaitForEndOfFrame is not resumed by the frame update") {
+    Fixture world("eof-not-frame");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Ender");
+    Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    ender->StartCoroutine(ender->AtEnd(1));
+
+    // The body ran as far as its yield inside StartCoroutine and stopped there.
+    CHECK(ender->endPhase == 0);
+    CHECK(ender->RunningCoroutineCount() == 1);
+
+    // THREE WHOLE FRAME UPDATES AND IT HAS NOT MOVED. This is the phase filter:
+    // the update pass steps over an end-of-frame waiter instead of treating an
+    // unrecognised wait as "next frame", which is what Unity does and what
+    // would make the new spelling a silent synonym for co_yield nullptr.
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+    CHECK(ender->endPhase == 0);
+
+    // And the update pass's sweep did not throw it away either.
+    CHECK(ender->RunningCoroutineCount() == 1);
+}
+
+TEST_CASE("WaitForEndOfFrame is resumed by the end-of-frame update") {
+    Fixture world("eof-resumes");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Ender");
+    Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->AtEnd(2));
+
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->endPhase == 1);
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->endPhase == 2);
+
+    // The third runs off the end of the loop, so the body returns and this
+    // pass's own sweep frees the frame.
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->finished);
+    CHECK(ender->RunningCoroutineCount() == 0);
+
+    // And nothing read a freed frame afterwards.
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->endPhase == 2);
+}
+
+TEST_CASE("a wait for the end of the frame comes due in the SAME frame") {
+    // Unity's actual semantic, and the reason the two passes share one list
+    // with a filter rather than being two lists a coroutine moves between.
+    Fixture world("eof-same-frame");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Mixer");
+    Mixer*         mixer = AttachScript<Mixer>(world.scene, id, "Mixer");
+    REQUIRE(mixer != nullptr);
+    mixer->tag = "M";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    mixer->StartCoroutine(mixer->AtEnd(1));
+
+    ScriptSystem::FrameUpdate();
+    CHECK(mixer->updates == 1);
+    CHECK(mixer->endPhase == 0);
+
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(mixer->endPhase == 1);   // one FrameUpdate + one end pass is ONE frame
+
+    // ---- the harder half -------------------------------------------------
+    //
+    // A coroutine that reaches `co_yield WaitForEndOfFrame()` from inside its
+    // OWN frame-tick resume must still come due this frame. A lazy
+    // implementation that deferred it would leave endPhase at 0; one that
+    // resumed in both passes would reach 2.
+    const EntityId otherId = world.scene.CreateEntity("Ender");
+    Ender*         ender   = AttachScript<Ender>(world.scene, otherId, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+    ender->StartCoroutine(ender->Interleaved(1));
+
+    ScriptSystem::FrameUpdate();
+    CHECK(ender->updatePhase == 1);
+    CHECK(ender->endPhase == 0);
+
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->endPhase == 1);
+}
+
+TEST_CASE("an end-of-frame resume lands after EVERY script's OnUpdate") {
+    // THE FEATURE'S WHOLE JUSTIFICATION. Asserted as a PARTITION and not as a
+    // permutation: which of the two updates comes first is attach order, which
+    // AddCoroutine's re-register and every script rebuild both reshuffle, and
+    // which this deliberately does not promise.
+    Fixture world("eof-after-everybody");
+    g_order.clear();
+
+    const EntityId firstId = world.scene.CreateEntity("First");
+    Mixer*         first   = AttachScript<Mixer>(world.scene, firstId, "Mixer");
+    REQUIRE(first != nullptr);
+    first->tag = "First";
+
+    const EntityId secondId = world.scene.CreateEntity("Second");
+    Mixer*         second   = AttachScript<Mixer>(world.scene, secondId, "Mixer");
+    REQUIRE(second != nullptr);
+    second->tag = "Second";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    first->StartCoroutine(first->AtEnd(1));
+    second->StartCoroutine(second->AtEnd(1));
+
+    g_order.clear();
+    PumpFrame();
+
+    REQUIRE(g_order.size() == 4);
+    CHECK(g_order[0].ends_with(".update"));
+    CHECK(g_order[1].ends_with(".update"));
+    CHECK(g_order[2].ends_with(".end"));
+    CHECK(g_order[3].ends_with(".end"));
+}
+
+TEST_CASE("a next-frame resume can land before a later script's OnUpdate") {
+    // THE CONTRAST THAT MAKES THE CASE ABOVE WORTH ANYTHING. co_yield nullptr
+    // resumes inside its own component's frame tick, so it can beat a later
+    // component's OnUpdate - which is exactly the gap WaitForEndOfFrame closes.
+    // If this ever stops being true the feature has lost its reason to exist,
+    // and this says so.
+    //
+    // THE ONE CASE THAT LEANS ON ATTACH ORDER, on purpose, to demonstrate the
+    // hazard rather than to promise the order.
+    Fixture world("eof-contrast");
+    g_order.clear();
+
+    const EntityId firstId = world.scene.CreateEntity("First");
+    Mixer*         first   = AttachScript<Mixer>(world.scene, firstId, "Mixer");
+    REQUIRE(first != nullptr);
+    first->tag = "First";
+
+    const EntityId middleId = world.scene.CreateEntity("Middle");
+    Ender*         middle   = AttachScript<Ender>(world.scene, middleId, "Ender");
+    REQUIRE(middle != nullptr);
+    middle->tag = "Middle";
+
+    const EntityId lastId = world.scene.CreateEntity("Last");
+    Mixer*         last   = AttachScript<Mixer>(world.scene, lastId, "Mixer");
+    REQUIRE(last != nullptr);
+    last->tag = "Last";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    middle->StartCoroutine(middle->Interleaved(1));
+
+    g_order.clear();
+    ScriptSystem::FrameUpdate();
+
+    // Somewhere in this frame a next-frame resume happened, and at least one
+    // OnUpdate happened AFTER it.
+    const auto next = std::find(g_order.begin(), g_order.end(), "Middle.next");
+    REQUIRE(next != g_order.end());
+    const bool updateAfterIt =
+        std::any_of(next + 1, g_order.end(),
+                    [](const std::string& entry) { return entry.ends_with(".update"); });
+    CHECK(updateAfterIt);
+
+    // Whereas the end-of-frame resume for the same coroutine is after all of
+    // them, with nothing left to come.
+    ScriptSystem::EndOfFrameUpdate();
+    REQUIRE(!g_order.empty());
+    CHECK(g_order.back() == "Middle.end");
+}
+
+TEST_CASE("co_yield nullptr and WaitForEndOfFrame interleave, one of each per frame") {
+    Fixture world("eof-interleave");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Ender");
+    Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->Interleaved(3));
+
+    g_order.clear();
+    for (int round = 1; round <= 3; ++round) {
+        PumpFrame();
+        CHECK(ender->updatePhase == round);
+        CHECK(ender->endPhase == round);
+    }
+    CHECK(ender->finished);
+
+    // NEITHER PASS EVER RESUMED THE OTHER'S WAIT, in either direction, over
+    // three frames. A filter wrong in one direction gives two of a kind in a
+    // row; wrong in both gives six of one.
+    const std::vector<std::string> expected{"E.next", "E.end", "E.next",
+                                            "E.end",  "E.next", "E.end"};
+    CHECK(g_order == expected);
+
+    // And it is finished, so another whole frame changes nothing.
+    PumpFrame();
+    CHECK(ender->updatePhase == 3);
+    CHECK(ender->endPhase == 3);
+}
+
+TEST_CASE("nothing is resumed at the end of the frame while the game is paused") {
+    // THE ONLY CASE THAT GOES THROUGH THE REAL CALL SITE, and the list needs
+    // one: every other case calls ScriptSystem::EndOfFrameUpdate() by hand, so
+    // without this, deleting that call from Engine::PresentFrame would break
+    // nothing - and "one call site no host can forget" is the whole design.
+    //
+    // Engine::Get() is an un-started singleton here, which test_time.cpp
+    // already relies on; Renderer::Present() is a no-op with no window.
+    //
+    // DRIVEN AS Simulate() THEN PresentFrame(), which is the pair every host
+    // runs, because the gate is DECIDED in Simulate and remembered. Reading the
+    // clock again in PresentFrame would be the bug this pairing exists to
+    // prevent - the Toolbar's Pause button runs in between the two.
+    Fixture world("eof-paused");
+    g_order.clear();
+
+    Engine&    engine    = Engine::Get();
+    GameClock& clock     = engine.Clock();
+    const bool wasPaused = clock.IsPaused();
+
+    const EntityId id    = world.scene.CreateEntity("Ender");
+    Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->AtEnd(2));
+
+    // ---- frozen ----------------------------------------------------------
+    clock.SetPaused(true);
+    engine.Simulate();
+    engine.PresentFrame();
+    CHECK(ender->endPhase == 0);
+
+    // ---- running, which is also what proves the call is wired in at all --
+    clock.SetPaused(false);
+    engine.Simulate();
+    engine.PresentFrame();
+    CHECK(ender->endPhase == 1);
+
+    clock.SetPaused(wasPaused);
+}
+
+TEST_CASE("the end-of-frame pass does not advance a timed wait") {
+    // The regression a "just resume everything in both passes" implementation
+    // introduces, and NOTHING else in this file would notice it: every
+    // WaitForSeconds in every game would come due in half the time, because
+    // Time::DeltaTime() returns the same frame delta in both passes.
+    Fixture world("eof-no-double-tick");
+
+    const EntityId id     = world.scene.CreateEntity("Waiter");
+    Waiter*        waiter = AttachScript<Waiter>(world.scene, id, "Waiter");
+    REQUIRE(waiter != nullptr);
+
+    GameClock& clock    = Engine::Get().Clock();
+    const float wasScale = clock.TimeScale();
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+
+    clock.SetTimeScale(1.0f);
+    clock.BeginFrame(0.1);
+
+    waiter->StartCoroutine(waiter->Scaled(0.25f));
+    waiter->StartCoroutine(waiter->Unscaled(0.25f));
+
+    // TEN END PASSES AND NO TIME HAS PASSED. The phase test sits above the
+    // decrement, so an end-of-frame pass never touches `remaining`.
+    for (int i = 0; i < 10; ++i) {
+        ScriptSystem::EndOfFrameUpdate();
+    }
+    CHECK(waiter->afterScaled == 0);
+    CHECK(waiter->afterUnscaled == 0);
+
+    // Three frames' worth, which is the answer the timed cases already pin.
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+    ScriptSystem::FrameUpdate();
+    CHECK(waiter->afterScaled == 1);
+    CHECK(waiter->afterUnscaled == 1);
+
+    clock.SetTimeScale(wasScale);
+}
+
+TEST_CASE("a coroutine started during the end-of-frame pass is not resumed twice in it") {
+    Fixture world("eof-no-double-resume");
+    g_order.clear();
+
+    ScriptSystem system;
+
+    SUBCASE("started on its own component") {
+        const EntityId id    = world.scene.CreateEntity("Ender");
+        Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+        REQUIRE(ender != nullptr);
+        ender->tag = "E";
+        system.Update(1.0f / 60.0f);
+
+        ender->StartCoroutine(ender->SpawnOnSelf());
+
+        // The outer one resumes and starts the inner one, which runs to its own
+        // yield inside StartCoroutine and stops. The size snapshot taken before
+        // this component's walk excludes the new entry.
+        ScriptSystem::EndOfFrameUpdate();
+        CHECK(ender->endPhase == 0);
+
+        ScriptSystem::EndOfFrameUpdate();
+        CHECK(ender->endPhase == 1);
+    }
+
+    SUBCASE("started on ANOTHER component the walk has not reached") {
+        // THE CASE THE SNAPSHOT CANNOT SEE. The partner's own snapshot is taken
+        // after the starter has already run, so it INCLUDES the brand new
+        // entry - and without the resume-pass stamp the walk resumes it a
+        // second time in the same pass. A coroutine looping on
+        // `co_yield WaitForEndOfFrame()` would run twice in one frame.
+        //
+        // Attached in this order on purpose, so the starter is walked first.
+        const EntityId starterId = world.scene.CreateEntity("Starter");
+        Ender*         starter   = AttachScript<Ender>(world.scene, starterId, "Ender");
+        REQUIRE(starter != nullptr);
+        starter->tag = "S";
+
+        const EntityId partnerId = world.scene.CreateEntity("Partner");
+        Ender*         partner   = AttachScript<Ender>(world.scene, partnerId, "Ender");
+        REQUIRE(partner != nullptr);
+        partner->tag = "P";
+
+        starter->partner = partner;
+        system.Update(1.0f / 60.0f);
+
+        starter->StartCoroutine(starter->SpawnOnPartner());
+
+        ScriptSystem::EndOfFrameUpdate();
+        CHECK(partner->RunningCoroutineCount() == 1);
+        CHECK(partner->endPhase == 0);   // started in this pass, not resumed by it
+
+        ScriptSystem::EndOfFrameUpdate();
+        CHECK(partner->endPhase == 1);   // and resumed exactly once on the next
+    }
+}
+
+TEST_CASE("switching the entity off pauses an end-of-frame wait too") {
+    // The engine's rule for a disabled entity is pause-and-keep, which every
+    // other thing on the component honours - so the new wait must honour it as
+    // well or there is one exception and nothing reports it.
+    Fixture world("eof-inactive");
+    g_order.clear();
+
+    const EntityId id     = world.scene.CreateEntity("Ender");
+    Entity*        entity = world.scene.Get(id);
+    Ender*         ender  = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->AtEnd(100));
+
+    entity->SetActive(false);
+    ScriptSystem::EndOfFrameUpdate();
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->endPhase == 0);                 // paused
+    CHECK(ender->RunningCoroutineCount() == 1);  // and still there
+
+    entity->SetActive(true);
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(ender->endPhase == 1);                 // carried on
+}
+
+TEST_CASE("an end-of-frame waiter can be stopped, from either pass") {
+    Fixture world("eof-stop");
+    g_order.clear();
+
+    ScriptSystem system;
+
+    SUBCASE("stopped by id, swept by the end-of-frame pass") {
+        const EntityId id    = world.scene.CreateEntity("Ender");
+        Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+        REQUIRE(ender != nullptr);
+        ender->tag = "E";
+        system.Update(1.0f / 60.0f);
+
+        const CoroutineId running = ender->StartCoroutine(ender->AtEnd(100));
+        CHECK(ender->StopCoroutine(running));
+
+        ScriptSystem::EndOfFrameUpdate();
+        CHECK(ender->RunningCoroutineCount() == 0);
+        CHECK(ender->endPhase == 0);
+        CHECK(!ender->StopCoroutine(running));
+
+        PumpFrame();
+        CHECK(ender->endPhase == 0);
+    }
+
+    SUBCASE("and swept by the UPDATE pass, which must be phase-blind") {
+        // The sweep is shared and must not be narrowed to "what this pass
+        // walked". A phase filter applied to the sweep instead of to the walk
+        // would leak the frame here until the other pass came round.
+        const EntityId id    = world.scene.CreateEntity("Ender");
+        Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+        REQUIRE(ender != nullptr);
+        ender->tag = "E";
+        system.Update(1.0f / 60.0f);
+
+        ender->StartCoroutine(ender->AtEnd(100));
+        ender->StopAllCoroutines();
+
+        ScriptSystem::FrameUpdate();   // the UPDATE pass, which never walks it
+        CHECK(ender->RunningCoroutineCount() == 0);
+        CHECK(ender->endPhase == 0);
+    }
+
+    SUBCASE("and freed even while the entity is switched off") {
+        // Both ticks return early on an inactive owner, so without a sweep on
+        // that path a stopped frame - and the script's `this` inside it - was
+        // kept for as long as the entity stayed off, with nothing reporting it.
+        //
+        // ASSERTED ON FrameTickingCount AND NOT ON RunningCoroutineCount, which
+        // cannot see this: it already skips a stopRequested entry, so it reads
+        // 0 whether the frame was freed or not. What IS observable is that the
+        // component stays in the frame-ticking list, because NeedsFrameTick
+        // asks whether the coroutine vector is empty rather than whether
+        // anything in it is live - so an unswept stopped entry pins the
+        // component there to be walked twice a frame for ever, doing nothing.
+        const EntityId id     = world.scene.CreateEntity("Ender");
+        Entity*        entity = world.scene.Get(id);
+        Ender*         ender  = AttachScript<Ender>(world.scene, id, "Ender");
+        REQUIRE(ender != nullptr);
+        ender->tag = "E";
+        system.Update(1.0f / 60.0f);
+
+        ender->StartCoroutine(ender->AtEnd(100));
+        REQUIRE(ScriptSystem::FrameTickingCount() == 1);
+
+        entity->SetActive(false);
+        ender->StopAllCoroutines();
+
+        PumpFrame();
+        CHECK(ender->RunningCoroutineCount() == 0);
+        CHECK(ScriptSystem::FrameTickingCount() == 0);
+    }
+}
+
+TEST_CASE("an end-of-frame waiter dies with the script that started it") {
+    Fixture world("eof-teardown");
+    g_order.clear();
+
+    const EntityId id     = world.scene.CreateEntity("Ender");
+    Entity*        entity = world.scene.Get(id);
+    Ender*         ender  = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->AtEnd(100));
+    CHECK(ender->RunningCoroutineCount() == 1);
+
+    ScriptComponent* component = entity->Find<ScriptComponent>();
+    REQUIRE(component != nullptr);
+    component->SetScriptName("Probe");
+
+    // Nothing to resume, and nothing reads the freed frame.
+    PumpFrame();
+    PumpFrame();
+
+    // And destroying the entity outright is safe too - including an
+    // end-of-frame pass over an emptied list.
+    world.scene.DestroyEntityImmediate(id);
+    ScriptSystem::EndOfFrameUpdate();
+}
+
+TEST_CASE("an OnStart-only script keeps being resumed at the end of the frame") {
+    // The NeedsFrameTick regression, for the new path. Ender has no OnUpdate,
+    // so it stays in the frame-ticking list only because it holds a coroutine.
+    // The FrameUpdate in each pair is the one that would drop it.
+    Fixture world("eof-onstart-only");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Ender");
+    Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->AtEnd(5));
+    CHECK(ScriptSystem::FrameTickingCount() >= 1);
+
+    for (int expected = 1; expected <= 5; ++expected) {
+        PumpFrame();
+        CHECK(ender->endPhase == expected);
+    }
+    CHECK(ender->finished);
+
+    // And once nothing needs walking, the new pass's sweep lets it go.
+    PumpFrame();
+    CHECK(ScriptSystem::FrameTickingCount() == 0);
+}
+
+TEST_CASE("the end-of-frame pass starts nothing and updates nothing") {
+    // EndOfFrameTick calls neither EnsureStarted nor the update hook, and both
+    // omissions are invisible otherwise. EnsureStarted there would fire OnStart
+    // from inside PresentFrame - a lifecycle hook at a point nothing documents,
+    // and after the script's first frame had already been drawn.
+    Fixture world("eof-no-hooks");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Probe");
+    Probe*         probe = AttachScript<Probe>(world.scene, id, "Probe");
+    REQUIRE(probe != nullptr);
+
+    // Deliberately no frame update first, so OnStart has not run.
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(probe->starts == 0);
+    CHECK(probe->frameTicks == 0);
+
+    ScriptSystem::FrameUpdate();
+    CHECK(probe->starts == 1);
+    CHECK(probe->frameTicks == 1);
+
+    ScriptSystem::EndOfFrameUpdate();
+    CHECK(probe->frameTicks == 1);   // still one: the update hook did not re-run
+    CHECK(probe->starts == 1);
+}
+
+TEST_CASE("Time::DeltaTime at the end of the frame is the number OnUpdate saw") {
+    // The end of a frame is not a new slice of time. Worth pinning because a
+    // coroutine that resumes in both passes and adds DeltaTime() each time has
+    // counted the frame twice, and the docs promise this is why.
+    Fixture world("eof-delta");
+    g_order.clear();
+
+    const EntityId id    = world.scene.CreateEntity("Ender");
+    Ender*         ender = AttachScript<Ender>(world.scene, id, "Ender");
+    REQUIRE(ender != nullptr);
+    ender->tag = "E";
+
+    GameClock&  clock    = Engine::Get().Clock();
+    const float wasScale = clock.TimeScale();
+    clock.SetTimeScale(1.0f);
+    clock.BeginFrame(0.1);
+
+    ScriptSystem system;
+    system.Update(1.0f / 60.0f);
+    ender->StartCoroutine(ender->AtEnd(1));
+
+    ScriptSystem::FrameUpdate();
+    const float duringUpdate = Time::DeltaTime();
+
+    ScriptSystem::EndOfFrameUpdate();
+    REQUIRE(ender->endPhase == 1);
+    CHECK(ender->deltaSeen == doctest::Approx(duringUpdate));
+
+    clock.SetTimeScale(wasScale);
 }

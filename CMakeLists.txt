@@ -104,7 +104,21 @@ project(Engine2D
 #       out of the low half of a pointer and its generation out of the high
 #       half, so the hook would silently never match anything rather than
 #       crashing. Nothing but this number catches it.
-set(ENGINE_SCRIPT_ABI 3)
+#    4 - ScriptComponent grew a list of running coroutines, and
+#        ScriptBehaviour grew StartCoroutine. Both layouts cross the boundary
+#        through inline and template code, so a script DLL built against the
+#        old header would read every member after the new one at the wrong
+#        offset. Nothing but this number catches that.
+#
+#        The same number also covers WaitForEndOfFrame, added before any of
+#        this shipped: a fourth enumerator APPENDED to Coroutine's Wait, and a
+#        resume-pass stamp on each list entry. Appending to that enum is safe
+#        only because it IS appended - the frame it lives in is allocated in
+#        the script's library and the engine reads promise().wait through the
+#        handle, so inserting a value ahead of Unscaled would have a stale DLL
+#        writing 2 for "unscaled" and the engine reading 3 for "end of frame",
+#        and the coroutine would silently never resume. Append only.
+set(ENGINE_SCRIPT_ABI 4)
 
 # --- which version of C++ ----------------------------------------------------
 # C++23 is used for std::format (see core/Log.h) and a handful of other

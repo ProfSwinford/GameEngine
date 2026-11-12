@@ -112,6 +112,7 @@
 #include <engine/scene/EntityRef.h>
 #include <engine/scene/ImageRef.h>
 #include <engine/scene/PrefabRef.h>
+#include <engine/scene/ScriptRef.h>
 
 #include <string>
 #include <string_view>
@@ -339,9 +340,14 @@ struct ScriptField {
     //
     // A NAME AND NOT A TYPE, which is what lets one mechanism serve both a
     // component the engine ships and a script somebody wrote this afternoon.
-    // Both are registered under a name and neither can be named in a header
-    // that every script includes - a script class lives in an anonymous
-    // namespace, so no other file can even mention it.
+    //
+    // AND THE REASON IS THE EDITOR, not anything about the script. This
+    // process was compiled before that script existed, so there is no C++ type
+    // called Bullet to name HERE however the game spells it - and the
+    // constraint has to survive into the scene file and back out into a picker
+    // either way. A script CAN now be named from another script, by putting
+    // its class in a header both include; see scene/ScriptRef.h. That changes
+    // what a script author writes and nothing about what travels.
     //
     // It is advice to the Inspector, not a rule the engine keeps: a reference
     // can be pointed at an entity that does not satisfy it, and the Inspector
@@ -425,6 +431,23 @@ template <> struct Traits<PrefabRef> {
 // holds one number per KIND; it travels in ScriptField::requiredType, which
 // the generated exposer fills in from the template argument.
 template <class T> struct Traits<ComponentRef<T>> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::Entity;
+};
+// AND ONE FOR EVERY SCRIPT CLASS, for all the same reasons: a ScriptRef is an
+// EntityRef too, with no members and no vtable of its own, so the base is at
+// offset 0 and AsEntityRef's unchecked cast is exactly as valid.
+//
+// WITHOUT THIS THE VARIABLE SIMPLY DOES NOT APPEAR, and it is worth being
+// precise about why, because the reason is NOT that something fails to
+// compile. ScriptFields::Ref is not a template and asks no questions - it
+// binds an EntityRef& and the derived-to-base conversion satisfies it - so a
+// HAND-WRITTEN OnExpose calling fields.Ref(...) works with no specialization
+// at all. The only thing standing between a correct declaration and a silent
+// omission is the nested `Traits<...>::known` requirement in the exposer the
+// editor generates; see tools/ScriptVars.cpp. So the failure mode is
+// "it works when I write OnExpose myself and vanishes when I do not".
+template <class T> struct Traits<ScriptRef<T>> {
     static constexpr bool            known = true;
     static constexpr ScriptFieldType type  = ScriptFieldType::Entity;
 };

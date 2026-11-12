@@ -769,7 +769,7 @@ TEST_CASE("a script without OnExpose says so") {
 
 TEST_CASE("the generated unit includes the original rather than copying it") {
     // THE WHOLE TRICK. Including it keeps every line number, every __FILE__
-    // and the file's anonymous namespace intact, so a compiler error still
+    // and the file's own static helpers intact, so a compiler error still
     // points at the line somebody wrote.
     ScriptSourceInfo info;
     info.className = "Orbiter";
@@ -1354,4 +1354,103 @@ TEST_CASE("a marker from the line above reaches the generated Asset call") {
 
     CHECK(unit.find("f.Asset(") != std::string::npos);
     CHECK(unit.find("\"animation\"") != std::string::npos);
+}
+
+// ===========================================================================
+//  A REFERENCE TO ANOTHER SCRIPT
+// ===========================================================================
+
+TEST_CASE("a script reference is a field, and takes its constraint from the type") {
+    // The same bargain ComponentRef makes, for a class the GAME defines. The
+    // difference is where the constraint comes from: a component carries
+    // T::kTypeName, so that class reads it off the type; a script class has no
+    // such thing, so the name is lifted out of the template argument HERE.
+    //
+    // It lands already matching, which is the whole reason one branch serves
+    // both: `Bullet` is character-for-character what ENGINE_REGISTER_SCRIPT
+    // stringizes, what the registry keys on, and what ScriptName() hands
+    // EntityHasNamed.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
+    ScriptRef<Bullet>      target;
+    eng::ScriptRef<Bullet> spare;
+    ScriptRef<Bullet>      squad[3];
+    ScriptRef <Bullet>     spaced;
+    ScriptRef<Bullet>      braced{};
+)CPP"));
+
+    for (const char* name : {"target", "spare", "spaced", "braced"}) {
+        REQUIRE_MESSAGE(Var(info, name) != nullptr, name);
+        CHECK(Var(info, name)->fieldType == ScriptFieldType::Entity);
+        CHECK(Var(info, name)->requiredType == "Bullet");
+    }
+
+    // An array is one row per element, as it is for every other field type.
+    REQUIRE(Var(info, "squad") != nullptr);
+    CHECK(Var(info, "squad")->isArray);
+    CHECK(Var(info, "squad")->requiredType == "Bullet");
+
+    CHECK(info.skipped.empty());
+}
+
+TEST_CASE("a script reference and a component reference live side by side") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
+    ScriptRef<Bullet> target;
+    SpriteRenderer    flash;
+)CPP"));
+
+    REQUIRE(Var(info, "target") != nullptr);
+    REQUIRE(Var(info, "flash") != nullptr);
+    CHECK(Var(info, "target")->requiredType == "Bullet");
+    CHECK(Var(info, "flash")->requiredType == "SpriteComponent");
+}
+
+TEST_CASE("a marker still beats a script reference's own constraint") {
+    // The type is the DEFAULT constraint, not an override of what was asked
+    // for - the same rule the component case follows.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    ScriptRef<Bullet> target;   // [Rocket]"));
+
+    REQUIRE(Var(info, "target") != nullptr);
+    CHECK(Var(info, "target")->requiredType == "Rocket");
+}
+
+TEST_CASE("the closing angle bracket is counted, not guessed at") {
+    // THE BUG THIS PINS DOWN was a silent one, which is the sort this file
+    // exists to prevent: the closing '>' was found with rfind, so it was
+    // whichever '>' came last ON THE LINE. With a '>' in the initialiser the
+    // template argument came out as `Bullet> target = Pick<Bullet`, the
+    // synthetic spelling swallowed the variable's own name, and the member was
+    // neither exposed NOR listed as skipped - it simply ceased to exist.
+    //
+    // ComponentRef was wrong the same way, so both are checked here.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap(R"CPP(
+    ScriptRef<Bullet> target = Pick<Bullet>();
+    eng::ComponentRef<eng::SpriteComponent> flash = Pick<eng::SpriteComponent>();
+)CPP"));
+
+    REQUIRE_MESSAGE(Var(info, "target") != nullptr,
+                    "the initialiser's '>' swallowed the variable name");
+    CHECK(Var(info, "target")->requiredType == "Bullet");
+
+    REQUIRE_MESSAGE(Var(info, "flash") != nullptr,
+                    "the same bug, on the component spelling");
+    CHECK(Var(info, "flash")->requiredType == "SpriteComponent");
+}
+
+TEST_CASE("a nested template argument keeps its whole spelling") {
+    // Nothing registers a script under a nested name, so this never matches
+    // anything at runtime and ScriptFields::Ref says so. What matters here is
+    // that depth-counting does not stop at the inner '>' and mangle the name.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    ScriptRef<Outer<Inner>> odd;"));
+
+    REQUIRE(Var(info, "odd") != nullptr);
+    CHECK(Var(info, "odd")->requiredType == "Outer<Inner>");
+}
+
+TEST_CASE("an empty script reference argument is not a declaration") {
+    // ScriptRef<T> static_asserts on T, but that is a COMPILER's job and this
+    // parser never sees a type. The same answer the component case gives.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    ScriptRef<> nothing;"));
+    CHECK(Var(info, "nothing") == nullptr);
 }

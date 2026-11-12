@@ -1798,9 +1798,11 @@ TEST_CASE("a script on another entity can be found by its type") {
     Entity&   entity = world.AddWithScript("Scripted", "TestPlain");
 
     // TestPlain is nameable here because this test file declares it. A script
-    // under assets/scripts is in an anonymous namespace and is not - which is
-    // why a reference is usually constrained by NAME instead. See the note in
-    // ScriptComponent.h.
+    // under assets/scripts needs the same thing - a declaration - which is
+    // what putting its class in a header beside it buys, and what
+    // eng::ScriptRef<T> is for. Scripts share the global namespace, so nothing
+    // hides the name; they used to each sit in an anonymous `namespace { }`
+    // and no longer do. See scene/ScriptRef.h.
     CHECK(FindScriptOn<TestPlain>(entity) != nullptr);
     CHECK(FindScriptOn<TestBounded>(entity) == nullptr);
 }
@@ -2371,4 +2373,93 @@ TEST_CASE("a marked string stores the CANONICAL kind, however it was spelled") {
     const ScriptField* two = fields.Find("picture");
     REQUIRE(two != nullptr);
     CHECK(two->requiredType == "image");
+}
+
+// ===========================================================================
+//  ScriptRef - a typed slot pointed at another script
+// ===========================================================================
+
+TEST_CASE("a script reference is a field the Inspector can draw") {
+    // THE SPECIALIZATION IS LOAD-BEARING AND SILENT IF FORGOTTEN. Ref() itself
+    // is not a template and asks no questions - it binds an EntityRef& and the
+    // derived-to-base conversion satisfies it - so a hand-written OnExpose
+    // works either way. The generated exposer's nested Traits<...>::known
+    // requirement is the only thing between a correct declaration and a
+    // variable that never appears.
+    CHECK(fields::Traits<ScriptRef<TestBounded>>::known);
+    CHECK(fields::Traits<ScriptRef<TestBounded>>::type == ScriptFieldType::Entity);
+
+    // AND THE BASE IS AT OFFSET 0, which is what makes ScriptField::AsEntityRef
+    // an unchecked cast rather than a lie. Adding a member or a vtable here
+    // would break every slot in the Inspector at once.
+    ScriptRef<TestBounded> ref;
+    CHECK(static_cast<const void*>(&ref) ==
+          static_cast<const void*>(static_cast<EntityRef*>(&ref)));
+
+    ScriptFields fields;
+    fields.Ref("target", ref, "TestBounded");
+    REQUIRE(fields.Count() == 1);
+
+    const ScriptField* field = fields.Find("target");
+    REQUIRE(field != nullptr);
+    CHECK(field->type == ScriptFieldType::Entity);
+    CHECK(field->requiredType == "TestBounded");
+    CHECK(field->AsEntityRef() == static_cast<EntityRef*>(&ref));
+}
+
+TEST_CASE("a script reference resolves to the other script, and to nothing else") {
+    TestScene world;
+    world.AddWithScript("Bounded", "TestBounded");
+
+    ScriptRef<TestBounded> ref;
+
+    // Empty: no name, so nothing to resolve.
+    CHECK(!ref.IsSet());
+    CHECK(ref.Get() == nullptr);
+    CHECK(!static_cast<bool>(ref));
+
+    ref.Set("Bounded");
+    REQUIRE(ref.Get() != nullptr);
+    CHECK(static_cast<bool>(ref));
+
+    // WHAT IT IS FOR: the other script's own members, through `->`.
+    CHECK(ref->lives == 3);
+    ref->lives = 1;
+    CHECK(ref.Get()->lives == 1);
+
+    // A name that resolves to an entity WITHOUT that script is null, and is
+    // not told apart from the others - a caller handles them all the same way.
+    // IsSet() is what answers "was something dropped on it".
+    world.AddWithScript("Plain", "TestPlain");
+    ref.Set("Plain");
+    CHECK(ref.IsSet());
+    CHECK(ref.Get() == nullptr);
+    CHECK(!static_cast<bool>(ref));
+
+    // And so is a name that resolves to no entity at all.
+    ref.Set("Nothing");
+    CHECK(ref.Get() == nullptr);
+}
+
+TEST_CASE("a script reference asks for the type, not the name it was set to") {
+    // Two scripts on one entity: the reference picks the one that IS a T,
+    // which is the difference between this and a constrained EntityRef.
+    TestScene world;
+    Entity&   entity = world.AddWithScript("Both", "TestBounded");
+    {
+        auto        second = std::make_unique<ScriptComponent>();
+        Json        node;
+        std::string error;
+        node["script"] = "TestPlain";
+        REQUIRE(second->Deserialize(node, error));
+        entity.AddComponent(std::move(second));
+    }
+
+    ScriptRef<TestBounded> bounded;
+    bounded.Set("Both");
+    CHECK(bounded.Get() != nullptr);
+
+    ScriptRef<TestPlain> plain;
+    plain.Set("Both");
+    CHECK(plain.Get() != nullptr);
 }

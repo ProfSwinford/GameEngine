@@ -515,6 +515,21 @@ private:
     bool   m_quitRequested  = false;
     bool   m_inPlayMode     = false;
 
+    // ======================================================================
+    //  DID THE SCRIPTS UPDATE THIS FRAME? Decided once in Simulate, read again
+    //  in PresentFrame, so the per-frame update and the end-of-frame coroutine
+    //  pass can never disagree about whether this frame ran.
+    //
+    //  ASKING THE QUESTION TWICE WOULD BE WRONG, not merely untidy. The gate is
+    //  `!m_clock.IsPaused() || m_stepsThisFrame > 0`, and the Toolbar's Pause
+    //  button runs BETWEEN the two - it is drawn in EditorApp::DrawPanels, after
+    //  Simulate and before PresentFrame. A game playing at a time scale of zero
+    //  has m_stepsThisFrame == 0, so one click there would flip the second
+    //  reading to false and strand every WaitForEndOfFrame coroutine for a
+    //  frame. See ToolbarPanel.cpp and Engine::Simulate.
+    // ======================================================================
+    bool m_scriptsUpdatedThisFrame = false;
+
     // The scene as it was when Play was pressed, so Stop can put it back.
     std::string m_playModeSnapshot;
 

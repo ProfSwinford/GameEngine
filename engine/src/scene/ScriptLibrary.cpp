@@ -84,6 +84,12 @@ bool LoadOne(std::string_view virtualPath, std::string& outError) {
     // SDL_LoadObject returns, the new names are already in.
     const std::vector<std::string> before = RegisteredNames();
 
+    // And for the same reason, on the same side of the load: a library which
+    // registered nothing because its scripts were ALREADY registered must not
+    // be accused of having no ENGINE_REGISTER_SCRIPT line. See
+    // ScriptRegistry::RepeatCount.
+    const std::size_t repeatsBefore = ScriptRegistry::RepeatCount();
+
     SDL_SharedObject* handle = SDL_LoadObject(realPath.c_str());
     if (handle == nullptr) {
         outError = std::string("could not load '") + realPath + "': " + SDL_GetError();
@@ -104,7 +110,17 @@ bool LoadOne(std::string_view virtualPath, std::string& outError) {
     // a helper that should not have been built as a script, or a file whose
     // ENGINE_REGISTER_SCRIPT went missing - and either way nothing in it will
     // ever run.
-    if (module.owned.empty()) {
+    //
+    // UNLESS IT WAS BEATEN TO THEM. A script class in a shared header is
+    // registered by every library that includes that header, and only the
+    // first of those gets to own it - the rest are recognised as the same
+    // script from the same file and wave it through. Those libraries have
+    // registered nothing AND are perfectly fine, so this used to accuse them
+    // of missing a macro they plainly have. The script itself runs, served by
+    // whichever library got there first; which one that is depends on load
+    // order, which is why a shared class is better off with its
+    // ENGINE_REGISTER_SCRIPT in one .cpp of its own.
+    if (module.owned.empty() && ScriptRegistry::RepeatCount() == repeatsBefore) {
         ENGINE_LOG_WARN(Channels::kScene,
                         "'{}' loaded but registered no scripts, so nothing in it can "
                         "run - check it has an ENGINE_REGISTER_SCRIPT line",

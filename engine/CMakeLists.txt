@@ -70,6 +70,7 @@ set(ENGINE_SOURCES
     src/scene/Messaging.cpp           # entities talking to each other
     src/scene/Prefab.cpp              # saved entities, and the link back to them
     src/scene/Scene.cpp               # loading and saving levels
+    src/scene/Coroutine.cpp           # StartCoroutine, WaitForSeconds
     src/scene/ScriptComponent.cpp     # your own behaviour classes
     src/scene/ScriptFields.cpp        # the variables a script shows in the Inspector
     src/scene/SpinComponent.cpp
@@ -125,6 +126,7 @@ set(ENGINE_HEADERS
     include/engine/resource/ResourceManager.h
     include/engine/scene/AnimationRef.h
     include/engine/scene/Component.h
+    include/engine/scene/Coroutine.h
     include/engine/scene/ComponentRef.h           # Unity's object fields
     include/engine/scene/DeferredOps.h
     include/engine/scene/Entity.h
