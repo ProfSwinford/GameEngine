@@ -131,6 +131,24 @@ private:
     bool          m_hasPendingRange = false;
     void          ApplyPendingRange();
 
+    // ======================================================================
+    //  WHICH ROW THE LEFT BUTTON WENT DOWN ON, and whether it landed on that
+    //  row's expand arrow.
+    //
+    //  A ROW IS SELECTED ON THE RELEASE, not on the press, so that picking
+    //  one up to drag it does not change what the Inspector is describing -
+    //  see the long note in DrawNode. Deciding that on the release needs two
+    //  things the release itself cannot answer: whether the press started on
+    //  this row rather than another, and whether it was on the arrow, which
+    //  is the one part of the row ImGui presses on mouse-down.
+    //
+    //  CLEARED AT THE END OF EVERY FRAME THE BUTTON COMES UP, after the rows
+    //  have been drawn - so a press that ends anywhere else leaves nothing
+    //  behind to fire on the next one.
+    // ======================================================================
+    eng::EntityId m_pressedRow{};
+    bool          m_pressWasToggle = false;
+
     // ---- the marquee (drag a box round some rows) --------------------------
     //
     // Started by pressing in EMPTY space rather than on a row, because
@@ -155,9 +173,30 @@ private:
     // `parent` means the scene root, which is always allowed.
     bool ReparentIsLegal(eng::EntityId child, eng::EntityId parent) const;
 
-    // The same question for the WHOLE selection, which is what a drag
-    // actually carries. Legal only when it is legal for every member.
-    bool SelectionReparentIsLegal(eng::EntityId parent) const;
+    // ======================================================================
+    //  EVERYTHING A DRAG THAT GRABBED `grabbed` WILL MOVE.
+    //
+    //  The whole selection when the grabbed row is part of it - that is what
+    //  makes bulk reparenting possible - and that row ALONE when it is not.
+    //
+    //  THE SECOND HALF USED TO BE UNREACHABLE and now is the common case.
+    //  Starting a drag used to select the grabbed row first, so the selection
+    //  always contained it; it no longer does, because selecting on the press
+    //  that begins a drag swapped the Inspector out from under the drop. See
+    //  DrawEntityDragSource.
+    //
+    //  ONE ANSWER, asked by the drop target when it decides whether to light
+    //  up and by ApplyPendingReparent when it carries the move out. Two
+    //  copies of this rule is how a target comes to accept a drop and then
+    //  skip half of it.
+    // ======================================================================
+    std::vector<eng::EntityId> DragSet(eng::EntityId grabbed) const;
+
+    // The same question for everything a drag carries. Legal only when it is
+    // legal for every member - allowing the drop because the grabbed row
+    // happens to be fine would quietly skip the others at the drop, which
+    // looks like the feature failing at random.
+    bool DragReparentIsLegal(eng::EntityId grabbed, eng::EntityId parent) const;
 
     void RequestReparent(eng::EntityId child, eng::EntityId parent);
     void ApplyPendingReparent();

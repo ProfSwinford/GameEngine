@@ -54,12 +54,47 @@ instance and work.
 
 Without opening a window at all: `editor --write-ide-files`.
 
-Two things worth knowing:
+### And a third file, which is what stops another script's name going red
+
+Both of those point at `.build/script-scope.h`, which the editor also writes.
+It is the answer to the other half of the problem: your IDE opens one script at
+a time, and on its own a script has never heard of the others — so
+
+```cpp
+Bullet b;              // in Gun.cpp
+```
+
+would be underlined as an unknown type, and `b->damage` would offer no
+completion, even though the editor compiles both without complaint. The real
+compile puts every script in the project in scope (see
+[How the name gets there](#how-the-name-gets-there)); this header does the same
+thing for a tool that only ever sees one file.
+
+It is **written again on every build**, because its contents are the scripts'
+own text and go stale the moment one is edited. So:
+
+| | |
+|---|---|
+| **A new script is unknown to your IDE until it compiles once** | Save it, switch to the editor, let the rebuild happen. Visual Studio caches hard: if a name stays red after that, close the folder and reopen it. |
+| **Set up IntelliSense again after upgrading the engine** | A `CppProperties.json` written before this existed does not mention the scope header at all, and the symptom is exactly the one it fixes — a correct reference underlined. Each file says at the top when it was written. |
+
+**It is not a description of the real compile, and says so in its own text.**
+Two differences, both in the safe direction of never inventing an error:
+
+- Every script is complete there by the time your file is read, so **two
+  scripts that each call the other** show no error while you type. The build
+  still refuses that and names the loop.
+- Your file sits at global scope there rather than inside its own namespace, so
+  **another script's file-scope helper functions** are not offered to you even
+  though they compile.
+
+Two more things worth knowing:
 
 - **Neither file is worth committing.** The include paths in them are absolute,
   and a released editor and a source tree do not even use the same set of them,
   so a copy from somebody else is wrong rather than merely out of date.
-  Regenerating is one menu item.
+  Regenerating is one menu item. The scope header is generated too, and lives
+  under `.build/`, which is already ignored.
 - **Your scripts are compiled as C++20**, one standard behind the engine itself.
   These files say so, which means your IDE will refuse a C++23 feature here
   before the compiler gets the chance to.
@@ -940,6 +975,12 @@ a string, an `ImageRef`, an `AnimationRef`, an `[image]`/`[animation]` slot or a
 string accepts **any** kind of asset, because nothing can know which kind it
 wanted.
 
+A **constrained** reference — a `ComponentRef<T>`, a `ScriptRef<T>`, a bare
+script name, or an `EntityRef` with a `[TypeName]` marker — only takes an
+entity that satisfies it. The target does not light up for one that does not,
+and the row says what is missing from it while you hover. An unconstrained
+`eng::EntityRef` still takes anything, which is what no constraint means.
+
 ### A picture is a type too
 
 ```cpp
@@ -1161,8 +1202,10 @@ eng::ComponentRef<eng::BoxColliderComponent> area;
 ```
 
 **The slot only accepts an entity that has that component.** The picker lists
-only those, and the constraint comes from the type itself - there is no
-`// [SpriteComponent]` marker to write and none to get wrong.
+only those, a drag from the Hierarchy that does not have one is not taken - the
+row says so rather than filling in and going amber - and the constraint comes
+from the type itself, so there is no `// [SpriteComponent]` marker to write and
+none to get wrong.
 
 **`if (anchor)` is the question to ask**, and it is true only when the
 reference resolves *right now*. Empty, deleted, renamed away, or carrying no
@@ -1216,11 +1259,9 @@ The same slot, pointed at a class the *game* defines instead of one the engine
 does:
 
 ```cpp
-#include "Door.h"
-
 class DoorSwitch final : public eng::ScriptBehaviour {
 public:
-    ScriptRef<Door> door;        // drag the door this plate opens
+    Door door;                   // drag the door this plate opens
 
     void OnTriggerEnter(eng::EntityId) {
         if (door) {
@@ -1230,37 +1271,107 @@ public:
 };
 ```
 
+**No `#include`, and no wrapper type.** The bare script name is the whole
+declaration, the way `public Door door;` is in Unity. The build puts every
+script in the project in scope before a script is compiled, so another
+script's name is simply available.
+
 The Inspector draws it exactly as a component reference: a drop target, a
 picker offering only the entities that carry a `Door`, the name in red when it
 stops resolving, and the saved value following a rename. It stores the target
 entity's **name** and resolves on every access, for the same four reasons a
 component reference does.
 
-`assets/scripts/Door.h`, `Door.cpp` and `DoorSwitch.cpp` are the worked example.
-
-**The class has to be visible, and that is the one thing this costs.** Scripts
-share the global namespace, so nothing hides the name — but `DoorSwitch.cpp`
-still has no *declaration* of a class defined in `Door.cpp`, and C++ needs a
-complete type to call a method on one. So a script you intend to point at lives
-in a header beside the others:
+`assets/scripts/Script References/` is the worked example — two files, `Door.cpp`
+and `DoorSwitch.cpp`, with no header between them — and
+`assets/scenes/script_references.oscene` is the pair wired up and running:
 
 ```
-assets/scripts/Door.h          the class, and nothing else
-assets/scripts/Door.cpp        #include "Door.h" + ENGINE_REGISTER_SCRIPT(Door)
-assets/scripts/DoorSwitch.cpp  #include "Door.h"
+build/debug/bin/player --scene scenes/script_references.oscene
 ```
 
-A quoted include resolves against the directory of the file that writes it, so
-`#include "Door.h"` beside the script works with no build setting to change.
-From a sub-folder, count the `../` yourself.
+Two pressure plates, two doors, and each plate opens the one door it was pointed
+at. Nothing in it reads the keyboard, so it demonstrates itself the moment you
+press Play — a weight circles the middle of the scene and crosses each plate in
+turn. Swap the two `door` values in the Inspector and each plate opens the far
+door instead, with nothing recompiled, which is the whole point: the wiring is
+level data rather than code.
 
-**Three rules about that header, each of which bites silently if broken:**
+#### How the name gets there
+
+C++ needs a complete type to call a method on one, and `DoorSwitch.cpp` has no
+declaration of a class defined in `Door.cpp` — so the build supplies it. Every
+generated translation unit **declares and aliases every script in the project
+before it defines any of them**, then wraps each one in a namespace of its own:
+
+```cpp
+namespace s_Door       { class Door; }
+namespace s_DoorSwitch { class DoorSwitch; }
+
+using Door       = ::eng::ScriptRef<s_Door::Door>;
+using DoorSwitch = ::eng::ScriptRef<s_DoorSwitch::DoorSwitch>;
+
+namespace s_Door {
+using DoorSwitch = ::eng::ScriptRef<s_DoorSwitch::DoorSwitch>;
+#line 1 "assets/scripts/Script References/Door.cpp"
+... Door.cpp, exactly as you wrote it ...
+}
+```
+
+Inside `s_Door` the name `Door` is **the class**, so that file compiles as
+written and its `ENGINE_REGISTER_SCRIPT` still names the class. Anywhere else
+the same name is **a reference**, so every other script sees a slot. The
+namespace is identical in every unit, including Door's own, because resolving a
+reference ends in a `dynamic_cast` and MSVC matches `type_info` by decorated
+name — one library that did not wrap the class would hand out objects no other
+library could cast to.
+
+The forward declarations are what make it general: a `ScriptRef<T>` keeps a
+*name*, so its size and layout are the same whatever `T` is, and the only part
+that needs `T` whole is the resolve — which is compiled where the reference is
+*used*. So **a reference may point in either direction, or both**: the plate
+holds a `Door` and the door holds a `DoorSwitch`, with no header, no include,
+and no order between them.
 
 | | |
 |---|---|
-| The registrar goes in **one `.cpp`** | Put `ENGINE_REGISTER_SCRIPT` in the header instead and it registers once per file that includes it. That works — the registry recognises the repeat — but which library owns the class then depends on load order. Putting it in *both* is a redefinition error, so only that mistake is loud. |
-| Methods are defined **in the class**, or `inline` | Each script compiles into its own library and nothing exports a script's symbols, so a body left in `Door.cpp` compiles and then fails to link from `DoorSwitch`'s library. |
+| **Your `#include` lines are hoisted** out of the namespace, because an include *inside* one would put whatever it names in there too — `#include <cmath>` would make `std::cos` into `s_Door::std::cos`. Each leaves a blank line behind, so `#line` stays true and a compiler error still points at your line. |
+| **One script can call another's file-scope helpers**, backwards along the dependency order — so a script can use a helper from something it points at. A helper several scripts share belongs in a `.cpp` of its own, which the build compiles once and links into every script with no ordering rule at all. |
+
+**A header still works, and is still a reasonable choice.** Put the class in
+`Door.h`, include it from `Door.cpp`, keep `ENGINE_REGISTER_SCRIPT(Door)` in the
+`.cpp`, and the build folds that header into `Door`'s namespace — so the class
+ends up in exactly the same place and `Door door;` works the same from
+elsewhere. The header is now about how you like to organise files rather than
+something the engine makes you do. Two rules still apply to it:
+
+| | |
+|---|---|
+| The registrar goes in **one `.cpp`** | In the header instead, it registers once per file that includes it. That works — the registry recognises the repeat — but which library owns the class then depends on load order. |
 | It still needs a **lifecycle hook** | A class with no `OnStart`, `OnUpdate`, `OnFixedUpdate`, `OnDestroy` or collision hook is refused at compile time — "nothing would ever call it". `OnExpose` does not count. Easy to trip when writing a script that exists purely to be driven by another one. |
+
+**`ScriptRef<Door>` still compiles.** The bare name is already a reference, so
+the explicit spelling asks for a reference to a reference, which
+`scene/ScriptRef.h` collapses. Older scripts and older examples keep working.
+
+#### Three places the bare name is not the spelling
+
+Each is a C++ rule rather than a build limit, each has a spelling that works,
+and the build says which one before the compiler gets a turn.
+
+| | |
+|---|---|
+| **A reference to its own kind** — a door that opens the next door along | Inside `class Door` the name `Door` is the class being defined, always: that is the injected-class-name and no arrangement of namespaces changes it. So `Door door;` there declares a member of itself. Write `ScriptRef<Door> next;`, which means the same thing everywhere. |
+| **Deriving from another script** | `class SlidingDoor : public Door` asks to inherit from a *reference*. Write `public Door::ScriptType` — `ScriptRef` declares that name for exactly this. The base must not be `final`, which every script written from the templates is, so take that off the one you derive from. |
+| **Two scripts that each call the other** | `other->Method()` is ordinary member lookup and needs the other class *finished*, so the caller is compiled after it — and in a loop, each would have to come after the next. Two C++ classes whose inline methods call each other cannot be written in one file either. Let one side do the calling and the other just hold the slot (which is what `Door` and `DoorSwitch` do), send an `eng::Message`, or move the shared part into a `.cpp` of its own. |
+
+Holding a reference is never restricted this way. Declaring one, testing it
+with `if (other)`, saving it, dragging it in the Inspector and following a
+rename all work in any direction — only the arrow needs the far class
+finished. And if you derive from a script *and* hold a reference to one of its
+kind, the base class's own name hides the alias inside your class, so that one
+is `ScriptRef<Door>` too; the build warns, because the alternative is a member
+that compiles and does nothing.
 
 **It cannot cross a scene.** A reference resolves against the scene that is
 running, so one pointed into a level that is not loaded is simply null.
@@ -1275,18 +1386,48 @@ running, so one pointed into a level that is not loaded is simply null.
   cannot have had a scorekeeper dragged onto it. `Bullet.cpp` sends a message
   instead, and the payload *is* the whole content: there is no method to call.
 - *Just asking whether something is there* — an `eng::EntityRef` with a
-  `// [Door]` marker gives you the same filtered slot with no header at all.
-  `ScriptRef` earns its keep when you call the other script's own methods.
+  `// [Door]` marker gives you the same filtered slot without naming the type
+  at all, which is what you want if the script is not even compiled in yet.
+  A typed reference earns its keep when you call the other script's methods.
 
-### An array is one row per element
+### An array folds up, with its length beside it
 
 ```cpp
 std::string walkAnimations[4];   // right, left, up, down
 ```
 
-shows up as four boxes — `walkAnimations[0]` to `walkAnimations[3]` — each an
-ordinary variable of the element's type, each saved separately, each with that
-same tooltip. Index it in the script as you would any array.
+shows up as one collapsible row with the array's name and `4 of 4` beside it:
+
+```
+  walkAnimations                4 of 4
+    [0]   [ hero.png#walk_right ]
+    [1]   [ hero.png#walk_left  ]
+    [2]   [ (none)              ]
+    [3]   [ (none)              ]
+```
+
+Each element is still an **ordinary variable** of the element's type —
+`walkAnimations[0]` to `walkAnimations[3]` — each saved separately, each
+overridable on a prefab instance, each with that same tooltip. Only the
+*looking* is grouped. Index it in the script as you would any array.
+
+**The number on the right is how many rows this entity offers**, and drag it
+to change that. It does **not** resize the array: the script's array is a
+fixed `[4]` for as long as the object exists, and there is no reallocating a
+C++ array from a tool. It is a convenience for an array that is longer than
+this particular entity uses — sixteen slots of which three are filled is
+thirteen blank rows otherwise.
+
+Shortening **hides** rows, it does not clear them, because a drag from 16 down
+to 1 and back would otherwise destroy fifteen values with nothing to give them
+back. So anything left outside the length that still holds a value is named
+under the header, with a button to clear it:
+
+> 2 hidden element(s) still have a value, and the script still reads them
+> &nbsp; `Clear them`
+
+The length is saved with the entity under the key `walkAnimations[]`, which is
+not a variable name and cannot collide with one.
 
 **A marker applies to every element.** Written `// [animation] right, left, up,
 down`, that same declaration gives all four the animation slot rather than four

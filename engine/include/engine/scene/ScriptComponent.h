@@ -966,6 +966,51 @@ public:
     // quiet way to delete everything the component was keeping safe.
     std::size_t ForgetUnusedSavedValues();
 
+    // ======================================================================
+    //  HOW MANY OF AN ARRAY'S ELEMENTS THIS ENTITY USES.
+    //
+    //  THE SCRIPT'S ARRAY IS A FIXED SIZE and this does not change it. A
+    //  `std::string walkAnimations[8]` is eight strings in the behaviour
+    //  object for as long as that object exists, whatever this says - there is
+    //  no reallocating a C++ array from a tool, and ScriptFields.h's own
+    //  static_assert spells out why a growable one is not offered either.
+    //
+    //  WHAT IT IS, THEN: how many rows the Inspector offers, saved with the
+    //  entity because it is a decision about this door and not about the
+    //  Door script. An eight-long array on an entity that uses three of them
+    //  is three rows and a number, instead of eight rows of which five are
+    //  blank - which is the whole of what a length is for here.
+    //
+    //  AND THE ELEMENTS PAST IT ARE STILL THERE, which is the one thing this
+    //  must not be quiet about: the script keeps reading all eight. Shortening
+    //  hides rows, it does not clear them, because a drag from 8 to 1 and back
+    //  would otherwise destroy six values that nothing could return. The
+    //  Inspector names any hidden element that is still set and offers to
+    //  clear them, which is the same decision ForgetUnusedSavedValues leaves
+    //  to somebody rather than taking.
+    //
+    //  DEFAULTS TO THE WHOLE ARRAY and is clamped to it, so a scene file
+    //  holding 99 for an array of 4 shows four rows rather than forty
+    //  nonexistent ones. Returns 0 for a name that is not an array, which is
+    //  the same answer ScriptFields::ArrayLength gives.
+    // ======================================================================
+    std::size_t ArrayLengthUsed(std::string_view arrayName) const;
+
+    // Records it. Clamped to the array's declared length, and a value equal to
+    // that length REMOVES the key rather than writing it - an array nobody has
+    // shortened should leave nothing in the scene file.
+    void SetArrayLengthUsed(std::string_view arrayName, std::size_t length);
+
+    // The scene-file key the length above is stored under - "walkAnimations[]".
+    //
+    // ONE FUNCTION, because three separate things need the spelling: the two
+    // above, and UnusedSavedValues, which has to recognise the key in order
+    // not to report a length as a leftover value and offer to delete it.
+    //
+    // IT CANNOT COLLIDE WITH A VARIABLE. The elements are "name[0]" upwards,
+    // every other field is a C++ identifier, and neither can be "name[]".
+    static std::string ArrayLengthKey(std::string_view arrayName);
+
     // Points every entity reference that named `oldName` at `newName`, and
     // says how many moved. Called by Scene::RenameEntity; see the note there.
     std::size_t RetargetReferences(std::string_view oldName,

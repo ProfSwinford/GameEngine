@@ -349,14 +349,51 @@ struct ScriptField {
     // its class in a header both include; see scene/ScriptRef.h. That changes
     // what a script author writes and nothing about what travels.
     //
-    // It is advice to the Inspector, not a rule the engine keeps: a reference
-    // can be pointed at an entity that does not satisfy it, and the Inspector
-    // says so rather than refusing. A level in the middle of being built is
-    // allowed to be wrong.
+    // IT IS NOT A RULE THE ENGINE KEEPS. Nothing here stops a reference being
+    // pointed at an entity that does not satisfy it - a hand-edited scene
+    // file may name one, and a component may be taken off an entity that was
+    // already pointed at. A level in the middle of being built is allowed to
+    // be wrong, and the Inspector says so rather than quietly correcting it.
+    //
+    // WHAT THE INSPECTOR DOES WITH IT is narrow the picker and REFUSE A DROP
+    // that cannot satisfy it, saying what is missing while the cursor is over
+    // the slot. That is a gesture failing to land, not the engine enforcing
+    // anything: a reference is typed, so an entity dragged onto a Door slot
+    // that has no Door on it is a drop that missed rather than a level being
+    // built. Taking it meant clearing the slot by hand before trying again.
     //
     // NOT called `requires`, which has been a C++ KEYWORD since C++20 - the
     // same keyword ScriptHooks.h uses to ask whether a script has an OnUpdate.
     std::string requiredType;
+
+    // ======================================================================
+    //  ONE ELEMENT OF AN ARRAY, and which one.
+    //
+    //  `std::string walkAnimations[4]` is exposed as four ordinary variables
+    //  called walkAnimations[0] to walkAnimations[3] - see the note on the
+    //  loop in tools/ScriptVars.cpp - and that stays exactly true: every one
+    //  of them has its own saved value, its own prefab override and its own
+    //  undo entry, and nothing downstream had to learn about arrays for any
+    //  of that to work.
+    //
+    //  WHAT THE FLATTENING COST WAS THE INSPECTOR. Four rows called
+    //  walkAnimations[0..3] are four unrelated variables as far as the panel
+    //  is concerned, so a sixteen-long array was sixteen rows that could not
+    //  be folded away and whose shared name was repeated sixteen times. The
+    //  panel can only group them if it knows they belong together.
+    //
+    //  SO THE NAME IS READ ONCE, HERE, rather than parsed again by every
+    //  reader - which is the same argument AssetFieldKind makes for living in
+    //  the engine. A C++ identifier cannot contain a bracket, so a name that
+    //  ends in "[<digits>]" came from the array loop or from somebody writing
+    //  that shape into Var() by hand, and both mean the same thing.
+    //
+    //  EMPTY AND -1 for an ordinary variable, which is almost all of them.
+    //  `arrayIndex >= 0` and `!arrayName.empty()` are the same question; the
+    //  index is what the Inspector labels the row with.
+    // ======================================================================
+    std::string arrayName;
+    int         arrayIndex = -1;
 
     // ---- typed access ----------------------------------------------------
     //
@@ -655,6 +692,22 @@ public:
 
     // Null when no variable has that name.
     const ScriptField* Find(std::string_view name) const;
+
+    // ----------------------------------------------------------------------
+    //  HOW LONG THE ARRAY CALLED `arrayName` IS - its declared length, which
+    //  is the number of elements the script exposed and nothing to do with
+    //  how many of them are filled in.
+    //
+    //  COUNTED RATHER THAN STORED, and that is deliberate: the elements are
+    //  the only record that the array exists, so a count kept beside them
+    //  would be a second answer that could disagree with the first. It is a
+    //  walk of a list that is a dozen entries long on a busy script.
+    //
+    //  0 when nothing by that name was exposed, which is also the answer for
+    //  an ordinary variable - a non-array has no length, rather than a length
+    //  of one.
+    // ----------------------------------------------------------------------
+    std::size_t ArrayLength(std::string_view arrayName) const;
 
     void Clear() { m_fields.clear(); }
 

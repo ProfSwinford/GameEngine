@@ -1454,3 +1454,417 @@ TEST_CASE("an empty script reference argument is not a declaration") {
     const ScriptSourceInfo info = ScanScriptSource(Wrap("    ScriptRef<> nothing;"));
     CHECK(Var(info, "nothing") == nullptr);
 }
+
+// ===========================================================================
+//  THE BARE SCRIPT NAME: `Door door;`
+//
+//  The spelling the reference feature exists for, and the one case this
+//  parser cannot judge from the line alone. `Door door;` and
+//  `Matrix4 basis;` are the same shape - two identifiers in a row - so the
+//  only thing that tells them apart is whether some file in the project
+//  registers a script called Door. That list is a PARAMETER, which is what
+//  keeps the scan pure: no registry, no engine state, no file system.
+// ===========================================================================
+
+TEST_CASE("a bare script name is a reference to that script") {
+    const std::vector<std::string> project{"Door", "Plate"};
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    Door door;"), project);
+
+    REQUIRE(Var(info, "door") != nullptr);
+    CHECK(Var(info, "door")->fieldType == ScriptFieldType::Entity);
+    CHECK(Var(info, "door")->requiredType == "Door");
+}
+
+TEST_CASE("a bare name that is not a script here is still not drawable") {
+    // THE OTHER HALF OF THE SAME RULE. With nothing registered under that
+    // name the member is a value of some type the Inspector cannot draw,
+    // which is what it was before this feature and what it must stay - a
+    // project with a Matrix4 must not find it turned into an entity slot.
+    const std::vector<std::string> project{"Door"};
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    Matrix4 basis;"), project);
+
+    CHECK(Var(info, "basis") == nullptr);
+    REQUIRE(Skipped(info, "basis") != nullptr);
+    CHECK(Skipped(info, "basis")->reason.find("not one the Inspector can draw") !=
+          std::string::npos);
+}
+
+TEST_CASE("the scan with no project list cannot see a bare script name") {
+    // The one-argument overload, which every caller with no project behind it
+    // uses - the Assets panel's "does this register anything", a lone file.
+    // It has to behave exactly as it did before the feature existed.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    Door door;"));
+    CHECK(Var(info, "door") == nullptr);
+}
+
+TEST_CASE("a bare script name with a star is still a pointer") {
+    // `Door* door;` MUST NOT become a reference: the name is matched as a
+    // whole word, so the star stops it and the member reaches the pointer
+    // branch - whose message is the one that tells the author to drop it.
+    const std::vector<std::string> project{"Door"};
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    Door* door;"), project);
+
+    CHECK(Var(info, "door") == nullptr);
+    REQUIRE(Skipped(info, "door") != nullptr);
+    CHECK(Skipped(info, "door")->reason.find("drop the star") != std::string::npos);
+}
+
+TEST_CASE("the explicit ScriptRef spelling still names the script") {
+    // IT HAS TO KEEP WORKING, and this is the test that says so. A script's
+    // bare name is now an alias for a reference to it, so `ScriptRef<Door>`
+    // asks for a reference to a reference - which the partial specialization
+    // in scene/ScriptRef.h collapses. What matters here is that the parser
+    // still reports the constraint as the SCRIPT.
+    const std::vector<std::string> project{"Door"};
+    const ScriptSourceInfo         info =
+        ScanScriptSource(Wrap("    ScriptRef<Door> door;"), project);
+
+    REQUIRE(Var(info, "door") != nullptr);
+    CHECK(Var(info, "door")->requiredType == "Door");
+}
+
+// ===========================================================================
+//  THE GENERATED UNIT, which is where the bare name actually becomes one
+// ===========================================================================
+
+TEST_CASE("the generated unit wraps each script and aliases its bare name") {
+    ScriptSourceInfo info;
+    info.className = "Plate";
+
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp", "#include <cmath>\nclass Door {};\n"},
+        {"Plate", "C:/p/Plate.cpp", "class Plate { Door door; };\n"},
+    };
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/gen/Plate__1.cpp");
+
+    // Each script in a namespace of its own, each followed by the alias that
+    // makes its bare name a reference everywhere else.
+    CHECK(unit.find("namespace s_Door {") != std::string::npos);
+    CHECK(unit.find("using Door = ::eng::ScriptRef<s_Door::Door>;") != std::string::npos);
+    CHECK(unit.find("using Plate = ::eng::ScriptRef<s_Plate::Plate>;") !=
+          std::string::npos);
+
+    // THE ORDER IS THE ORDER GIVEN: Plate's body names Door, so Door has to
+    // be complete first. Reversing this is the one thing that cannot compile.
+    CHECK(unit.find("namespace s_Door") < unit.find("namespace s_Plate"));
+
+    // AND THE INCLUDE CAME OUT. Left inside the namespace, <cmath> would have
+    // put std::cos in s_Door - the failure that made hoisting necessary.
+    REQUIRE(unit.find("#include <cmath>") != std::string::npos);
+    CHECK(unit.find("#include <cmath>") < unit.find("namespace s_Door"));
+}
+
+TEST_CASE("hoisting an include leaves the line numbering alone") {
+    // #line 1 claims the body starts at the author's line 1, so every line
+    // after a hoisted include has to still be where it was. Without the blank
+    // that stands in for it, every diagnostic below an include is reported
+    // one line too high - per include, which is the sort of off-by-N that
+    // makes a compiler error useless.
+    ScriptSourceInfo info;
+    info.className = "Door";
+
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp",
+         "#include <cmath>\n#include <string>\nclass Door {};\n"}};
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/gen/Door__1.cpp");
+
+    const std::size_t marker = unit.find("#line 1 \"C:/p/Door.cpp\"");
+    REQUIRE(marker != std::string::npos);
+    const std::size_t bodyStart = unit.find('\n', marker) + 1;
+    const std::size_t classAt   = unit.find("class Door {};", bodyStart);
+    REQUIRE(classAt != std::string::npos);
+
+    // Two blanks for the two hoisted includes, so `class` is still the third
+    // line of the body exactly as it is the third line of the file.
+    CHECK(unit.substr(bodyStart, classAt - bodyStart) == "\n\n");
+}
+
+TEST_CASE("a script with a hand-written OnExpose gets no generated exposer") {
+    // THE HAND-WRITTEN LIST WINS, and two exposers for one script would mean
+    // the generated one overwrote it. The wrapping still has to happen - the
+    // class must be in its namespace in every unit or no library can cast to
+    // it - so this is about the exposer alone.
+    ScriptSourceInfo info;
+    info.className   = "Door";
+    info.hasOnExpose = true;
+
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp", "class Door {};\n"}};
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/gen/Door__1.cpp");
+
+    CHECK(unit.find("namespace s_Door {") != std::string::npos);
+    CHECK(unit.find("SetExposer") == std::string::npos);
+}
+
+// ===========================================================================
+//  A REFERENCE POINTING EITHER WAY, which is what makes this a feature rather
+//  than a demonstration. The bug these cover: the alias used to be written
+//  AFTER each namespace, so a script could only name the ones wrapped before
+//  it - and no order puts both of a mutual pair first.
+// ===========================================================================
+
+TEST_CASE("every script is declared and aliased before any of them is defined") {
+    ScriptSourceInfo info;
+    info.className = "Door";
+
+    // Door FIRST and naming DoorSwitch: the order that could not work while
+    // the alias came after the namespace it belonged to.
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp", "class Door { DoorSwitch plate; };\n"},
+        {"DoorSwitch", "C:/p/DoorSwitch.cpp", "class DoorSwitch { Door door; };\n"},
+    };
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/gen/Door__1.cpp");
+
+    const std::size_t declared =
+        unit.find("namespace s_DoorSwitch { class DoorSwitch; }");
+    const std::size_t alias =
+        unit.find("using DoorSwitch = ::eng::ScriptRef<s_DoorSwitch::DoorSwitch>;");
+    const std::size_t firstBody = unit.find("namespace s_Door {\n");
+
+    REQUIRE(declared != std::string::npos);
+    REQUIRE(alias != std::string::npos);
+    REQUIRE(firstBody != std::string::npos);
+
+    // Both before the first script's text, which is the whole point: a
+    // ScriptRef needs its T declared, never finished.
+    CHECK(declared < firstBody);
+    CHECK(alias < firstBody);
+}
+
+TEST_CASE("the alias is re-declared inside every other script's namespace") {
+    // WHY IT HAS TO BE. Each namespace gets a using-directive for every other
+    // one, so that one script can call another's file-scope helpers - and
+    // that directive also drags in the other script's CLASS, which would be
+    // ambiguous against the alias at global scope. A declaration in this
+    // namespace beats anything a directive brought in, so the alias is
+    // written again here. FORWARDS AS WELL AS BACK, or the pair above breaks
+    // again for whichever one comes first.
+    ScriptSourceInfo info;
+    info.className = "Door";
+
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp", "class Door { DoorSwitch plate; };\n"},
+        {"DoorSwitch", "C:/p/DoorSwitch.cpp", "class DoorSwitch { Door door; };\n"},
+    };
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/gen/Door__1.cpp");
+
+    const std::size_t doorBody = unit.find("namespace s_Door {\n");
+    REQUIRE(doorBody != std::string::npos);
+    const std::size_t doorText = unit.find("#line 1 \"C:/p/Door.cpp\"");
+    REQUIRE(doorText != std::string::npos);
+
+    // Inside s_Door, before Door.cpp's own text: the directive, and the alias
+    // that re-hides the class it brought in.
+    const std::size_t directive = unit.find("using namespace s_DoorSwitch;", doorBody);
+    const std::size_t hide =
+        unit.find("using DoorSwitch = ::eng::ScriptRef<s_DoorSwitch::DoorSwitch>;",
+                  doorBody);
+    REQUIRE(directive != std::string::npos);
+    REQUIRE(hide != std::string::npos);
+    CHECK(directive < doorText);
+    CHECK(hide < doorText);
+}
+
+TEST_CASE("a struct keeps its keyword in the declaration it gets") {
+    // A `class Door;` declaration for a `struct Door` definition is legal and
+    // earns warning C4099 for it - about a line in a generated file, naming a
+    // difference the author cannot see from their own code.
+    ScriptSourceInfo info;
+    info.className = "Tally";
+
+    std::vector<ScriptUnitSource> sources{
+        {"Tally", "C:/p/Tally.cpp", "struct Tally {};\n", "struct"}};
+    CHECK(GenerateScriptUnit(info, sources, "C:/gen/T__1.cpp")
+              .find("namespace s_Tally { struct Tally; }") != std::string::npos);
+
+    sources[0].classKey = "class";
+    CHECK(GenerateScriptUnit(info, sources, "C:/gen/T__1.cpp")
+              .find("namespace s_Tally { class Tally; }") != std::string::npos);
+}
+
+// ===========================================================================
+//  THE FOUR TEXT QUESTIONS THE BUILD ASKS, which live beside the scan rather
+//  than in the editor so that they can be asked without building a project.
+// ===========================================================================
+
+TEST_CASE("comments are blanked out, and nothing else is") {
+    const std::string source =
+        "int a;  // other->Method() is what a pair cannot do\n"
+        "int b;  /* and\n"
+        "          nor is this */\n"
+        "const char* url = \"http://example.com/a//b\";\n";
+    const std::string code = StripComments(source);
+
+    // The code survives; the prose does not.
+    CHECK(code.find("int a;") != std::string::npos);
+    CHECK(code.find("int b;") != std::string::npos);
+    CHECK(code.find("other->Method()") == std::string::npos);
+    CHECK(code.find("nor is this") == std::string::npos);
+
+    // A `//` INSIDE A STRING IS NOT A COMMENT, which is why literals are
+    // tracked at all - a URL or a Windows path would otherwise take the rest
+    // of its line with it.
+    CHECK(code.find("\"http://example.com/a//b\"") != std::string::npos);
+
+    // SAME LENGTH AND SAME LINES, so anything reported about one is true of
+    // the other.
+    REQUIRE(code.size() == source.size());
+    CHECK(std::count(code.begin(), code.end(), '\n') ==
+          std::count(source.begin(), source.end(), '\n'));
+}
+
+TEST_CASE("reaching through a reference is told from merely holding one") {
+    // The distinction the wrapping order turns on. Only the arrow needs the
+    // other script FINISHED; everything else goes through ScriptRef's own
+    // members, which are compiled once the whole unit has been read.
+    CHECK(ReachesThroughReference("if (plate) { plate->Open(); }", "plate"));
+    CHECK(ReachesThroughReference("plate   ->Open();", "plate"));   // spaced
+
+    CHECK_FALSE(ReachesThroughReference("DoorSwitch plate;", "plate"));
+    CHECK_FALSE(ReachesThroughReference("if (plate) {}", "plate"));
+    CHECK_FALSE(ReachesThroughReference("plate.IsSet();", "plate"));
+
+    // A WHOLE WORD. `plateEdge->x` is a different member, and counting it
+    // would invent an ordering edge - which in a mutual pair is the
+    // difference between a build and a loop nobody wrote.
+    CHECK_FALSE(ReachesThroughReference("plateEdge->Open();", "plate"));
+    CHECK_FALSE(ReachesThroughReference("myplate->Open();", "plate"));
+}
+
+TEST_CASE("a base class is found, and the bare spelling told from the right one") {
+    const std::vector<std::string> scripts{"Door", "DoorSwitch"};
+
+    // `Door::ScriptType` is the spelling that works, because the bare name is
+    // a reference and a base class has to be the class.
+    const auto good = BaseScriptsOf("class Sliding final : public Door::ScriptType {};",
+                                    "Sliding", scripts);
+    REQUIRE(good.size() == 1);
+    CHECK(good[0].name == "Door");
+    CHECK(good[0].qualified);
+
+    const auto bare =
+        BaseScriptsOf("class Sliding final : public Door {};", "Sliding", scripts);
+    REQUIRE(bare.size() == 1);
+    CHECK(bare[0].name == "Door");
+    CHECK_FALSE(bare[0].qualified);
+
+    // ONLY THE BASE-CLAUSE. A script name in the BODY is a member's type, and
+    // reading it as a base would order the build around a reference that does
+    // not need it.
+    CHECK(BaseScriptsOf("class Sliding final : public eng::ScriptBehaviour {\n"
+                        "    Door door;\n};",
+                        "Sliding", scripts)
+              .empty());
+
+    // And a script with no base-clause at all.
+    CHECK(BaseScriptsOf("class Sliding {};", "Sliding", scripts).empty());
+}
+
+TEST_CASE("the class keyword is read off the definition, not guessed") {
+    CHECK(ClassKeyOf("struct Tally final : public eng::ScriptBehaviour {};", "Tally") ==
+          "struct");
+    CHECK(ClassKeyOf("class Tally final : public eng::ScriptBehaviour {};", "Tally") ==
+          "class");
+
+    // A FORWARD DECLARATION IS NOT A DEFINITION, so it is not what the
+    // keyword is taken from - and with nothing to read at all, `class` is the
+    // answer, which is what every script written from the templates says.
+    CHECK(ClassKeyOf("struct Tally;\nclass Tally {};", "Tally") == "class");
+    CHECK(ClassKeyOf("nothing here at all", "Tally") == "class");
+}
+
+// ===========================================================================
+//  THE HEADER AN IDE READS. What makes it different from a generated unit is
+//  the one thing it has to get right: the alias for the script in the file
+//  being edited cannot sit at global scope, because that file declares a
+//  class of exactly that name there.
+// ===========================================================================
+
+TEST_CASE("the scope header puts the bare names in a namespace, not at global scope") {
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp", "#include <cmath>\nclass Door { DoorSwitch p; };\n"},
+        {"DoorSwitch", "C:/p/DoorSwitch.cpp", "class DoorSwitch { Door d; };\n"},
+    };
+    const std::string header = GenerateScriptScopeHeader(sources);
+
+    // Every script declared, so the aliases can be formed.
+    CHECK(header.find("namespace s_Door { class Door; }") != std::string::npos);
+    CHECK(header.find("namespace s_DoorSwitch { class DoorSwitch; }") !=
+          std::string::npos);
+
+    // The aliases, inside the namespace that keeps them out of the way.
+    const std::size_t block = header.find("namespace engine_script_names {");
+    const std::size_t alias =
+        header.find("using Door = ::eng::ScriptRef<s_Door::Door>;");
+    const std::size_t directive = header.find("using namespace engine_script_names;");
+    REQUIRE(block != std::string::npos);
+    REQUIRE(alias != std::string::npos);
+    REQUIRE(directive != std::string::npos);
+    CHECK(block < alias);
+    CHECK(alias < directive);
+
+    // AND THE BODIES AFTER THE DIRECTIVE, so that a script's own text can see
+    // the other scripts' names - the same order the generated unit uses.
+    const std::size_t body = header.find("#line 1 \"C:/p/Door.cpp\"");
+    REQUIRE(body != std::string::npos);
+    CHECK(directive < body);
+
+    // The include hoisted above all of it, for the reason a unit hoists it:
+    // inside a namespace it would put std::cos in there too.
+    const std::size_t hoisted = header.find("#include <cmath>");
+    REQUIRE(hoisted != std::string::npos);
+    CHECK(hoisted < block);
+
+    // ENGINE'S OWN HEADER EXACTLY ONCE. #pragma once makes a repeat harmless,
+    // and a generated file with a visibly duplicated line invites somebody to
+    // wonder which copy is the mistake.
+    std::size_t engineIncludes = 0;
+    for (std::size_t at = header.find("#include <engine/Engine.h>");
+         at != std::string::npos;
+         at = header.find("#include <engine/Engine.h>", at + 1)) {
+        ++engineIncludes;
+    }
+    CHECK(engineIncludes == 1);
+}
+
+TEST_CASE("the scope header requalifies the registrar, which is load-bearing") {
+    // A script names itself unqualified exactly once, on its
+    // ENGINE_REGISTER_SCRIPT line - and in this arrangement that name is both
+    // the class the open file defines and a reference brought in by the
+    // using-directive above. Measured without these two lines: `error C2872:
+    // 'Gun': ambiguous symbol` on that line, in every script.
+    const std::vector<ScriptUnitSource> sources{
+        {"Door", "C:/p/Door.cpp", "class Door {};\n"}};
+    const std::string header = GenerateScriptScopeHeader(sources);
+
+    const std::size_t undef    = header.find("#undef ENGINE_REGISTER_SCRIPT");
+    const std::size_t redefine = header.find(
+        "#define ENGINE_REGISTER_SCRIPT(Type) ENGINE_SCRIPT_CHECKS(::Type)");
+    REQUIRE(undef != std::string::npos);
+    REQUIRE(redefine != std::string::npos);
+    CHECK(undef < redefine);
+
+    // LAST, so it applies to the file being edited and not to the copies
+    // above it - those are inside their own namespaces, where the bare name
+    // is the class and the ordinary macro is right.
+    CHECK(redefine > header.find("#line 1 \"C:/p/Door.cpp\""));
+}
+
+TEST_CASE("the scope header declares a struct as a struct") {
+    const std::vector<ScriptUnitSource> sources{
+        {"Tally", "C:/p/Tally.cpp", "struct Tally {};\n", "struct"}};
+    CHECK(GenerateScriptScopeHeader(sources).find(
+              "namespace s_Tally { struct Tally; }") != std::string::npos);
+}
+
+TEST_CASE("a project with no scripts still gets a usable scope header") {
+    // WRITTEN EVEN THEN, because the configuration names it by path and a
+    // forcedInclude pointing at a file that does not exist is an error every
+    // IDE reports against every file. A new project is this case.
+    const std::string header = GenerateScriptScopeHeader({});
+
+    CHECK(header.find("#pragma once") != std::string::npos);
+    CHECK(header.find("#include <engine/Engine.h>") != std::string::npos);
+    CHECK(header.find("namespace engine_script_names {") != std::string::npos);
+    CHECK(header.find("#undef ENGINE_REGISTER_SCRIPT") != std::string::npos);
+}

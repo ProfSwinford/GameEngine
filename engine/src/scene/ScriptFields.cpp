@@ -8,8 +8,10 @@
 #include <engine/scene/ScriptFields.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
+#include <string_view>
 
 namespace eng {
 namespace {
@@ -146,6 +148,45 @@ void ScriptFields::Add(std::string_view name, ScriptFieldType type, void* value,
     field.ranged  = ranged;
     field.min     = min;
     field.max     = max;
+
+    // ======================================================================
+    //  IS THIS ONE ELEMENT OF AN ARRAY? Asked once, here.
+    //
+    //  See the note on ScriptField::arrayName for why the answer is read off
+    //  the name rather than threaded through this function's parameters - and
+    //  for why reading it is sound: a C++ identifier cannot contain a bracket,
+    //  so "walkAnimations[2]" can only have come from the array loop the
+    //  editor generates, or from somebody writing that shape into Var() by
+    //  hand, which means the same thing.
+    //
+    //  DIGITS ONLY, and at least one. "a[]" and "a[i]" are not elements of
+    //  anything this can group, and treating them as such would put a row
+    //  under a header whose index could not be shown.
+    // ======================================================================
+    if (field.name.size() > 3 && field.name.back() == ']') {
+        const std::size_t open = field.name.rfind('[');
+        if (open != std::string::npos && open > 0 &&
+            open + 1 < field.name.size() - 1) {
+            const std::string_view digits(field.name.data() + open + 1,
+                                          field.name.size() - open - 2);
+            const bool allDigits =
+                std::all_of(digits.begin(), digits.end(),
+                            [](const char c) { return c >= '0' && c <= '9'; });
+
+            // A LENGTH THAT WILL NOT FIT AN int is not an array index; it is a
+            // name that happens to end in a very long number. from_chars says
+            // so rather than wrapping, which is the whole reason it is used
+            // here instead of std::stoi - that one THROWS, and this is called
+            // while a scene is loading.
+            int index = 0;
+            if (allDigits &&
+                std::from_chars(digits.data(), digits.data() + digits.size(), index)
+                        .ec == std::errc{}) {
+                field.arrayName  = field.name.substr(0, open);
+                field.arrayIndex = index;
+            }
+        }
+    }
 
     // A range with its ends the wrong way round, or both the same, would draw
     // a slider that cannot move. Reported and demoted to an ordinary drag box,
@@ -287,6 +328,23 @@ const ScriptField* ScriptFields::Find(std::string_view name) const {
                                      return field.name == name;
                                  });
     return it != m_fields.end() ? &*it : nullptr;
+}
+
+std::size_t ScriptFields::ArrayLength(std::string_view arrayName) const {
+    if (arrayName.empty()) {
+        return 0;
+    }
+
+    // COUNTED, NOT "the highest index plus one". The two agree for anything
+    // the generated exposer produces, which always emits 0..n-1 in order -
+    // but a HAND-WRITTEN OnExpose may list only the elements it cares about,
+    // and in that case the number of rows there are to draw is the number of
+    // rows there are, not the largest label among them.
+    return static_cast<std::size_t>(
+        std::count_if(m_fields.begin(), m_fields.end(),
+                      [arrayName](const ScriptField& field) {
+                          return field.arrayIndex >= 0 && field.arrayName == arrayName;
+                      }));
 }
 
 // ---------------------------------------------------------------------------

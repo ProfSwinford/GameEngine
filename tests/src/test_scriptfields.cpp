@@ -21,7 +21,10 @@
 
 #include <engine/Engine.h>
 
+#include <algorithm>
+#include <iterator>
 #include <string>
+#include <vector>
 
 using namespace eng;
 
@@ -125,6 +128,39 @@ public:
     void OnFixedUpdate() {}
 };
 
+// ---------------------------------------------------------------------------
+//  AN ARRAY, exposed the way the generated exposer does it.
+//
+//  BY HAND HERE, with the names spelled out, because that is what the editor
+//  writes into the generated unit: one Var per element, named "slots[0]"
+//  upwards. See the loop in tools/ScriptVars.cpp. Writing it out is also the
+//  point - the grouping must work for a hand-written OnExpose too, and a test
+//  that went through the generator would not prove that.
+//
+//  A PLAIN VARIABLE EITHER SIDE OF IT, so a test can tell "the array's
+//  elements" from "every field".
+// ---------------------------------------------------------------------------
+class TestArrays final : public ScriptBehaviour {
+public:
+    float       before = 1.0f;
+    std::string slots[4];
+    int         counts[2]{};
+    float       after = 2.0f;
+
+    void OnExpose(ScriptFields& fields) {
+        fields.Var("before", before);
+        for (std::size_t i = 0; i < std::size(slots); ++i) {
+            fields.Var("slots[" + std::to_string(i) + "]", slots[i]);
+        }
+        for (std::size_t i = 0; i < std::size(counts); ++i) {
+            fields.Var("counts[" + std::to_string(i) + "]", counts[i]);
+        }
+        fields.Var("after", after);
+    }
+
+    void OnFixedUpdate() {}
+};
+
 // A component bound to a script THE WAY A SCENE LOAD DOES IT: deserialized
 // first, attached second. That order is not incidental - it is what puts the
 // saved values in place before the script object exists, so they are applied
@@ -211,6 +247,7 @@ ENGINE_REGISTER_SCRIPT(TestPlain)
 ENGINE_REGISTER_SCRIPT(TestRefs)
 ENGINE_REGISTER_SCRIPT(TestAuto)
 ENGINE_REGISTER_SCRIPT(TestAutoAlt)
+ENGINE_REGISTER_SCRIPT(TestArrays)
 
 // ===========================================================================
 //  Collecting the list
@@ -2462,4 +2499,200 @@ TEST_CASE("a script reference asks for the type, not the name it was set to") {
     ScriptRef<TestPlain> plain;
     plain.Set("Both");
     CHECK(plain.Get() != nullptr);
+}
+
+// ===========================================================================
+//  ARRAYS
+//
+//  An array is exposed as one ORDINARY VARIABLE PER ELEMENT, named
+//  "slots[0]" upwards, and that is what makes it save, override, revert and
+//  undo like anything else. Everything below is about the one thing the
+//  flattening lost: that the elements belong together, which is what the
+//  Inspector needs in order to fold them under one name with one length.
+// ===========================================================================
+
+TEST_CASE("an array element knows its array and its index") {
+    Attached attached("TestArrays");
+
+    const ScriptField* element = attached.Field("slots[2]");
+    REQUIRE(element != nullptr);
+    CHECK(element->arrayName == "slots");
+    CHECK(element->arrayIndex == 2);
+
+    // AND ITS FULL NAME IS UNCHANGED, which is the half that must not move:
+    // it is the key in the scene file and the id of the widget.
+    CHECK(element->name == "slots[2]");
+}
+
+TEST_CASE("an ordinary variable is not an array element") {
+    Attached attached("TestArrays");
+
+    for (const char* name : {"before", "after"}) {
+        const ScriptField* field = attached.Field(name);
+        REQUIRE(field != nullptr);
+        CHECK(field->arrayName.empty());
+        CHECK(field->arrayIndex == -1);
+    }
+}
+
+TEST_CASE("an array's length is how many elements it exposed") {
+    Attached attached("TestArrays");
+
+    CHECK(attached.component.Fields().ArrayLength("slots") == 4);
+    CHECK(attached.component.Fields().ArrayLength("counts") == 2);
+
+    // A PLAIN VARIABLE HAS NO LENGTH rather than a length of one, and neither
+    // does a name nothing exposed. Both answer 0, because "how long is the
+    // array called before?" has no other honest answer.
+    CHECK(attached.component.Fields().ArrayLength("before") == 0);
+    CHECK(attached.component.Fields().ArrayLength("nothing") == 0);
+    CHECK(attached.component.Fields().ArrayLength("") == 0);
+}
+
+TEST_CASE("only a bracketed number is an index") {
+    // THE PARSE IS THE WHOLE RISK. A C++ identifier cannot contain a bracket,
+    // so anything ending in "[<digits>]" came from the array loop - but a
+    // HAND-WRITTEN OnExpose may pass any string at all, and a name read as an
+    // element when it is not would be folded under a header nobody wrote.
+    float        value = 0.0f;
+    ScriptFields fields;
+    fields.Var("ok[0]", value);
+    fields.Var("ok[12]", value);
+    fields.Var("empty[]", value);
+    fields.Var("letters[i]", value);
+    fields.Var("negative[-1]", value);
+    fields.Var("unclosed[3", value);
+    fields.Var("[5]", value);
+    fields.Var("plain", value);
+
+    CHECK(fields.Find("ok[0]")->arrayIndex == 0);
+    CHECK(fields.Find("ok[12]")->arrayIndex == 12);
+    CHECK(fields.Find("ok[12]")->arrayName == "ok");
+    CHECK(fields.ArrayLength("ok") == 2);
+
+    for (const char* name : {"empty[]", "letters[i]", "negative[-1]",
+                             "unclosed[3", "[5]", "plain"}) {
+        const ScriptField* field = fields.Find(name);
+        REQUIRE(field != nullptr);
+        CHECK(field->arrayIndex == -1);
+        CHECK(field->arrayName.empty());
+    }
+
+    // "[5]" HAS NO NAME IN FRONT OF IT, so there is no array for it to be an
+    // element of. Taking it would leave a header with an empty title.
+    CHECK(fields.ArrayLength("") == 0);
+}
+
+TEST_CASE("an array's used length defaults to all of it") {
+    Attached attached("TestArrays");
+
+    CHECK(attached.component.ArrayLengthUsed("slots") == 4);
+    CHECK(attached.component.ArrayLengthUsed("counts") == 2);
+    CHECK(attached.component.ArrayLengthUsed("before") == 0);
+    CHECK(attached.component.ArrayLengthUsed("nothing") == 0);
+}
+
+TEST_CASE("a shortened array remembers its length, and a whole one does not") {
+    Attached attached("TestArrays");
+
+    attached.component.SetArrayLengthUsed("slots", 2);
+    CHECK(attached.component.ArrayLengthUsed("slots") == 2);
+
+    // IT IS IN THE SCENE FILE under a key that cannot be a variable: the
+    // elements are "slots[0]" upwards and every other field is a C++
+    // identifier, so neither can be "slots[]".
+    CHECK(attached.component.SavedValues().contains("slots[]"));
+
+    // AND GOING BACK TO THE WHOLE ARRAY LEAVES NOTHING BEHIND. An array
+    // nobody shortened should look in the file exactly as it did before this
+    // existed, and dragging the length back out is how a shortening is undone.
+    attached.component.SetArrayLengthUsed("slots", 4);
+    CHECK(attached.component.ArrayLengthUsed("slots") == 4);
+    CHECK(!attached.component.SavedValues().contains("slots[]"));
+}
+
+TEST_CASE("a length is clamped to the array, from either end") {
+    Attached attached("TestArrays");
+
+    attached.component.SetArrayLengthUsed("slots", 99);
+    CHECK(attached.component.ArrayLengthUsed("slots") == 4);
+
+    attached.component.SetArrayLengthUsed("slots", 0);
+    CHECK(attached.component.ArrayLengthUsed("slots") == 0);
+
+    // A NAME THAT IS NOT AN ARRAY CANNOT BE GIVEN ONE. Writing "before[]"
+    // into the file would be a key nothing ever reads and that
+    // UnusedSavedValues would then offer to delete.
+    attached.component.SetArrayLengthUsed("before", 1);
+    CHECK(!attached.component.SavedValues().contains("before[]"));
+}
+
+TEST_CASE("a length hand-edited into a scene file cannot ask for rows that are not there") {
+    // Four elements in the script, 40 in the file. Nothing clamps on load -
+    // deliberately, as with a Range - so the clamp has to be in the reading.
+    Attached attached("TestArrays", Json{{"slots[]", 40}});
+    CHECK(attached.component.ArrayLengthUsed("slots") == 4);
+}
+
+TEST_CASE("a length that is not a number falls back to the whole array") {
+    // A scene file is text somebody may have typed. Every one of these used
+    // to be a cast of whatever was there - and 1e30 to an int is undefined
+    // behaviour, not a large number.
+    for (const Json& nonsense : {Json("two"), Json(true), Json(Json::array()),
+                                 Json(-3), Json(nullptr)}) {
+        Attached          attached("TestArrays", Json{{"slots[]", nonsense}});
+        const std::size_t used = attached.component.ArrayLengthUsed("slots");
+        CHECK(used <= 4);
+        if (nonsense.is_number()) {
+            CHECK(used == 0);   // -3 is "none of them", clamped at the bottom
+        } else {
+            CHECK(used == 4);
+        }
+    }
+}
+
+TEST_CASE("an array's length is not reported as a saved value nothing uses") {
+    // ======================================================================
+    //  THE KEY MATCHES NO FIELD AND NEVER WILL, so without an exemption it
+    //  was reported as a leftover - and the Inspector draws a "Forget them"
+    //  button beside that report, which would have deleted it.
+    // ======================================================================
+    Attached attached("TestArrays");
+    attached.component.SetArrayLengthUsed("slots", 1);
+
+    const std::vector<std::string> unused = attached.component.UnusedSavedValues();
+    CHECK(std::find(unused.begin(), unused.end(), "slots[]") == unused.end());
+
+    REQUIRE(attached.component.ForgetUnusedSavedValues() == 0);
+    CHECK(attached.component.ArrayLengthUsed("slots") == 1);
+}
+
+TEST_CASE("a length left behind by an array that has gone IS a leftover") {
+    // The exemption is only for an array that exists. A length for an array
+    // somebody renamed is exactly as orphaned as a renamed variable's value,
+    // and gets the same treatment: kept, reported, and dropped only if asked.
+    Attached attached("TestArrays", Json{{"gone[]", 2}});
+
+    const std::vector<std::string> unused = attached.component.UnusedSavedValues();
+    CHECK(std::find(unused.begin(), unused.end(), "gone[]") != unused.end());
+
+    CHECK(attached.component.ForgetUnusedSavedValues() == 1);
+    CHECK(!attached.component.SavedValues().contains("gone[]"));
+}
+
+TEST_CASE("an element of a shortened array keeps its value, and is still saved") {
+    // SHORTENING HIDES ROWS, IT DOES NOT CLEAR THEM - which is the one thing
+    // the Inspector has to say out loud, because the script goes on reading
+    // the whole array. A drag from 4 to 1 that destroyed three values would
+    // have nothing to give them back.
+    Attached attached("TestArrays");
+    REQUIRE(attached.Field("slots[3]") != nullptr);
+
+    *attached.Field("slots[3]")->AsString() = "still here";
+    REQUIRE(attached.component.SaveFieldValue("slots[3]"));
+
+    attached.component.SetArrayLengthUsed("slots", 1);
+    CHECK(*attached.Field("slots[3]")->AsString() == "still here");
+    CHECK(attached.component.IsFieldOverridden("slots[3]"));
+    CHECK(attached.component.SavedValues().at("slots[3]") == "still here");
 }

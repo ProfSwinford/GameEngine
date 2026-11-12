@@ -499,8 +499,30 @@ std::string DescribeHooks(const ScriptHooks& hooks);
 //  right name with the wrong arguments, the name from a different engine, and
 //  the OnUpdate(float) this engine itself used to have - into compile errors
 //  that say what to write instead.
+//
+//  ==========================================================================
+//  AND THAT HALF HAS A NAME OF ITS OWN: ENGINE_SCRIPT_CHECKS.
+//
+//  Not for anybody to write - a script still writes ENGINE_REGISTER_SCRIPT,
+//  which is this plus the registrar. It is split out for the IDE.
+//
+//  An IDE sees a script's .cpp ON ITS OWN, where another script's bare name
+//  means nothing at all, so the editor generates a header that declares every
+//  script in the project and force-includes it (see GenerateScriptScopeHeader
+//  in engine/tools/ScriptVars.h). In that arrangement the class the open file
+//  defines is at GLOBAL scope while its name is also a reference brought in
+//  by a using-directive - so the one unqualified use of its own name a script
+//  contains, the registrar line, is ambiguous there and nowhere else. That
+//  header ends by redefining ENGINE_REGISTER_SCRIPT to
+//
+//      ENGINE_SCRIPT_CHECKS(::Type)
+//
+//  which is unambiguous, keeps every message below working while you type,
+//  and leaves out only the registrar object - which an IDE never links and
+//  never runs. One definition of the checks, so the IDE cannot drift from the
+//  compiler about what a mistake is.
 // ----------------------------------------------------------------------------
-#define ENGINE_REGISTER_SCRIPT(Type)                                                   \
+#define ENGINE_SCRIPT_CHECKS(Type)                                                     \
     /* --- is this even a script? ------------------------------------------ */       \
     static_assert(std::is_base_of_v<::eng::ScriptBehaviour, Type>,                     \
                   #Type " must inherit from eng::ScriptBehaviour: "                    \
@@ -689,7 +711,15 @@ std::string DescribeHooks(const ScriptHooks& hooks);
                         "OnUpdate, OnFixedUpdate, OnDestroy, "                         \
                         "OnCollisionEnter/Stay/Exit, OnTriggerEnter/Stay/Exit), and "  \
                         "that they are PUBLIC - the engine calls them from outside "   \
-                        "the class, so a private one cannot be seen.");                \
+                        "the class, so a private one cannot be seen.");
+
+// ----------------------------------------------------------------------------
+//  THE WHOLE THING: every check above, and then the one object that does the
+//  registering. This is what a script writes, and the only one of the two
+//  that is part of the scripting API.
+// ----------------------------------------------------------------------------
+#define ENGINE_REGISTER_SCRIPT(Type)                                                   \
+    ENGINE_SCRIPT_CHECKS(Type)                                                         \
     namespace {                                                                        \
     struct Type##_Registrar {                                                          \
         Type##_Registrar() {                                                           \

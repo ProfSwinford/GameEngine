@@ -88,6 +88,7 @@
 // ============================================================================
 
 #include <cstddef>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -404,6 +405,23 @@ public:
     //  the Assets panel does.
     // ======================================================================
     static std::map<std::string, std::string> GatherScriptClasses();
+
+    // ======================================================================
+    //  THE HEADER AN IDE READS, so that another script's bare name is not
+    //  underlined in a window while compiling without complaint in the
+    //  editor.
+    //
+    //  Returns the path it wrote, or an empty path with the reason in
+    //  outError. Written on every successful build, because its contents are
+    //  the scripts' own text and go stale the moment one is edited - and from
+    //  ScriptIde, so that the configuration which names it never points at a
+    //  file that is not there yet.
+    //
+    //  What it contains and why it is not simply the generated unit:
+    //  GenerateScriptScopeHeader in engine/tools/ScriptVars.h.
+    // ======================================================================
+    static std::filesystem::path WriteIdeScopeHeader(std::string& outError);
+    static std::filesystem::path IdeScopeHeaderPath();
 
     // The three phases of a build. See the long note above BeginBuild in the
     // .cpp for which of them may run off the main thread - only Compile may.

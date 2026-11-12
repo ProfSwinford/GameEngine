@@ -62,7 +62,10 @@
 // library. The duplication above is still the right call; it just has to say
 // so out loud.
 
-
+bool IsPickup(eng::Entity& entity) {
+    auto* collider = eng::FindCollider(entity);
+    return collider != nullptr && collider->Layer() == "Pickup";
+}
 
 class GameRules final : public eng::ScriptBehaviour {
 public:
@@ -174,10 +177,7 @@ private:
     //  about images still loaded is that happening.
     // -------------------------------------------------------------------------
 
-    bool IsPickup(eng::Entity& entity) {
-        auto* collider = eng::FindCollider(entity);
-        return collider != nullptr && collider->Layer() == "Pickup";
-    }
+    
 
     void RequestWinScene() {
         if (m_requested) {

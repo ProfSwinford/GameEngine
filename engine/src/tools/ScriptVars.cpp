@@ -361,6 +361,7 @@ void ReadComment(std::string_view trailing, std::string_view above,
 //  were never candidates, and reporting them would bury the real reports.
 // ---------------------------------------------------------------------------
 bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
+                     const std::vector<std::string>& projectScripts,
                      ScriptVarDecl& outVar, ScriptVarSkipped& outSkipped,
                      bool& outWasSkipped) {
     outWasSkipped = false;
@@ -508,6 +509,54 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
         }
     }
 
+    // ======================================================================
+    //  A BARE SCRIPT NAME: `Door door;`
+    //
+    //  THE SPELLING THE WHOLE FEATURE EXISTS FOR, and the reason this
+    //  function is given a list of names at all. `Door door;` and
+    //  `Matrix4 transform;` are the same shape - two identifiers in a row -
+    //  so nothing in the line itself can tell them apart. The only thing that
+    //  can is whether some file in this project registers a script called
+    //  Door, which is why the list is a parameter rather than a lookup.
+    //
+    //  THIS DOES NOT REINTERPRET THE DECLARATION; it reports the type the
+    //  declaration genuinely has. In a generated unit the class lives in
+    //  namespace s_Door and the bare name is an alias for
+    //  eng::ScriptRef<s_Door::Door>, so `Door door;` IS a reference. See
+    //  GenerateScriptUnit in tools/ScriptVars.h for why it is arranged that
+    //  way and what it costs.
+    //
+    //  WHOLE-WORD, which is what keeps `Door* door;` out of here: the star
+    //  stops the match, so that spelling still reaches the pointer branch
+    //  below - which now knows to recommend `Door door;` rather than a
+    //  wrapper the author would otherwise have to be taught.
+    // ======================================================================
+    if (matched == nullptr && !projectScripts.empty()) {
+        std::size_t end = 0;
+        while (end < code.size() && IsIdentChar(code[end])) {
+            ++end;
+        }
+        // WHITESPACE HAS TO FOLLOW IT, which is what keeps `Door* door;` out.
+        // Matching the name alone would take the star with it as a reference
+        // to a supported type, and that path's message is the short "it is a
+        // pointer" - not the one that tells the author to drop the star and
+        // write the name on its own. The teaching message is the whole value
+        // of catching this spelling, so the match has to miss it.
+        if (end > 0 && end < code.size() && (code[end] == ' ' || code[end] == '\t')) {
+            const std::string leading = code.substr(0, end);
+            for (const std::string& script : projectScripts) {
+                if (leading == script) {
+                    refSpelling = leading;
+                    refArgument = leading;
+                    synthetic =
+                        TypeSpelling{refSpelling, ScriptFieldType::Entity, refArgument};
+                    matched = &synthetic;
+                    break;
+                }
+            }
+        }
+    }
+
     std::string afterType;
     if (matched != nullptr) {
         afterType = TrimmedCopy(code.substr(matched->spelling.size()));
@@ -576,11 +625,12 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
             outSkipped.name   = end == std::string::npos ? rest : rest.substr(0, end);
             outSkipped.reason =
                 std::string("it is a ") + (mark == '*' ? "pointer" : "reference") +
-                ", and the Inspector edits values. For something on ANOTHER "
-                "entity, that you drag an entity onto, the type to write is a "
-                "reference: TransformRef, SpriteRenderer, Rigidbody2D or "
-                "eng::ComponentRef<TheComponent> for a component the engine "
-                "defines, and eng::ScriptRef<TheScript> for another script - see "
+                ", and the Inspector edits values. For ANOTHER SCRIPT on another "
+                "entity, drop the star and write the script's own name - "
+                "`TheScript member;` is already a reference you can drag an entity "
+                "onto, and `member->Method()` calls it. For a component the engine "
+                "defines, the type to write is TransformRef, SpriteRenderer, "
+                "Rigidbody2D or eng::ComponentRef<TheComponent> - see "
                 "scene/ComponentRef.h and scene/ScriptRef.h. For one on THIS "
                 "entity, which is what a pointer beside a script usually is, ask "
                 "with Find<T>() where you use it, or eng::FindScriptOn<T>() for a "
@@ -843,7 +893,17 @@ std::string_view InheritedMemberReason(std::string_view name) {
 //  Scanning one source file
 // ---------------------------------------------------------------------------
 
+// The scan with nothing known about the project: every caller that has no
+// project behind it - the tests, a lone file, anything asking only "does this
+// register a script?" - and identical to the one below for everything except a
+// bare script name, which it cannot recognise because nothing told it which
+// names are scripts.
 ScriptSourceInfo ScanScriptSource(std::string_view source) {
+    return ScanScriptSource(source, std::vector<std::string>{});
+}
+
+ScriptSourceInfo ScanScriptSource(std::string_view                source,
+                                  const std::vector<std::string>& projectScripts) {
     ScriptSourceInfo info;
 
     const std::vector<SourceLine> lines = SplitSource(source);
@@ -1019,8 +1079,8 @@ ScriptSourceInfo ScanScriptSource(std::string_view source) {
                 ScriptVarSkipped skipped;
                 bool             wasSkipped = false;
 
-                if (ReadDeclaration(candidate, commentAbove, found, skipped,
-                                    wasSkipped)) {
+                if (ReadDeclaration(candidate, commentAbove, projectScripts, found,
+                                    skipped, wasSkipped)) {
                     // One of ScriptBehaviour's own names is not this script's
                     // to expose - see InheritedMemberReason above for the two
                     // quite different ways a declaration gets here.
@@ -1049,31 +1109,23 @@ ScriptSourceInfo ScanScriptSource(std::string_view source) {
 //  Generating the translation unit
 // ---------------------------------------------------------------------------
 
-std::string GenerateExposerUnit(const ScriptSourceInfo& info,
-                                std::string_view includePath) {
+// ===========================================================================
+//  THE SECOND HALF OF EVERY GENERATED UNIT: the exposer registration, and one
+//  guarded lambda per variable.
+//
+//  SHARED BY BOTH UNIT WRITERS, which differ only in how the script's text
+//  reached the translation unit above this point - an #include at global
+//  scope, or a copy inside a namespace of its own.
+//
+//  `castTarget` is how THIS unit spells the class: the bare name when the
+//  source was included at global scope, and s_Name::Name when it was wrapped
+//  so that the bare name could become the reference type. Everything below
+//  this line is identical either way, which is the point of the split.
+// ===========================================================================
+std::string GenerateExposerFor(const ScriptSourceInfo& info,
+                               std::string_view        castTarget) {
     std::string out;
-    out.reserve(1024 + info.vars.size() * 256);
-
-    out += "// Written by the editor. Do not edit, and do not commit: it is\n";
-    out += "// regenerated from the script's own source every time it builds.\n";
-    out += "//\n";
-    out += "// It INCLUDES the script rather than copying it, so every line number,\n";
-    out += "// every __FILE__ and the file's own static helpers stay exactly as they\n";
-    out += "// were - a compiler error still points at the line you wrote.\n";
-    out += "//\n";
-    out += "// Three of the standard headers are for the loop an ARRAY variable\n";
-    out += "// expands to - std::size, std::to_string and std::size_t - and\n";
-    out += "// <type_traits> is for the std::remove_cvref_t in every guard below.\n";
-    out += "// Named rather than relied on through the engine's own headers, because\n";
-    out += "// a generated file that compiles only because of what something else\n";
-    out += "// happened to include is a file that breaks for a reason nobody can see.\n";
-    out += "#include <cstddef>\n";
-    out += "#include <iterator>\n";
-    out += "#include <string>\n";
-    out += "#include <type_traits>\n\n";
-    out += "#include \"";
-    out += includePath;
-    out += "\"\n\n";
+    out.reserve(512 + info.vars.size() * 256);
 
     out += "namespace {\n";
     out += "struct EngineAutoExpose_";
@@ -1087,7 +1139,7 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
     out += "            [](::eng::ScriptBehaviour* behaviour, ::eng::ScriptFields& "
            "fields) {\n";
     out += "                auto* self = static_cast<";
-    out += info.className;
+    out += castTarget;
     out += "*>(behaviour);\n";
     out += "                (void)self; (void)fields;\n";
 
@@ -1191,6 +1243,709 @@ std::string GenerateExposerUnit(const ScriptSourceInfo& info,
     out += " g_engineAutoExpose_";
     out += info.className;
     out += ";\n} // namespace\n";
+    return out;
+}
+
+std::string GenerateExposerUnit(const ScriptSourceInfo& info,
+                                std::string_view        includePath) {
+    std::string out;
+    out.reserve(1024 + info.vars.size() * 256);
+
+    out += "// Written by the editor. Do not edit, and do not commit: it is\n";
+    out += "// regenerated from the script's own source every time it builds.\n";
+    out += "//\n";
+    out += "// It INCLUDES the script rather than copying it, so every line number,\n";
+    out += "// every __FILE__ and the file's own static helpers stay exactly as they\n";
+    out += "// were - a compiler error still points at the line you wrote.\n";
+    out += "//\n";
+    out += "// Three of the standard headers are for the loop an ARRAY variable\n";
+    out += "// expands to - std::size, std::to_string and std::size_t - and\n";
+    out += "// <type_traits> is for the std::remove_cvref_t in every guard below.\n";
+    out += "// Named rather than relied on through the engine's own headers, because\n";
+    out += "// a generated file that compiles only because of what something else\n";
+    out += "// happened to include is a file that breaks for a reason nobody can see.\n";
+    out += "#include <cstddef>\n";
+    out += "#include <iterator>\n";
+    out += "#include <string>\n";
+    out += "#include <type_traits>\n\n";
+    out += "#include \"";
+    out += includePath;
+    out += "\"\n\n";
+
+    out += GenerateExposerFor(info, info.className);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+//  Pulling a script's #include lines out of its body.
+//
+//  ASKED OF THE COMMENT-STRIPPED CODE, not of the raw line, so a `#include`
+//  written inside a block comment - which a file explaining how includes work
+//  is quite likely to contain - is not hoisted into a real one. SplitSource is
+//  one entry per line, so the two run in step.
+//
+//  EACH HOISTED LINE LEAVES A BLANK BEHIND. The body has to keep its exact
+//  line count or the #line directive above it stops being true and every
+//  diagnostic in the file points one line too high.
+// ---------------------------------------------------------------------------
+namespace {
+
+bool LineIsAnInclude(const std::string& code) {
+    std::size_t at = code.find_first_not_of(" \t");
+    if (at == std::string::npos || code[at] != '#') {
+        return false;
+    }
+    at = code.find_first_not_of(" \t", at + 1);
+    return at != std::string::npos && code.compare(at, 7, "include") == 0;
+}
+
+void SplitOutIncludes(const std::string&        text,
+                      std::vector<std::string>& outIncludes,
+                      std::string&              outBody) {
+    const std::vector<SourceLine> scanned = SplitSource(text);
+
+    std::size_t start = 0;
+    std::size_t index = 0;
+    while (start <= text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        std::string raw = text.substr(start, end - start);
+        if (!raw.empty() && raw.back() == '\r') {
+            raw.pop_back();
+        }
+
+        const bool isInclude =
+            index < scanned.size() && LineIsAnInclude(scanned[index].code);
+        if (isInclude) {
+            std::string hoisted = TrimmedCopy(scanned[index].code);
+            bool        already = false;
+            for (const std::string& seen : outIncludes) {
+                if (seen == hoisted) {
+                    already = true;
+                    break;
+                }
+            }
+            if (!already) {
+                outIncludes.push_back(std::move(hoisted));
+            }
+            outBody += '\n';   // the blank that keeps the numbering
+        } else {
+            outBody += raw;
+            outBody += '\n';
+        }
+
+        if (end == text.size()) {
+            break;
+        }
+        start = end + 1;
+        ++index;
+    }
+}
+
+// THE ONE LINE THAT IS THE WHOLE FEATURE, written in three places - at global
+// scope for every script, and again inside each script's namespace to hide the
+// class the using-directive for helpers drags in. One function so the three
+// cannot drift: if they spelled different types, `Door door;` would mean one
+// thing in one script and another in the next.
+std::string AliasLine(const std::string& className) {
+    std::string line = "using ";
+    line += className;
+    line += " = ::eng::ScriptRef<s_";
+    line += className;
+    line += "::";
+    line += className;
+    line += ">;\n";
+    return line;
+}
+
+std::size_t LinesIn(const std::string& text) {
+    std::size_t n = 1;
+    for (const char c : text) {
+        if (c == '\n') {
+            ++n;
+        }
+    }
+    return n;
+}
+
+// ===========================================================================
+//  WHERE ONE CLASS IS DEFINED IN A PIECE OF TEXT, as an offset of its
+//  `class` or `struct` keyword, or npos.
+//
+//  The same whitelist-parser caution as everywhere else in this file: it can
+//  be fooled by the word in a comment or a string, so nothing it answers is
+//  allowed to REFUSE a build. Both callers below only use it to shape
+//  generated code or to offer an explanation, and the compiler stays the
+//  authority on what the text actually means.
+// ===========================================================================
+std::size_t ClassDefinitionAt(std::string_view text, std::string_view name,
+                              std::string* outKeyword = nullptr) {
+    if (name.empty()) {
+        return std::string::npos;
+    }
+    for (const std::string_view keyword : {"class ", "struct "}) {
+        std::size_t at = text.find(keyword);
+        while (at != std::string::npos) {
+            // Whole word before it too, so `enum class Mode` and a type
+            // called `subclass Door` cannot be mistaken for a definition.
+            const bool startOfWord =
+                at == 0 || !(std::isalnum(static_cast<unsigned char>(text[at - 1])) ||
+                             text[at - 1] == '_');
+            const std::size_t nameAt = text.find_first_not_of(" \t", at + keyword.size());
+            if (startOfWord && nameAt != std::string::npos &&
+                text.compare(nameAt, name.size(), name) == 0) {
+                const std::size_t after = nameAt + name.size();
+                const char        next  = after < text.size() ? text[after] : ' ';
+                const bool wholeWord = !(std::isalnum(static_cast<unsigned char>(next)) ||
+                                         next == '_');
+                // Not a forward declaration: `class Door;` names the class
+                // without defining it, and this question is about the body.
+                if (wholeWord && next != ';') {
+                    if (outKeyword != nullptr) {
+                        *outKeyword = std::string(keyword.substr(0, keyword.size() - 1));
+                    }
+                    return at;
+                }
+            }
+            at = text.find(keyword, at + 1);
+        }
+    }
+    return std::string::npos;
+}
+
+} // namespace
+
+// ===========================================================================
+//  THE SAME TEXT WITH ITS COMMENTS BLANKED OUT, for the questions that are
+//  about the CODE.
+//
+//  Found by this build asking itself a question and being answered by its own
+//  documentation: Door.cpp explains in a comment that `doorSwitch->Method()`
+//  is the one thing a mutual pair cannot do, and the scan for "does this
+//  script reach through that reference" read the comment, decided it did, and
+//  reported a loop of calls that the code does not contain. A note in a file
+//  has to be able to quote the code it is about.
+//
+//  SO THE COMMENTS GO, AND NOTHING ELSE DOES. String and character literals
+//  are tracked only so that a `//` inside one - a URL, a path - is not
+//  mistaken for the start of a comment. Every character is replaced by a
+//  space rather than removed, so offsets and line numbers still line up with
+//  the original and anything reported about one is true of the other.
+//
+//  THE VARIABLE SCAN DOES NOT USE THIS, deliberately: tooltips and markers
+//  are read FROM the comments - `// [0..10] how fast it turns` - so that one
+//  needs the text as written. This is for the structural questions only.
+// ===========================================================================
+std::string StripComments(std::string_view source) {
+    std::string out(source);
+
+    enum class In { Code, Line, Block, Quote, Char } state = In::Code;
+
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const char c    = out[i];
+        const char next = i + 1 < out.size() ? out[i + 1] : '\0';
+
+        switch (state) {
+        case In::Code:
+            if (c == '/' && next == '/') {
+                state  = In::Line;
+                out[i] = out[i + 1] = ' ';
+                ++i;
+            } else if (c == '/' && next == '*') {
+                state  = In::Block;
+                out[i] = out[i + 1] = ' ';
+                ++i;
+            } else if (c == '"') {
+                state = In::Quote;
+            } else if (c == '\'') {
+                state = In::Char;
+            }
+            break;
+
+        case In::Line:
+            // The newline stays, so the line count is untouched.
+            if (c == '\n') {
+                state = In::Code;
+            } else {
+                out[i] = ' ';
+            }
+            break;
+
+        case In::Block:
+            if (c == '*' && next == '/') {
+                state  = In::Code;
+                out[i] = out[i + 1] = ' ';
+                ++i;
+            } else if (c != '\n') {
+                out[i] = ' ';
+            }
+            break;
+
+        case In::Quote:
+        case In::Char:
+            // A BACKSLASH SKIPS THE NEXT CHARACTER, so "\"" does not look
+            // like the end of the literal. Nothing in here is blanked - this
+            // state exists only to not mistake a `//` inside a string for a
+            // comment.
+            if (c == '\\') {
+                ++i;
+            } else if ((state == In::Quote && c == '"') ||
+                       (state == In::Char && c == '\'')) {
+                state = In::Code;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+
+// WHICH KEYWORD THE AUTHOR USED, because every script is now FORWARD-DECLARED
+// before any of them is defined and a declaration that says `class` for a
+// `struct` earns warning C4099 - about a line in a generated file, naming a
+// difference the author cannot see from their own code.
+std::string ClassKeyOf(std::string_view code, std::string_view className) {
+    std::string keyword;
+    if (ClassDefinitionAt(code, className, &keyword) != std::string::npos) {
+        return keyword;
+    }
+    return "class";   // what every script written from the templates says
+}
+
+// ===========================================================================
+//  ONE SCRIPT DERIVING FROM ANOTHER, which is the one thing the bare name
+//  cannot be used for.
+//
+//  `Door door;` is a reference because the bare name IS a reference - and a
+//  base class has to be the CLASS, so `class SlidingDoor : public Door` asks
+//  to inherit from a handle. C++ has no way for one name to be both, so the
+//  spelling for a base is `Door::ScriptType`, which ScriptRef declares for
+//  exactly this (see scene/ScriptRef.h).
+//
+//  FOUND HERE FOR TWO REASONS. A base class must be COMPLETE, so the script
+//  being derived from has to be wrapped first - this is an ordering edge like
+//  any other. And somebody who writes the bare name gets
+//  `static_assert failed: 'SlidingDoor must inherit from eng::ScriptBehaviour'`
+//  from the registrar, which is true and says nothing about the fix; the
+//  caller turns `qualified == false` into a line that does.
+// ===========================================================================
+// ===========================================================================
+//  DOES THIS SCRIPT REACH THROUGH THAT REFERENCE - `doorSwitch->Open()` - as
+//  opposed to merely holding it?
+//
+//  THE DISTINCTION THE ORDER TURNS ON, and it is a real one rather than a
+//  nicety. Declaring `DoorSwitch doorSwitch;` needs DoorSwitch DECLARED,
+//  which every script is before any of them is defined. So does testing it,
+//  `if (doorSwitch)`, and exposing it, and assigning it - everything that
+//  goes through ScriptRef's own members, because those are members of a
+//  TEMPLATE and are compiled once the whole unit has been read.
+//
+//  `doorSwitch->OpensOnce()` is different: that is ordinary member lookup in
+//  DoorSwitch, done where it is written, and it needs the class FINISHED. So
+//  a script that calls into another has to be wrapped after it, and a script
+//  that only points at one does not care.
+//
+//  Measured rather than reasoned: with the reference declared and never
+//  reached through, every unit compiles; add one `->` and that line alone
+//  fails with `error C2027: use of undefined type`, while the `if` above it
+//  is accepted.
+// ===========================================================================
+bool ReachesThroughReference(std::string_view text, std::string_view member) {
+    if (member.empty()) {
+        return false;
+    }
+    std::size_t at = text.find(member);
+    while (at != std::string::npos) {
+        const bool startOfWord =
+            at == 0 || !(std::isalnum(static_cast<unsigned char>(text[at - 1])) ||
+                         text[at - 1] == '_');
+        std::size_t after = at + member.size();
+        if (startOfWord) {
+            // `doorSwitch ->` is the same thing as `doorSwitch->`, and a
+            // member named with a dot - doorSwitch.IsSet() - is not: that
+            // reaches ScriptRef's own members and needs nothing complete.
+            while (after < text.size() && (text[after] == ' ' || text[after] == '\t')) {
+                ++after;
+            }
+            if (text.compare(after, 2, "->") == 0) {
+                return true;
+            }
+        }
+        at = text.find(member, at + 1);
+    }
+    return false;
+}
+
+std::vector<ScriptBaseUse> BaseScriptsOf(std::string_view                text,
+                                         std::string_view                className,
+                                         const std::vector<std::string>& names) {
+    std::vector<ScriptBaseUse> found;
+
+    const std::size_t at = ClassDefinitionAt(text, className);
+    if (at == std::string::npos) {
+        return found;
+    }
+
+    // From the class head to its opening brace, and no further: everything
+    // after that is the body, where a script name means a member's type.
+    const std::size_t brace = text.find('{', at);
+    if (brace == std::string::npos) {
+        return found;
+    }
+    const std::size_t colon = text.find(':', at);
+    if (colon == std::string::npos || colon > brace) {
+        return found;   // no base-clause at all
+    }
+
+    for (std::size_t i = colon; i < brace;) {
+        if (!(std::isalpha(static_cast<unsigned char>(text[i])) || text[i] == '_')) {
+            ++i;
+            continue;
+        }
+        std::size_t end = i;
+        while (end < brace && (std::isalnum(static_cast<unsigned char>(text[end])) ||
+                               text[end] == '_')) {
+            ++end;
+        }
+        const std::string word(text.substr(i, end - i));
+        if (word != className &&
+            std::find(names.begin(), names.end(), word) != names.end()) {
+            ScriptBaseUse use;
+            use.name = word;
+            // `Door::ScriptType` - the spelling that works. Anything else
+            // naming a script here is the bare one.
+            use.qualified = text.compare(end, 2, "::") == 0;
+            found.push_back(std::move(use));
+        }
+        i = end;
+    }
+    return found;
+}
+
+
+std::string GenerateScriptScopeHeader(const std::vector<ScriptUnitSource>& sources) {
+    std::string out;
+    out.reserve(16384);
+
+    out += "#pragma once\n";
+    out += "// Written by the editor, for your IDE and for nothing else. Safe to\n";
+    out += "// delete: it is written again every time the scripts build.\n";
+    out += "//\n";
+    out += "// WHAT IT IS FOR. Your editor opens one script at a time, and on its own\n";
+    out += "// a script has never heard of the others - so `Bullet b;` would be\n";
+    out += "// underlined as an unknown type even though it compiles. This declares\n";
+    out += "// every script in the project so that the bare name means what it means\n";
+    out += "// in the real build: a reference you can drag an entity onto.\n";
+    out += "//\n";
+    out += "// IT IS NOT THE REAL COMPILE, and two differences are worth knowing.\n";
+    out += "// Every script is complete here by the time your file is read, so two\n";
+    out += "// scripts that each call the other show no error in the IDE and are\n";
+    out += "// still refused by the build, which says so by name. And your file is\n";
+    out += "// at global scope here rather than inside its own namespace, so another\n";
+    out += "// script's file-scope helper functions are not offered to you while you\n";
+    out += "// type even though they compile.\n";
+    out += "//\n";
+    out += "// See GenerateScriptScopeHeader in engine/tools/ScriptVars.h.\n";
+    out += "\n";
+    out += "#include <engine/Engine.h>\n";
+
+    // ---- the scripts' own includes, hoisted exactly as a unit hoists them ---
+    //
+    // SAME REASON AS THERE, and it is not a style choice: an #include inside a
+    // namespace puts whatever it names inside that namespace too. Measured in
+    // this project - <cmath> survived only because the precompiled header had
+    // already included it, and <bitset> in the same position gave sixty
+    // errors.
+    std::vector<std::string> includes;
+    std::vector<std::string> bodies;
+    bodies.reserve(sources.size());
+    for (const ScriptUnitSource& src : sources) {
+        std::string body;
+        SplitOutIncludes(src.text, includes, body);
+        bodies.push_back(std::move(body));
+    }
+    for (const std::string& line : includes) {
+        // ENGINE_INCLUDE IS ALREADY ABOVE. #pragma once makes a second copy
+        // harmless, and a generated file with an obviously duplicated line in
+        // it still invites somebody to wonder which one is the mistake.
+        if (line.find("engine/Engine.h") != std::string::npos) {
+            continue;
+        }
+        out += line;
+        out += '\n';
+    }
+    out += '\n';
+
+    // ---- every script declared --------------------------------------------
+    out += "// Every script declared, so that the names below can be formed before\n";
+    out += "// any of the classes are finished.\n";
+    for (const ScriptUnitSource& src : sources) {
+        out += "namespace s_";
+        out += src.className;
+        out += " { ";
+        out += src.classKey.empty() ? "class" : src.classKey;
+        out += ' ';
+        out += src.className;
+        out += "; }\n";
+    }
+    out += '\n';
+
+    // ==================================================================
+    //  THE BARE NAMES, IN A NAMESPACE, AND THAT IS THE WHOLE TRICK.
+    //
+    //  At global scope - where GenerateScriptUnit puts them, because there
+    //  each script's own text is inside its namespace and cannot collide -
+    //  the alias for the script THIS file defines would be a second
+    //  declaration of that name in the same scope. A redefinition, on the
+    //  class the author is looking at.
+    //
+    //  Brought in by a using-directive instead, the alias is not a
+    //  declaration in the global namespace at all: declaring `class Bullet`
+    //  beside it is legal, the class parses, and lookup only objects if
+    //  something USES the name where both are visible. A script does that
+    //  once, on its ENGINE_REGISTER_SCRIPT line, which the redefinition at
+    //  the bottom of this file takes care of.
+    // ==================================================================
+    out += "// The bare names. In a namespace rather than at global scope, so that the\n";
+    out += "// script in the file you are editing can still declare its own class.\n";
+    out += "namespace engine_script_names {\n";
+    for (const ScriptUnitSource& src : sources) {
+        out += AliasLine(src.className);
+    }
+    out += "} // namespace engine_script_names\n";
+    out += "using namespace engine_script_names;\n\n";
+
+    // ---- and every script's members ---------------------------------------
+    out += "// And the classes themselves, so that `b->Fire()` knows what Fire is.\n";
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        const ScriptUnitSource& src = sources[i];
+
+        out += "namespace s_";
+        out += src.className;
+        out += " {\n";
+
+        // #line, SO THAT AN ERROR IN SOMEBODY ELSE'S SCRIPT NAMES THEIR FILE
+        // rather than this one. A copy of a script is still that script: if
+        // Bullet.cpp is mid-edit and broken, the IDE should say Bullet.cpp,
+        // which is a file the author can open and fix - not a generated
+        // header they have never seen and cannot change.
+        out += "#line 1 \"";
+        out += src.realPath;
+        out += "\"\n";
+        out += bodies[i];
+
+        out += "#line ";
+        out += std::to_string(LinesIn(out) + 1);
+        out += " \"";
+        out += "<script scope>";
+        out += "\"\n";
+        out += "} // namespace s_";
+        out += src.className;
+        out += "\n\n";
+    }
+
+    // ==================================================================
+    //  AND THE ONE LINE OF YOUR OWN FILE THIS ARRANGEMENT WOULD BREAK.
+    //
+    //  `ENGINE_REGISTER_SCRIPT(Bullet)` is the only place a script writes
+    //  its own name unqualified at namespace scope - and here that name is
+    //  both the class the file defines and a reference brought in above, so
+    //  it is the one ambiguity this header creates. Qualified, it is the
+    //  class, unambiguously: ::Bullet is a member of the global namespace,
+    //  and qualified lookup only consults a using-directive when it finds
+    //  nothing of its own.
+    //
+    //  The registrar object goes with it, which costs nothing: an IDE never
+    //  links and never runs. Every static_assert survives, because they are
+    //  the half of that macro worth having while you type - see
+    //  ENGINE_SCRIPT_CHECKS in scene/ScriptHooks.h.
+    // ==================================================================
+    out += "// YOUR registrar line, which is the only place a script names itself\n";
+    out += "// unqualified - and the one thing above that would make it ambiguous.\n";
+    out += "// Qualified it is the class you defined. The checks all still run; only\n";
+    out += "// the registrar object is left out, and an IDE never links.\n";
+    out += "#undef ENGINE_REGISTER_SCRIPT\n";
+    out += "#define ENGINE_REGISTER_SCRIPT(Type) ENGINE_SCRIPT_CHECKS(::Type)\n";
+    return out;
+}
+
+std::string GenerateScriptUnit(const ScriptSourceInfo&              info,
+                               const std::vector<ScriptUnitSource>& sources,
+                               std::string_view                     unitPath) {
+    std::string out;
+    out.reserve(8192);
+
+    out += "// Written by the editor. Do not edit, and do not commit: it is\n";
+    out += "// regenerated from the scripts' own sources every time it builds.\n";
+    out += "//\n";
+    out += "// EACH SCRIPT IS WRAPPED IN A NAMESPACE OF ITS OWN, and the bare name\n";
+    out += "// is then an alias for a reference to it. Inside s_Door the name Door\n";
+    out += "// is the class, so that file compiles exactly as written and its\n";
+    out += "// ENGINE_REGISTER_SCRIPT still names the class. Out here the same name\n";
+    out += "// is eng::ScriptRef<s_Door::Door>, so every OTHER script that writes\n";
+    out += "// `Door door;` gets a reference it can drag an entity onto - with no\n";
+    out += "// header to write and no include to remember.\n";
+    out += "//\n";
+    out += "// THE NAMESPACE IS THE SAME IN EVERY UNIT, including the script's own,\n";
+    out += "// because resolving a reference ends in dynamic_cast and MSVC matches\n";
+    out += "// type_info by DECORATED NAME. ::Door and s_Door::Door are different\n";
+    out += "// names, so a library that did not wrap the class would hand out\n";
+    out += "// objects no other library could cast to.\n";
+    out += "//\n";
+    out += "// The #include lines are hoisted above every namespace because an\n";
+    out += "// include INSIDE one puts whatever it names in there too. Each leaves a\n";
+    out += "// blank line behind, so the #line directives stay true and a compiler\n";
+    out += "// error still points at the author's file and line - and __FILE__ is\n";
+    out += "// still the real path, which ScriptRegistry::Register compares by.\n";
+    out += "//\n";
+    out += "// See GenerateScriptUnit in engine/tools/ScriptVars.h.\n";
+    out += "#include <cstddef>\n";
+    out += "#include <iterator>\n";
+    out += "#include <string>\n";
+    out += "#include <type_traits>\n";
+
+    std::vector<std::string> includes;
+    std::vector<std::string> bodies;
+    bodies.reserve(sources.size());
+    for (const ScriptUnitSource& src : sources) {
+        std::string body;
+        SplitOutIncludes(src.text, includes, body);
+        bodies.push_back(std::move(body));
+    }
+
+    for (const std::string& line : includes) {
+        out += line;
+        out += '\n';
+    }
+    out += '\n';
+
+    // ====================================================================
+    //  EVERY SCRIPT DECLARED, AND EVERY BARE NAME ALIASED, BEFORE ANY OF
+    //  THEM IS DEFINED. This is what makes the feature general rather than
+    //  true of one example.
+    //
+    //  A reference does not need the class it points at to be COMPLETE: a
+    //  ScriptRef<T> is a NAME, inherited from EntityRef, so its layout is
+    //  the same whatever T is, and the only member that needs T whole is
+    //  Get() - instantiated where the reference is USED. (That is why
+    //  ScriptRef.h keeps its static_assert in Get() rather than in the class
+    //  body; the note there has the error it used to give.)
+    //
+    //  So a forward declaration is enough to form the alias, every script
+    //  can name every other one in any direction, and TWO SCRIPTS THAT POINT
+    //  AT EACH OTHER are no harder than two that do not. Writing the alias
+    //  after each namespace instead - which is what this did first - meant
+    //  "only the ones wrapped earlier", and no order puts both of a mutual
+    //  pair first. It failed as C3646 on the author's own line, with nothing
+    //  to connect it to an ordering rule they were never told about.
+    //
+    //  The namespaces have to be declared here anyway, for the
+    //  using-directives below to be able to name them.
+    // ====================================================================
+    out += "// Every script declared, and every bare name aliased, before any of\n";
+    out += "// them is defined - so a reference may point in either direction, or\n";
+    out += "// both. A ScriptRef<T> is a name and needs no complete T.\n";
+    for (const ScriptUnitSource& src : sources) {
+        out += "namespace s_";
+        out += src.className;
+        out += " { ";
+        out += src.classKey.empty() ? "class" : src.classKey;
+        out += ' ';
+        out += src.className;
+        out += "; }\n";
+    }
+    out += '\n';
+    for (const ScriptUnitSource& src : sources) {
+        out += AliasLine(src.className);
+    }
+    out += '\n';
+
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        const ScriptUnitSource& src = sources[i];
+
+        out += "namespace s_";
+        out += src.className;
+        out += " {\n";
+
+        // ==================================================================
+        //  WHAT MAKES ANOTHER SCRIPT'S FILE-SCOPE HELPERS REACHABLE.
+        //
+        //  Wrapping each script in a namespace of its own is what lets the
+        //  bare name be a reference, but it also hid every free function and
+        //  constant a script declares at file scope - so two scripts that
+        //  wanted one `IsPickup` still each needed their own copy, which is
+        //  the duplication this was supposed to remove.
+        //
+        //  A using-directive per script fixes that. The second line is the
+        //  part that is easy to miss: the directive also exposes the other
+        //  script's CLASS, which would then be ambiguous against the alias at
+        //  global scope - and worse, could win. Re-declaring the alias HERE
+        //  hides both, because a declaration in this namespace beats anything
+        //  a using-directive brought in. So `Door door;` stays a reference.
+        //
+        //  IT REACHES BACKWARDS ONLY, and that is a real limit rather than an
+        //  oversight. Unqualified lookup finds what was declared BEFORE the
+        //  point of use, so a script can call a helper from one wrapped
+        //  earlier - which is to say from something it depends on - and a
+        //  call forwards fails with an ordinary "identifier not found" at the
+        //  author's own line. A helper several scripts share is better off in
+        //  a .cpp of its own, which the build compiles once and links into
+        //  every library at global scope, with no ordering rule at all.
+        //
+        //  A REFERENCE IS NOT LIMITED THAT WAY, and the difference is worth
+        //  being clear about: the alias is re-declared for EVERY other script
+        //  here, forwards and backwards alike, because the class it names was
+        //  declared at the top of the file. Only the helpers depend on where
+        //  a script sits in the order.
+        // ==================================================================
+        for (const ScriptUnitSource& other : sources) {
+            if (other.className == src.className) {
+                continue;
+            }
+            out += "using namespace s_";
+            out += other.className;
+            out += ";\n";
+        }
+        for (const ScriptUnitSource& other : sources) {
+            if (other.className == src.className) {
+                continue;
+            }
+            out += AliasLine(other.className);
+        }
+
+        out += "#line 1 \"";
+        out += src.realPath;
+        out += "\"\n";
+        out += bodies[i];
+
+        // BACK TO THIS FILE BEFORE THE GENERATED LINES. Without the reset the
+        // closing brace and the alias below are attributed to the author's
+        // last line, and any diagnostic about them accuses a file that does
+        // not contain them.
+        out += "#line ";
+        out += std::to_string(LinesIn(out) + 1);
+        out += " \"";
+        out += unitPath;
+        out += "\"\n";
+
+        // AND NO ALIAS AFTER IT ANY MORE: it is already at the top of the
+        // file, with every other script's, which is what lets a reference
+        // point forwards as well as back.
+        out += "} // namespace s_";
+        out += src.className;
+        out += "\n\n";
+    }
+
+    // ONLY WHEN THERE IS SOMETHING TO EXPOSE, and the rule lives here rather
+    // than at the three call sites that used to each repeat it. A script with
+    // a hand-written OnExpose must not be given a generated one as well - the
+    // hand-written list is the one that wins - and a script with no variables
+    // gains nothing from an empty lambda.
+    if (!info.hasOnExpose && !info.vars.empty()) {
+        out += GenerateExposerFor(info, "s_" + info.className + "::" + info.className);
+    }
     return out;
 }
 

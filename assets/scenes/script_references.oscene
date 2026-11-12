@@ -1,0 +1,286 @@
+{
+  "_comment": "The worked example for TYPED SCRIPT REFERENCES - one script holding a reference to another script's class and calling its methods. Two pressure plates, two doors, and each plate opens the one door it was pointed at. Press Play and it runs itself: nothing here needs the keyboard.",
+  "_how_it_runs": "The Weight circles the Hub once every six seconds (Orbiter, 60 degrees a second at a radius of 220). It crosses Plate A after about a second and a half and Plate B after four and a half, and each crossing is a trigger overlap that calls DoorSwitch::OnTriggerEnter. The Console shows a line from Door::Open each time one opens.",
+  "_layers": "Weight and Plate are collision layer names. Two colliders are only tested against each other when EACH one's collidesWith list includes the other's layer - the Weight lists Plate and the Plate lists Weight, which is the whole of the physics in this scene. The Plate is the trigger; the Weight is solid so that Orbiter's own OnCollisionEnter is not reported as a hook that can never fire.",
+  "_the_wiring": "Open Plate A in the Inspector and the `door` row is a slot, not a text box: it offers ONLY the entities that carry a Door, it goes red if the door it names is deleted, and it follows the door if you rename it. The script writes it as `Door door;` - the bare script name, with no header and no wrapper - and all it keeps in this file is the target entity's name - look for \"door\": \"Door A\" below. Nothing holds a pointer, because the Inspector has to work in EDIT mode where no script has run.",
+  "_try_this": "Swap the two `door` values in the Inspector - Plate A pointing at Door B and the other way round - save, and press Play. Each plate now opens the far door, with no code recompiled: the wiring is level data. Then try deleting Door B and watching Plate B's slot turn red. Both scripts live entirely in their own .cpp with no header between them, and each has a reference to the OTHER - the plate points at the door it opens, the door points back at the plate that opens it - so this is also the example of a mutual reference.",
+  "camera": {
+    "position": [
+      -120.0,
+      0.0
+    ],
+    "zoom": 1.0
+  },
+  "entities": [
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 0,
+          "size": [
+            24.0,
+            24.0
+          ],
+          "texture": "textures/marker_up.bmp",
+          "tint": [
+            90,
+            90,
+            110,
+            255
+          ],
+          "type": "SpriteComponent"
+        }
+      ],
+      "name": "Hub"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            220.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 2,
+          "size": [
+            40.0,
+            40.0
+          ],
+          "texture": "textures/checker_green.bmp",
+          "tint": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "type": "SpriteComponent"
+        },
+        {
+          "collidesWith": [
+            "Plate"
+          ],
+          "halfExtents": [
+            20.0,
+            20.0
+          ],
+          "layer": "Weight",
+          "trigger": false,
+          "type": "BoxColliderComponent"
+        },
+        {
+          "script": "Orbiter",
+          "type": "ScriptComponent",
+          "vars": {
+            "centre": "Hub",
+            "degreesPerSecond": 60.0,
+            "radius": 220.0
+          }
+        }
+      ],
+      "name": "Weight"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            220.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 1,
+          "size": [
+            72.0,
+            16.0
+          ],
+          "texture": "textures/checker_red.bmp",
+          "tint": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "type": "SpriteComponent"
+        },
+        {
+          "collidesWith": [
+            "Weight"
+          ],
+          "halfExtents": [
+            36.0,
+            8.0
+          ],
+          "layer": "Plate",
+          "trigger": true,
+          "type": "BoxColliderComponent"
+        },
+        {
+          "script": "DoorSwitch",
+          "type": "ScriptComponent",
+          "vars": {
+            "door": "Door A",
+            "openOnce": false
+          }
+        }
+      ],
+      "name": "Plate A"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            -400.0,
+            220.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 1,
+          "size": [
+            48.0,
+            160.0
+          ],
+          "texture": "textures/checker_red.bmp",
+          "tint": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "type": "SpriteComponent"
+        },
+        {
+          "script": "Door",
+          "type": "ScriptComponent",
+          "vars": {
+            "doorSwitch": "Plate A",
+            "openHeight": 170.0
+          }
+        }
+      ],
+      "name": "Door A"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            -220.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 1,
+          "size": [
+            72.0,
+            16.0
+          ],
+          "texture": "textures/checker_blue.bmp",
+          "tint": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "type": "SpriteComponent"
+        },
+        {
+          "collidesWith": [
+            "Weight"
+          ],
+          "halfExtents": [
+            36.0,
+            8.0
+          ],
+          "layer": "Plate",
+          "trigger": true,
+          "type": "BoxColliderComponent"
+        },
+        {
+          "script": "DoorSwitch",
+          "type": "ScriptComponent",
+          "vars": {
+            "door": "Door B",
+            "openOnce": false
+          }
+        }
+      ],
+      "name": "Plate B"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            -400.0,
+            -220.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "layer": 1,
+          "size": [
+            48.0,
+            160.0
+          ],
+          "texture": "textures/checker_blue.bmp",
+          "tint": [
+            255,
+            255,
+            255,
+            255
+          ],
+          "type": "SpriteComponent"
+        },
+        {
+          "script": "Door",
+          "type": "ScriptComponent",
+          "vars": {
+            "doorSwitch": "Plate B",
+            "openHeight": 170.0
+          }
+        }
+      ],
+      "name": "Door B"
+    }
+  ],
+  "name": "ScriptReferences"
+}

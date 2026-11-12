@@ -336,15 +336,26 @@ bool WriteCppProperties(const fs::path& root,
     }
     text << "      ],\n";
     text << "\n";
-    text << "      // The compiler never sees your .cpp on its own: it sees a generated\n";
-    text << "      // file that includes this first and then includes your script. So a\n";
-    text << "      // script that names no headers at all still compiles, and this is\n";
-    text << "      // what says so.\n";
+    text << "      // TWO FILES YOUR SCRIPT DOES NOT INCLUDE AND IS COMPILED WITH.\n";
     text << "      //\n";
-    text << "      // Absolute, because this is the one entry Visual Studio resolves\n";
-    text << "      // as a path rather than by searching includePath above.\n";
+    text << "      // The compiler never sees your .cpp on its own: it sees a generated\n";
+    text << "      // file that includes the engine first and then includes your\n";
+    text << "      // script. So a script that names no headers at all still compiles,\n";
+    text << "      // and the first entry is what says so.\n";
+    text << "      //\n";
+    text << "      // THE SECOND IS WHY `Door door;` IS NOT UNDERLINED HERE. Your\n";
+    text << "      // editor opens one script at a time, and on its own a script has\n";
+    text << "      // never heard of the others - so another script's bare name would\n";
+    text << "      // look like an unknown type even though it builds. That file\n";
+    text << "      // declares every script in this project; it is written again on\n";
+    text << "      // every build, and it explains itself at the top.\n";
+    text << "      //\n";
+    text << "      // Absolute, because these are the entries Visual Studio resolves\n";
+    text << "      // as paths rather than by searching includePath above.\n";
     text << "      \"forcedInclude\": [\n";
-    text << "        " << Quoted(ForcedIncludePath(settings)) << "\n";
+    text << "        " << Quoted(ForcedIncludePath(settings)) << ",\n";
+    text << "        " << Quoted(ScriptBuild::IdeScopeHeaderPath().generic_string())
+         << "\n";
     text << "      ],\n";
     text << "\n";
     text << "      \"compilerSwitches\": " << Quoted(switches.str()) << "\n";
@@ -419,12 +430,21 @@ void AppendEntry(std::ostream& out, const fs::path& root,
     // /FI, so the name would work - but a database is read by more than one
     // tool and only one of them has to disagree for a script with no includes
     // of its own to lose every name in the engine.
+    // AND THE SCRIPT SCOPE HEADER AFTER IT, in that order, which matters: it
+    // ends by redefining a macro the engine's headers define, so it has to be
+    // read second. It is what makes another script's bare name - `Door door;`
+    // - resolve in a tool that only ever sees one script at a time. See
+    // GenerateScriptScopeHeader in engine/tools/ScriptVars.h.
     const std::string forced = ForcedIncludePath(settings);
+    const std::string scope  = ScriptBuild::IdeScopeHeaderPath().generic_string();
     if (settings.msvc) {
         arguments.push_back("/FI" + forced);
+        arguments.push_back("/FI" + scope);
     } else {
         arguments.push_back("-include");
         arguments.push_back(forced);
+        arguments.push_back("-include");
+        arguments.push_back(scope);
     }
 
     // A HEADER HAS TO BE TYPED EXPLICITLY. Clang reads a .h as C unless told
@@ -531,6 +551,17 @@ bool WriteIdeFiles(std::string& outSummary, std::string& outError) {
     }
 
     const fs::path root(projectRoot);
+
+    // ---- THE SCOPE HEADER FIRST, because both files below name it --------
+    //
+    // A build writes it too, and that is the copy that stays current - but
+    // this may well run before anything has ever been built, and a
+    // forcedInclude pointing at a file that does not exist is an error every
+    // IDE reports against every script. Written here, the configuration is
+    // never dead on arrival.
+    if (ScriptBuild::WriteIdeScopeHeader(outError).empty()) {
+        return false;
+    }
 
     if (!WriteCppProperties(root, settings, outError)) {
         return false;

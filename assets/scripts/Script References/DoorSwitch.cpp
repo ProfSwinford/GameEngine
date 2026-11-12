@@ -5,6 +5,11 @@
 //  opposed to a component the engine defines. Drag the door from the Hierarchy
 //  onto the `door` slot in the Inspector and this calls its own method.
 //
+//  OPEN assets/scenes/script_references.oscene to see it running. Two plates,
+//  two doors, and each plate opens the one door it was pointed at - swap the
+//  two `door` values in the Inspector and they open the other way round, with
+//  nothing recompiled.
+//
 //  WHY A REFERENCE AND NOT A MESSAGE. This is one specific door, chosen once,
 //  by the person building the level - so it is a slot somebody drags, and a
 //  broadcast would open every door in the scene. The opposite case is in
@@ -18,16 +23,37 @@
 //  saved. See engine/include/engine/scene/ScriptRef.h for all four reasons.
 // =============================================================================
 
-#include "Door.h"
+#include <engine/Engine.h>
+
+// NO #include FOR Door, AND THAT IS THE POINT. The build puts every script in
+// the project in scope before this file is compiled, so another script's name
+// is simply available - see GenerateScriptUnit in engine/tools/ScriptVars.h.
 
 class DoorSwitch final : public eng::ScriptBehaviour {
 public:
-    // The slot. The Inspector offers only entities that actually carry a Door,
-    // paints the name red if it stops resolving, and follows a rename - all of
-    // it inherited from eng::EntityRef, which is what a ScriptRef is.
-    ScriptRef<Door> door;        // drag the door this plate opens
+    // THE BARE SCRIPT NAME IS A REFERENCE. `Door door;` reads like Unity's
+    // `public Door door;` and behaves like one: the Inspector offers only
+    // entities that actually carry a Door, paints the name red if it stops
+    // resolving, and follows a rename - all inherited from eng::EntityRef.
+    //
+    // It is not a Door BY VALUE. The bare name is an alias for a reference to
+    // one, so this costs an entity name rather than a whole Door, and it is
+    // null rather than dangling when the far entity goes away. The arrow is
+    // the one visible difference from Unity: C++ has no operator. to overload.
+    Door door;                   // drag the door this plate opens
 
     bool openOnce = true;        // or open and close as things come and go
+
+    // WHAT ANOTHER SCRIPT WOULD ASK THIS ONE. Any script holding a
+    // `DoorSwitch plate;` can call `plate->OpensOnce()` - an ordinary method
+    // on an ordinary class, reached through the reference exactly as this
+    // file reaches Door::Open below.
+    //
+    // NOT BY Door, THOUGH, and the note on its `doorSwitch` member says why:
+    // this file calls into Door, so Door is compiled first, and a class that
+    // is compiled first cannot call back. Pointing both ways is free; calling
+    // both ways is the one thing C++ will not do.
+    bool OpensOnce() const { return openOnce; }
 
     void OnTriggerEnter(eng::EntityId) {
         // `if (door)` is true only when it resolves RIGHT NOW - not "was

@@ -862,11 +862,94 @@ std::vector<std::string> ScriptComponent::UnusedSavedValues() const {
         return unused;
     }
     for (const auto& [key, value] : m_savedValues.items()) {
-        if (m_fields.Find(key) == nullptr) {
-            unused.push_back(key);
+        if (m_fields.Find(key) != nullptr) {
+            continue;
         }
+
+        // ================================================================
+        //  AN ARRAY'S LENGTH IS NOT A LEFTOVER VALUE.
+        //
+        //  "walkAnimations[]" matches no field and never will - it is not a
+        //  variable, it is how many of one variable's elements this entity
+        //  uses - so without this test it was reported as a saved value the
+        //  script has no variable for, and the Forget them button beside that
+        //  report would have deleted it.
+        //
+        //  IT IS ONLY EXEMPT WHILE THE ARRAY EXISTS. A length left behind by
+        //  an array that has been renamed or removed IS a leftover, and the
+        //  same as any other: kept in the file, reported, and dropped only if
+        //  somebody asks. See ArrayLengthKey.
+        // ================================================================
+        if (key.size() > 2 && key.ends_with("[]") &&
+            m_fields.ArrayLength(std::string_view(key).substr(0, key.size() - 2)) > 0) {
+            continue;
+        }
+
+        unused.push_back(key);
     }
     return unused;
+}
+
+// ---------------------------------------------------------------------------
+//  How much of an array this entity uses. See ScriptComponent.h.
+// ---------------------------------------------------------------------------
+
+std::string ScriptComponent::ArrayLengthKey(std::string_view arrayName) {
+    return std::string(arrayName) + "[]";
+}
+
+std::size_t ScriptComponent::ArrayLengthUsed(std::string_view arrayName) const {
+    const std::size_t declared = m_fields.ArrayLength(arrayName);
+    if (declared == 0) {
+        return 0;   // not an array, so there is no length to have
+    }
+
+    const std::string key = ArrayLengthKey(arrayName);
+    if (!m_savedValues.is_object() || !m_savedValues.contains(key)) {
+        return declared;   // nobody has shortened it: all of it is in use
+    }
+
+    // READ THROUGH THE SAME LIBERAL PATH everything else in a scene file goes
+    // through, and NEVER THROWING: this is a number somebody may have typed
+    // into the file, so 3.0, "3" and true all have to come back as something
+    // rather than as an exception out of the middle of loading a level.
+    const Json& stored = m_savedValues.at(key);
+    if (!stored.is_number()) {
+        return declared;
+    }
+    const double asNumber = stored.get<double>();
+    if (!(asNumber > 0.0)) {
+        return 0;   // also catches a NaN, which no comparison would
+    }
+    return asNumber >= static_cast<double>(declared)
+               ? declared
+               : static_cast<std::size_t>(asNumber);
+}
+
+void ScriptComponent::SetArrayLengthUsed(std::string_view arrayName,
+                                         std::size_t      length) {
+    const std::size_t declared = m_fields.ArrayLength(arrayName);
+    if (declared == 0) {
+        return;
+    }
+
+    const std::string key    = ArrayLengthKey(arrayName);
+    const std::size_t wanted = length > declared ? declared : length;
+
+    if (!m_savedValues.is_object()) {
+        m_savedValues = Json::object();
+    }
+
+    // THE WHOLE ARRAY LEAVES NOTHING BEHIND. An array nobody has shortened
+    // should look in the scene file exactly as it did before this feature
+    // existed, and dragging the length up to the end and back is how somebody
+    // undoes a shortening - so it has to erase rather than write the number
+    // that happens to mean "no change".
+    if (wanted == declared) {
+        m_savedValues.erase(key);
+        return;
+    }
+    m_savedValues[key] = wanted;
 }
 
 std::size_t ScriptComponent::ForgetUnusedSavedValues() {

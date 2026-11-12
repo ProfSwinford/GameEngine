@@ -45,7 +45,8 @@ public:
     PrefabRef bullet;              // what to fire - drag a prefab here
     float          speed    = 600.0f;   // how fast it leaves the barrel
     float          cooldown = 0.2f;     // [0..2] seconds between shots
-    float          muzzle   = 24.0f;    // how far in front of the gun it appears
+    float          muzzle   = 24.0f;
+    Bullet b; 
 
     void OnFixedUpdate() {
         // Counted down in FIXED time, so the rate of fire is the same on every
@@ -66,7 +67,7 @@ public:
         }
 
         // Right() is the direction this entity's own +X axis points in the
-        // world, which for a sprite is "forwards". It is normalised, so a
+        // world, which for a sprite is "forwards". It is normalized, so a
         // half-size gun does not fire at half speed.
         const eng::Vec2 forward = barrel->Right();
 

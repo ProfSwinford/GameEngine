@@ -341,6 +341,32 @@ so that one failure takes the lot with it.
 [`engine/include/engine/scene/ScriptFields.h`](engine/include/engine/scene/ScriptFields.h)
 explains the trade-offs above.
 
+**One script calling another's own methods** is just the other script's name:
+
+```cpp
+Door door;              // then door->Open();
+```
+
+No header, no include, no wrapper type — the same Inspector slot as any other
+reference, filtered to the entities that actually carry a `Door`. The editor
+puts every script in the project in scope before a script is compiled, so the
+bare name is already a reference; it stores the target entity's name and
+resolves on every access, so it is null rather than dangling when the far
+entity goes away. **Two scripts can point at each other**, in either direction
+or both, with nothing to declare first.
+`assets/scripts/Script References/` is the worked example — a
+door and the pressure plate that opens it, two files, no header, and a
+reference each way — and
+`assets/scenes/script_references.oscene` is the pair wired up and running:
+
+```
+build/debug/bin/player --scene scenes/script_references.oscene
+```
+
+Two plates, two doors, and each plate opens the one door it was pointed at.
+Nothing in it reads the keyboard, so it demonstrates itself the moment you
+press Play.
+
 ---
 
 ## Physics

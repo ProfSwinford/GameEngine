@@ -126,9 +126,36 @@ void HierarchyPanel::DrawNode(eng::Entity& entity) {
     // the source first to decide which it is.
     DrawEntityDragSource(entity);
 
-    // IsItemToggledOpen tells clicking the expand arrow apart from clicking
-    // the row, so opening a branch does not also change the selection.
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+    // ======================================================================
+    //  THE CLICK, AND IT IS THE RELEASE THAT DECIDES IT.
+    //
+    //  This was ImGui::IsItemClicked(), which fires on mouse-DOWN - the same
+    //  press that begins a drag. So picking a row up to drag it somewhere
+    //  changed the selection first, and the Inspector draws whatever is
+    //  selected: dragging an entity onto a script's reference slot replaced
+    //  the panel being aimed at with the dragged entity's own components
+    //  before the drop could land. The reference could not be set that way at
+    //  all, which is how it was reported.
+    //
+    //  SPLIT ACROSS THE PRESS AND THE RELEASE because two things have to be
+    //  remembered from the press: WHICH row it was on - so that pressing one
+    //  row and releasing over another selects neither, which is what a click
+    //  means everywhere else - and whether it landed on the EXPAND ARROW. The
+    //  arrow is the one part of the row ImGui presses on mouse-down
+    //  (ImGuiTreeNodeFlags_OpenOnArrow), so IsItemToggledOpen is only true on
+    //  that frame and has to be caught there or opening a branch would select
+    //  it too.
+    //
+    //  IT ALSO MAKES THE NOTE IN HandleRowClick TRUE. That function says ImGui
+    //  has already decided this was a click rather than a drag by the time it
+    //  runs - which was not so on mouse-down, and is now.
+    // ======================================================================
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        m_pressedRow     = entity.Id();
+        m_pressWasToggle = ImGui::IsItemToggledOpen();
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+        m_pressedRow == entity.Id() && !m_pressWasToggle) {
         HandleRowClick(entity.Id());
     }
 
@@ -325,26 +352,44 @@ void HierarchyPanel::DrawEntityDragSource(eng::Entity& entity) {
     // drop, so nothing has to stay alive in the meantime - and an EntityId
     // that refers to something destroyed mid-drag is still safe to look up
     // and simply comes back as nothing.
-    // DRAGGING A SELECTED ROW DRAGS THE WHOLE SELECTION, which is what makes
-    // bulk reparenting possible at all. Dragging an UNSELECTED row selects
-    // it first and drags only it - picking something up is a way of choosing
-    // it, and carrying off a set you are not pointing at would be a surprise.
-    EditorState& state = EditorState::Get();
-    if (!state.IsSelected(entity.Id())) {
-        state.SelectOnly(entity.Id());
-    }
+    //
+    // ======================================================================
+    //  PICKING SOMETHING UP DOES NOT SELECT IT, and that is the fix rather
+    //  than the compromise.
+    //
+    //  This used to call SelectOnly for an unselected row - "picking
+    //  something up is a way of choosing it" - which was fine for the gesture
+    //  it was written for, dragging rows around inside this panel. It made
+    //  dragging an entity ONTO A SCRIPT REFERENCE in the Inspector impossible:
+    //  the Inspector draws whatever is selected, so the selection changing on
+    //  the press that begins the drag swapped the whole panel for the dragged
+    //  entity's own components - taking the reference slot that was being
+    //  aimed at with it. There was nothing left to drop on, so nothing
+    //  happened, and the only visible result was that the Inspector had moved.
+    //
+    //  DRAGGING A SELECTED ROW STILL DRAGS THE WHOLE SELECTION, which is what
+    //  makes bulk reparenting possible; dragging an unselected one now carries
+    //  that row alone without disturbing what is selected. DragSet is where
+    //  that rule lives, and the drop target and ApplyPendingReparent both ask
+    //  it rather than reading the selection themselves.
+    // ======================================================================
 
-    // The payload still carries ONE id - the row actually grabbed. The rest
-    // of the set is read from the selection at the drop. Putting a whole
-    // list in the payload would mean a second copy of it that could disagree
-    // with the real one.
+    // The payload carries ONE id - the row actually grabbed. The rest of the
+    // set is worked out at the drop. Putting a whole list in the payload
+    // would mean a second copy of it that could disagree with the real one.
     const eng::EntityId id = entity.Id();
     ImGui::SetDragDropPayload(kPayloadEntity, &id, sizeof(id));
 
     // What rides under the cursor. Without this the drag is invisible and
     // feels broken even when it works.
-    if (state.selection.size() > 1) {
-        ImGui::Text("%zu entities", state.selection.size());
+    //
+    // COUNTED FROM DragSet AND NOT FROM THE SELECTION, which are no longer
+    // the same thing: grabbing an unselected row while eight others are
+    // selected carries one entity, and a label saying "9 entities" would be
+    // a promise the drop does not keep.
+    const std::size_t carrying = DragSet(id).size();
+    if (carrying > 1) {
+        ImGui::Text("%zu entities", carrying);
     } else {
         ImGui::Text("%s", entity.Name().c_str());
     }
@@ -400,17 +445,21 @@ bool HierarchyPanel::ReparentIsLegal(eng::EntityId child, eng::EntityId parent) 
     return !parentEntity->Transform().IsDescendantOf(&childEntity->Transform());
 }
 
-bool HierarchyPanel::SelectionReparentIsLegal(eng::EntityId parent) const {
+std::vector<eng::EntityId> HierarchyPanel::DragSet(eng::EntityId grabbed) const {
     const EditorState& state = EditorState::Get();
+    if (state.IsSelected(grabbed)) {
+        return state.selection;
+    }
+    return std::vector<eng::EntityId>{grabbed};
+}
 
-    // A drag carries the whole selection, so the target has to be legal for
-    // EVERY member of it. Allowing the drop because the grabbed row happens
-    // to be fine would quietly skip the others at the drop, which looks like
-    // the feature failing at random.
-    if (state.selection.empty()) {
+bool HierarchyPanel::DragReparentIsLegal(eng::EntityId grabbed,
+                                         eng::EntityId parent) const {
+    const std::vector<eng::EntityId> moving = DragSet(grabbed);
+    if (moving.empty()) {
         return false;
     }
-    for (const eng::EntityId id : state.selection) {
+    for (const eng::EntityId id : moving) {
         if (!ReparentIsLegal(id, parent)) {
             return false;
         }
@@ -435,7 +484,7 @@ void HierarchyPanel::DrawEntityDropTarget(eng::EntityId newParent) {
         eng::EntityId dragged{};
         std::memcpy(&dragged, peek->Data, sizeof(dragged));
 
-        if (SelectionReparentIsLegal(newParent)) {
+        if (DragReparentIsLegal(dragged, newParent)) {
             if (ImGui::AcceptDragDropPayload(kPayloadEntity) != nullptr) {
                 RequestReparent(dragged, newParent);
             }
@@ -529,13 +578,13 @@ void HierarchyPanel::ApplyPendingReparent() {
         parentTransform = &parent->Transform();
     }
 
-    // EVERYTHING SELECTED MOVES, not just the row that was grabbed. The
-    // grabbed row is used only when it is somehow not in the selection,
-    // which the drag source makes sure cannot normally happen.
-    EditorState&               state = EditorState::Get();
-    std::vector<eng::EntityId> moving =
-        state.IsSelected(request.child) ? state.selection
-                                        : std::vector<eng::EntityId>{request.child};
+    // EVERYTHING SELECTED MOVES when the grabbed row is part of the
+    // selection, and only the grabbed row when it is not - which is now the
+    // ordinary case rather than a defensive one, because starting a drag no
+    // longer selects anything. The rule lives in DragSet, where the drop
+    // target also reads it.
+    EditorState&                     state  = EditorState::Get();
+    const std::vector<eng::EntityId> moving = DragSet(request.child);
 
     int moved = 0;
     for (const eng::EntityId id : moving) {
@@ -985,6 +1034,15 @@ void HierarchyPanel::Draw() {
     // who is whose child rewrites the lists the tree above was walking, so
     // it waits until there is nothing left walking them. See HierarchyPanel.h.
     ApplyPendingReparent();
+
+    // AFTER THE ROWS, which is the whole of why it is here and not at the top
+    // of Draw: the release that selects a row is read while that row is being
+    // drawn, and clearing this first would throw the press away before
+    // anything could match it against. See m_pressedRow.
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        m_pressedRow     = eng::EntityId{};
+        m_pressWasToggle = false;
+    }
 }
 
 } // namespace editor

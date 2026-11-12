@@ -428,7 +428,35 @@ Everything on the selected entity, editable. The transform's position and
 rotation, the sprite's image and colour, a collider's size and layers, a
 script's binding.
 
+Every row is **name on the left, value on the right**, in one column that does
+not move — the same shape Unity's Inspector and Unreal's Details panel use,
+and for the same reason: a name you read at a fixed place is a list, and a name
+you read at wherever the last drag box happened to end is a paragraph. The
+column narrows with the panel, so a docked Inspector squeezed to a third of
+the window still shows usable values.
+
 Use the **+ ComponentName** buttons at the bottom to add a component.
+
+### Picking something up does not select it
+
+**A click selects on the release, not on the press**, in the Hierarchy and in
+the Assets panel both. That sounds like a detail and it is what makes dragging
+*into* the Inspector work at all: the Inspector draws whatever is selected, so
+selecting on the press that starts a drag swapped the panel out from under the
+drop — taking the slot being aimed at with it.
+
+Two things follow:
+
+- **Dragging an entity from the Hierarchy onto a script's reference** fills it
+  in. The Hierarchy's selection and the Inspector stay where they were for the
+  whole gesture.
+- **Dragging an asset from the Assets panel onto a variable** no longer throws
+  the Inspector back to the top on the way, and no longer leaves you looking at
+  the file you just dropped instead of the entity you dropped it on.
+
+Dragging a row that **is** part of a multi-selection still carries the whole
+selection, which is what makes bulk reparenting work. Dragging one that is not
+carries that row alone and leaves the selection alone.
 
 ### Pointing a component at an image
 
@@ -1270,6 +1298,24 @@ script instead and you get no IntelliSense at all. What the two files are, and
 why neither is worth committing, is in
 [docs/scripting-reference.md](scripting-reference.md#making-your-editor-understand-that-include).
 
+**That is also what stops `Door door;` being underlined.** Your editor opens one
+script at a time, and on its own a script has never heard of the others - so
+another script's bare name would look like an unknown type even though it
+builds. Both files point at a third, `.build/script-scope.h`, which declares
+every script in the project; the editor writes it again on **every build**, so
+it is current as soon as a new script compiles. Two things follow from that:
+
+| | |
+|---|---|
+| **Set this up again after upgrading the engine** | A `CppProperties.json` written before this existed does not mention the scope header, and the symptom is exactly the one it fixes. The file says at the top when it was written and by what. |
+| **A brand-new script is unknown until it compiles once** | Save it and switch to the editor; the rebuild is what tells your IDE the name exists. Visual Studio caches aggressively, so if a name stays red after that, close the folder and reopen it. |
+
+The scope header is not a description of the real compile, and it says so in
+its own text: every script is complete there, so two scripts that each call the
+other show no error while you type and are still refused by the build, which
+names the loop. Another script's file-scope helper functions are the reverse -
+they compile but are not offered to you.
+
 There is a **Build Scripts** button in the Assets panel too, for building
 without alt-tabbing - which is what you want after fixing a compile error.
 
@@ -1462,6 +1508,34 @@ std::string portrait;              // [image] shown on the HUD
 std::string walkAnimations[4];     // [animation] right, left, up, down
 ```
 
+##### An array is one folding row
+
+An array is **one collapsible row** carrying the array's name, with `4 of 4`
+beside it and the elements underneath labelled by index alone:
+
+```
+  walkAnimations                4 of 4
+    [0]   [ hero.png#walk_right ]
+    [1]   [ hero.png#walk_left  ]
+```
+
+Each element is a full variable of its own underneath — saved separately,
+revertable separately, overridable separately on a prefab instance. Only the
+looking is grouped.
+
+**Drag the number to change how many rows are offered.** It does *not* resize
+the array: a `[4]` in the script is four elements for as long as the object
+exists, and nothing in a tool can reallocate a C++ array. It is for an array
+that is longer than a particular entity uses — sixteen slots of which three
+are filled is thirteen blank rows otherwise.
+
+Shortening **hides** rows rather than clearing them, so a drag from 16 to 1 and
+back costs nothing. Anything hidden that still holds a value is named under the
+header — *"2 hidden element(s) still have a value, and the script still reads
+them"* — with a **Clear them** button, because a length the script does not
+honour is exactly the kind of quiet disagreement this editor reports rather
+than leaves to be found.
+
 `[texture]` and `[sprite]` also mean an image, `[anim]` and `[clip]` an
 animation, and **case does not matter** — `[Animation]` is the same marker. A
 marker naming a kind the engine has no slot for is reported in the Console and
@@ -1580,8 +1654,21 @@ void OnFixedUpdate() {
 
 Plain, it takes anything. **A `[TypeName]` marker narrows it** to entities
 carrying that component or script — `[Rigidbody2DComponent]`, `[DoorSwitch]` —
-and the Inspector uses it twice: the picker offers only entities that have one,
-and a reference pointing at something that does not says so.
+and the Inspector uses it three times: the picker offers only entities that
+have one, a **drop is only taken from an entity that has one**, and a reference
+pointing at something that does not says so.
+
+A drag from the Hierarchy that cannot satisfy the slot does not light the
+target up and does not land; the row says what is missing from it while you
+hover — *"'Lamp Post' has no Door on it, so there is nothing here for this to
+point at"* — so the refusal is an answer rather than a drop that vanished. A
+plain `eng::EntityRef` with no marker still takes anything, because "any entity
+will do" is what no marker means.
+
+A slot can still **end up** wrong — a hand-edited scene file, or a component
+removed from an entity that was already pointed at — and that is allowed: a
+level in the middle of being built is allowed to be wrong, as long as it is not
+wrong quietly. The amber line below the row is what says so.
 
 The type is named as **text**, which is what lets one mechanism serve both a
 component the engine ships and a script you wrote this afternoon. Writing the
@@ -1613,11 +1700,22 @@ Ask for the target when you need it and do not keep it — `Target()` is a hash
 lookup, and the entity may have been destroyed since last frame. That is the
 same rule the rest of the engine follows for `EntityId`.
 
-To reach another **script's own members** you need its class in a header both
-files include - not because anything hides the name, but because one `.cpp` has
-no declaration of a class defined in another, and C++ needs a complete type to
-call anything on it. `eng::ScriptRef<T>` is the reference that does it, and
-`assets/scripts/Door.h` with `DoorSwitch.cpp` is the worked example.
+To reach another **script's own members**, write its name:
+
+```cpp
+Door door;              // then door->Open();
+```
+
+No header, no include and no wrapper type. The build puts every script in the
+project in scope before a script is compiled, so the bare name is already a
+reference you can drag an entity onto, and two scripts may point at each other
+in either direction or both - see `engine/tools/ScriptVars.h` for how and
+`engine/scene/ScriptRef.h` for what the name means, including the three places
+the bare name is not the spelling (a reference to its own kind, a base class,
+and two scripts that each call the other).
+`assets/scripts/Script References/` is the worked example - two files, no
+header, a reference each way - and `assets/scenes/script_references.oscene` is
+the pair running.
 
 Most references do not need that: `fields.Ref(..., "DoorSwitch", ...)` plus a
 transform or a message gets you there with no headers at all. See

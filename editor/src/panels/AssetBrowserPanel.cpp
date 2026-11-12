@@ -1004,10 +1004,36 @@ void AssetBrowserPanel::DrawEntry(const Tile& tile, int index) {
         ImGui::EndTooltip();
     }
 
-    // A SINGLE CLICK SELECTS, which is what gives the Delete key something to
-    // act on. Taken on mouse-DOWN rather than release, so a click that turns
-    // into a drag still selects what it started from.
-    if (iconHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    // ======================================================================
+    //  A SINGLE CLICK SELECTS, which is what gives the Delete key something
+    //  to act on - AND IT IS THE RELEASE THAT COUNTS, not the press.
+    //
+    //  This used to pick on mouse-DOWN, so that a click which turned into a
+    //  drag still selected what it started from. That press is the SAME press
+    //  that begins a drag, and picking on it published the file to the
+    //  Inspector before anybody knew whether a drag was happening:
+    //
+    //    - the Inspector redrew as the asset view for the frame or two before
+    //      the drag passed its threshold, which clamped the panel's scroll to
+    //      that much shorter page - so dragging an image onto a variable threw
+    //      the Inspector back to the top on the way;
+    //    - and the drop only cleared it again if the WINDOW-WIDE target took
+    //      the payload. Dropping onto a variable's own slot is a field target,
+    //      which never touched selectedAsset - so the Inspector flipped to
+    //      the dragged file the moment the drag ended, hiding the entity whose
+    //      variable had just been filled in.
+    //
+    //  Waiting for the release answers both at once, because a drag does not
+    //  end over the tile it started on. IsItemHovered is false on the release
+    //  frame when the cursor is somewhere else, and ImGui blocks it on other
+    //  tiles while a drag is active - so releasing on the grabbed tile picks
+    //  it and releasing anywhere else picks nothing.
+    //
+    //  THE OTHER TWO DOORS ARE UNCHANGED: a right-click still picks through
+    //  DrawEntryContextMenu, so the menu acts on what it is over, and a
+    //  double-click still opens.
+    // ======================================================================
+    if (iconHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         Pick(tile);
     }
 
@@ -1204,7 +1230,11 @@ void AssetBrowserPanel::DrawPartTile(const Tile& part) {
         ImGui::EndTooltip();
     }
 
-    if (iconHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    // ON THE RELEASE, for the reason the tile above gives at length: a frame
+    // is dragged onto animation slots more often than anything else in the
+    // project, and picking it on the press moved the Inspector out from under
+    // the drop.
+    if (iconHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         Pick(part.path, false, true);
     }
 
