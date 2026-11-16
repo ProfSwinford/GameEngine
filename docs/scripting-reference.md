@@ -44,6 +44,17 @@ reads both:
 |---|---|
 | `CppProperties.json` | Visual Studio, and only in its Open Folder mode |
 | `compile_commands.json` | clangd, and so VS Code, CLion, Qt Creator, Neovim, Emacs |
+| `.vscode/launch.json` | VS Code's debugger — press F5 to attach to the editor |
+
+The third is only written if it is not already there, because it is a file
+people add their own entries to.
+
+**You can put a breakpoint on a line of your own script.** Scripts are
+compiled with debug information and each library is linked with a `.pdb`
+beside it, so attaching a debugger to the editor and stopping inside
+`OnUpdate` works, with locals and a call stack. Nothing needs switching on.
+See *Stepping through a script in a debugger* in the editor guide for how to
+attach and for the two things worth knowing first.
 
 Then **File -> Open Project in Visual Studio**, which opens the *folder*. That
 is the part that matters: Visual Studio only reads `CppProperties.json` for a
@@ -1876,6 +1887,47 @@ The rest of it:
 | `IsPlaying()` | Whether it is advancing. |
 | `IsFinished()` | A non-looping animation that reached its end. Stays true until something plays it again. |
 | `SetSpeed(2.0f)` | A multiplier on the sheet's frame rate. |
+
+### Which picture is on screen when nothing is playing
+
+An animation that is not playing either HOLDS the frame it was on or hands the
+sprite back the picture the `SpriteComponent` is authored to show. Which one it
+does is not a mood - it is decided by how it stopped:
+
+| How it stopped | What is on screen |
+| -------------- | ----------------- |
+| `Stop()` | The sprite's own image. |
+| `SetAnimationPath()`, including to `""` | The sprite's own image. |
+| Never started (`playOnStart` unticked) | The sprite's own image. |
+| Component removed | The sprite's own image. |
+| `Pause()` | **The frame it was on.** |
+| A non-looping clip that finished | **Its last frame.** |
+
+The two that hold do it on purpose. `Pause()` exists precisely to freeze a
+flipbook - if it reverted there would be no call left that does - and a
+non-looping clip's last frame is its RESULT: a door that finished opening is
+drawn open, and an explosion that reverted to frame 0 the instant it ended
+would play backwards into its own fuse.
+
+**`SetTexture` is authoritative whenever nothing is playing.** There is no need
+to stop first: `ShowFrame` only runs while a clip is advancing, so a picture
+you author while paused or after a finish appears immediately and is not
+overwritten. Playback takes the picture back only when you ask it to play.
+
+So if you want a character to stand in a pose of your choosing when it is not
+walking, author that pose and call `Stop()`, not `Pause()`:
+
+```cpp
+if (rb->Velocity().LengthSquared() < 0.01f) {   // standing still
+    anim->Stop();          // Pause() would keep the mid-stride frame
+    return;
+}
+renderer->SetTexture(standing[direction]);
+anim->Play(walkAnimation[direction]);
+```
+
+`Stop()` also rewinds, which costs nothing unless the clip sets `resume` - a
+walk cycle that starts over each time you set off is what you want anyway.
 
 **Do not keep the pointer.** Ask with `Find` each time, the same rule as for
 every other component: the component dies with its entity, and the whole scene

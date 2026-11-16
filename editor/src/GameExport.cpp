@@ -673,10 +673,10 @@ GameExport::Result GameExport::ExportTo(const std::string& destination) {
     // library is current for exactly the same reasons it is current when you
     // alt-tab back into the editor.
     // ALWAYS, and into ONE library rather than the per-script ones the editor
-    // runs on. A shipped game will never recompile a script, so eleven
-    // libraries would be eleven import tables and eleven lots of load-time
-    // relocation for nothing. See ScriptBuild::BuildBundle - it links the
-    // objects the editor already compiled, so this is a link and not a
+    // runs on. A shipped game will never recompile a script, so a library
+    // per script would be an import table and a round of load-time
+    // relocation each, for nothing. See ScriptBuild::BuildBundle - it links
+    // the objects the editor already compiled, so this is a link and not a
     // rebuild.
     //
     // Not guarded by NeedsRebuild any more: the bundle is a different output

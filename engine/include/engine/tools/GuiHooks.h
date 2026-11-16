@@ -38,8 +38,22 @@ struct GuiHooks {
     // True while the tool layer wants the keyboard - a text box has focus.
     bool (*WantsKeyboard)() = nullptr;
 
-    // True while the tool layer wants the mouse - the cursor is over a panel.
-    bool (*WantsMouse)() = nullptr;
+    // ======================================================================
+    //  True while the tool layer wants the mouse AT THIS POINT, in window
+    //  pixels. Unlike the keyboard, which has one focus, the mouse has a
+    //  place - and the answer differs between two clicks in the same frame.
+    //
+    //  THE POSITION IS AN ARGUMENT BECAUSE THE ONLY FRESH FACT HERE IS THE
+    //  EVENT'S OWN. Poll drains the whole backlog in one pass, and the tool
+    //  layer's idea of where the cursor is was computed during the LAST
+    //  frame - which in an editor can be hundreds of milliseconds ago, since
+    //  reloading scripts or a scene happens inside a frame. Asking "does the
+    //  tool layer want the mouse right now" would then judge every event in
+    //  that backlog by where the cursor ended up, so a click on a toolbar
+    //  could be handed to the game, or a click in the game view swallowed.
+    //  The event carries where it happened; nothing else does.
+    // ======================================================================
+    bool (*WantsMouse)(float windowX, float windowY) = nullptr;
 };
 
 // Called once by the editor at start-up. The game never calls it.

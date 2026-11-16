@@ -288,6 +288,49 @@ public:
     void Pause();     // stop advancing and KEEP the picture on screen
     void Stop();      // stop, rewind, and put the AUTHORED picture back
 
+    // ======================================================================
+    //  WHY NOT PLAYING DOES NOT MEAN "SHOW THE SPRITE'S OWN PICTURE", asked
+    //  and refused once, and written down so it is not re-derived.
+    //
+    //  THE SPLIT. Stop(), SetAnimationPath() (including to ""), a component
+    //  that never started, and OnDetach all hand the sprite its authored
+    //  picture back. Pause() and a finished non-looping clip HOLD the frame.
+    //  SetPlayOnStart(false) holds too, being Pause() by another name.
+    //
+    //  THE PROPOSAL was that the second group join the first, because "no
+    //  animation is active" and it would give a script more direct control.
+    //  Three things are wrong with it.
+    //
+    //  1. PAUSE WOULD STOP MEANING ANYTHING. Pause() and Stop() would then
+    //     differ only by a rewind nobody can see, and NO call would be left
+    //     that freezes a flipbook - which is what the editor's Pause + Step
+    //     frame viewer is.
+    //
+    //  2. THE LAST FRAME OF A NON-LOOPING CLIP IS ITS RESULT, not leftover
+    //     state. The case that settled it was a door: a SpriteComponent and a
+    //     SpriteAnimationComponent, no script, the clip non-looping and the
+    //     sprite authored to the CLIP'S OWN PATH because that is what
+    //     dropping an animation onto an entity writes - and a path with no
+    //     frame named resolves to the first one. Reverting on finish would
+    //     slam that door shut a third of a second after the level loaded, on
+    //     every play, with no script able to stop it and nothing to fix but
+    //     hand-editing the texture field to name the last frame.
+    //
+    //  3. THE CONTROL IS ALREADY THERE. ShowFrame only runs while a clip is
+    //     advancing, so SetTexture is authoritative the moment one is not:
+    //     author a picture while paused or after a finish and it appears,
+    //     and nothing overwrites it. Stop() is the call that says "show the
+    //     sprite's own picture now". The gap was that nothing SAID so - see
+    //     "Which picture is on screen when nothing is playing" in
+    //     docs/scripting-reference.md, which is where that belongs.
+    //
+    //  IF IT EVER COMES BACK as a real complaint about finished clips, the
+    //  shape with precedent here is a per-clip flag in the sheet's sidecar
+    //  beside `loop` and `resume` - see SheetAnimation in
+    //  resource/ImportSettings.h - read in Resolve with the rest, defaulted
+    //  off, and finish-only. Never on Pause().
+    // ======================================================================
+
     bool IsPlaying() const { return m_playing; }
 
     // A non-looping clip that reached its last frame, and stayed on it. Stays
@@ -406,7 +449,22 @@ private:
     // that misses the cache - which is what makes it affordable in OnDetach,
     // where a hundred dying animated bullets would otherwise be a hundred
     // fresh GPU textures to fix a picture nobody will see.
-    TextureRef m_authoredTexture;
+    // AND THE PATH IT WAS TAKEN FROM, because a snapshot captured once GOES
+    // STALE. A script may set a new authored picture while this is playing -
+    // `renderer->SetTexture(standing[facing])` beside `anim->Play(walk)` is
+    // the ordinary way to keep "what I look like standing still" in step with
+    // the direction - and that changes what Stop() owes the sprite. Without
+    // this, Stop put back the picture from the FIRST take-away for the rest
+    // of the play session: the Inspector showed the new path, the screen
+    // showed the old picture, and nothing on screen explained the difference.
+    //
+    // THE PATH AND NOT THE TEXTURE, because SetTexture writes m_texturePath
+    // and ShowTexture deliberately does not - so it moves exactly when the
+    // AUTHORED picture moves, and never when playback changes the picture.
+    // Comparing textures instead would miss a standing sprite that is also
+    // one of the sheet's walk frames, which is a common way to cut one.
+    TextureRef  m_authoredTexture;
+    std::string m_authoredPath;
 
     // ---- said once, and once means once per DISTINCT problem --------------
     //

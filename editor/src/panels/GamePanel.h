@@ -34,6 +34,7 @@
 //  ever. Focus has to be requested from outside the panel that needs it.
 // ============================================================================
 
+#include "EditorGui.h"
 #include "Panel.h"
 
 #include <engine/Engine.h>
@@ -47,7 +48,14 @@ public:
 
     // Behind another tab, so it does not have the keyboard whatever it decided
     // last frame. See Panel::OnHidden - this is the bug that hook exists for.
-    void OnHidden() override { m_focused = false; }
+    // Closed, collapsed, or a background tab in its dock node - Draw did not
+    // run, so the keyboard goes back to the editor and there is no rectangle
+    // for a click to land in. The two are given up together: a stale
+    // rectangle would post clicks on whatever is drawn there now to the game.
+    void OnHidden() override {
+        m_focused = false;
+        EditorGui::ClearGameViewArea();
+    }
 
     // Called by EditorApp after every panel has drawn. See ScenePanel.h for
     // why drawing the world cannot happen inside Draw().

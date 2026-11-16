@@ -273,14 +273,26 @@ std::vector<fs::path> IncludeDirectories() {
 // ---------------------------------------------------------------------------
 //  THE FLAGS, WRITTEN ONCE.
 //
-//  Everything here affects how the source is PARSED: the standard, the
-//  exception model, the C runtime, the warning level, where headers are found.
-//  Nothing here is about output - no /Fo, no /Fe, not even /c - because the
-//  six callers disagree about output and agree about all of this.
+//  NOTHING HERE IS ABOUT OUTPUT - no /Fo, no /Fe, not even /c - because the
+//  six callers disagree about output and agree about all of this. That is
+//  the rule, and it is what makes the same description usable by a compile
+//  database, which has to carry the flags and must NOT carry the plumbing.
+//  See ScriptIde.cpp.
 //
-//  That split is the point. It is also what makes the same description usable
-//  by a compile database, which has to carry the parsing flags and must NOT
-//  carry the plumbing. See ScriptIde.cpp.
+//  MOST OF IT IS ALSO ABOUT PARSING: the standard, the exception model, the
+//  C runtime, the warning level, where headers are found.
+//
+//  /Z7 IS THE ONE THAT IS NOT, and it is here on the rule above rather than
+//  on that description. It asks for debug information, which changes what
+//  goes INTO an object and nothing about how the source is read - but it
+//  names no file and takes no path, and all six callers want it identically,
+//  including the export, which relinks these very objects. /Zi would have
+//  failed the rule: it writes a second file, and without /Fd that file lands
+//  in whatever directory the editor was started from.
+//
+//  So the two IDE files carry a flag they cannot act on. That is inert, and
+//  it is cheaper than a second list of switches that had to agree with this
+//  one - which is the bug this function exists to prevent.
 // ---------------------------------------------------------------------------
 void AppendParseFlags(std::ostream& out, const ScriptBuild::CompileSettings& settings) {
     for (const std::string& argument : settings.ParseArguments()) {
@@ -447,6 +459,24 @@ fs::path BuildStampFile() {
 // the Debug and Release builds put engine.lib in different folders - so this
 // one string catches both "the configuration changed" and "you are pointing at
 // a different build of the engine".
+// ---------------------------------------------------------------------------
+//  THE HALF OF THE COMPILE DESCRIPTION THAT IS A DECISION RATHER THAN A
+//  LOOKUP: the standard, the driver and the switches.
+//
+//  SPLIT OUT BECAUSE TWO CALLERS NEED IT AND ONE OF THEM MUST BE CHEAP.
+//  Settings() goes on from here to find include directories, and on Windows
+//  that may run vcvars64.bat in a child process - measured at 2.97 seconds,
+//  and its own comment says not to call it from a path somebody is waiting
+//  on. CurrentBuildStamp is exactly such a path: NeedsRebuild consults it
+//  every time the editor regains focus.
+//
+//  So the flags live here, one copy, read by Settings() and by the stamp.
+//  The alternative was a second list of switches that had to agree with the
+//  first - which is the shape of bug this file argues against everywhere
+//  else, and the symptom would have been a flag change that rebuilt nothing.
+// ---------------------------------------------------------------------------
+void FillCompileDescription(ScriptBuild::CompileSettings& settings);
+
 std::string CurrentBuildStamp() {
     // ======================================================================
     //  MOST OF THIS NOW COMES FROM THE ENGINE, and that move is the point.
@@ -488,6 +518,37 @@ std::string CurrentBuildStamp() {
     // folders are told apart by it. ScriptAbi::Check ignores keys it does not
     // know, which is what lets both layers keep their own facts in one file.
     stamp += "enginelib=" + EngineLinkLibrary().string() + "\n";
+
+    // ======================================================================
+    //  AND THE FLAGS THE OBJECTS WERE COMPILED WITH, which this had never
+    //  recorded - so until now CHANGING A COMPILE FLAG REBUILT NOTHING.
+    //
+    //  Every other staleness test in this file is a timestamp comparison, and
+    //  a flag change makes nothing newer. So an editor shipped with a
+    //  different switch list found every object current, relinked them, and
+    //  announced a successful build of objects compiled by the previous
+    //  editor with the previous flags.
+    //
+    //  THAT WAS LATENT UNTIL /Z7, and /Z7 is what makes it visible in the
+    //  worst way: the objects would carry no debug information, the link
+    //  would say LNK4206 and exit 0, and the only symptom is a breakpoint
+    //  that never binds. The stamp is the one place both NeedsRebuild and
+    //  the export's force-path already consult, so it is where this belongs.
+    //
+    //  THE DESCRIPTION AND NOT A VERSION NUMBER, so that the next flag to
+    //  change is covered by this line without anybody remembering to bump
+    //  one. Paths are deliberately left out - includeDirs move with an
+    //  install and would rebuild a project for being opened somewhere else.
+    // ======================================================================
+    ScriptBuild::CompileSettings description;
+    FillCompileDescription(description);
+
+    stamp += "flags=";
+    for (const std::string& argument : description.ParseArguments()) {
+        stamp += argument;
+        stamp += ' ';
+    }
+    stamp += '\n';
     return stamp;
 }
 
@@ -824,6 +885,31 @@ struct ProjectScripts {
     // hand the second file the first one's variables.
     std::map<std::string, eng::ScriptSourceInfo> infoByPath;
 
+    // ======================================================================
+    //  WHOSE DEFINITIONS EACH SCRIPT'S UNIT HAS TO CARRY - itself included,
+    //  transitively closed over Entry::needs.
+    //
+    //  THIS IS WHAT LETS A UNIT HOLD FEWER THAN EVERY SCRIPT, and so what
+    //  makes editing one script rebuild something less than all of them. A
+    //  unit's staleness then becomes "did any script I CONTAIN change", which
+    //  is correct by construction: a library can only hold a stale
+    //  s_Door::Door if Door's body is in it, and if Door's body is in it then
+    //  Door changing makes it stale.
+    //
+    //  TRANSITIVE BECAUSE A DEFINITION BRINGS ITS OWN NEEDS. If Gun calls
+    //  `door->Open()` and Door's body tests `if (!doorSwitch)`, then Gun's
+    //  unit holds Door's body, and that body needs DoorSwitch whole - so
+    //  DoorSwitch is in Gun's unit too, though Gun never mentions it.
+    //
+    //  A CYCLE IS NOT A PROBLEM HERE, and that is worth saying because it is
+    //  one for the ORDER. Door and DoorSwitch each need the other defined -
+    //  Door tests its reference, DoorSwitch calls through its own - so each
+    //  one's closure contains both. Both bodies in one unit is a perfectly
+    //  good answer; only a cycle of `->` has no answer, and that one is
+    //  reported by name. See the loop diagnostic below.
+    // ======================================================================
+    std::map<std::string, std::vector<std::string>> definitionsFor;
+
     // THINGS TO SAY BEFORE THE COMPILER DOES, collected rather than logged,
     // because this runs on a dry run too and a dry run says nothing. Each one
     // is a complete sentence about a declaration that WILL fail to compile,
@@ -848,7 +934,27 @@ ProjectScripts GatherProjectScripts(const std::vector<std::string>& compiled,
         // the code it contains without the explanation changing the build.
         std::string code;
 
+        // WHAT HAS TO BE WRAPPED BEFORE THIS ONE, inside whatever unit they
+        // share. `->` and a base class, and nothing else: see the note beside
+        // the loop that fills it.
         std::vector<std::string> deps;
+
+        // ==================================================================
+        //  AND WHOSE DEFINITIONS THIS SCRIPT NEEDS AT ALL - a different and
+        //  LARGER question than `deps`, which is why it is a second list.
+        //
+        //  `deps` orders the bodies that share a unit. This decides which
+        //  bodies have to be in that unit in the first place, and it is what
+        //  lets a unit carry fewer than every script in the project.
+        //
+        //  The two differ by the spellings that resolve a reference without
+        //  reaching through it - `if (ref)` and `ref.Get()`. Those are
+        //  satisfied within one unit by end-of-translation-unit instantiation
+        //  whatever the order, so they are not ordering edges; but the class
+        //  still has to BE there. eng::ResolvesReference is the predicate,
+        //  and the note on it has the measured boundary.
+        // ==================================================================
+        std::vector<std::string> needs;
     };
     std::vector<Entry> entries;
 
@@ -1008,6 +1114,12 @@ ProjectScripts GatherProjectScripts(const std::vector<std::string>& compiled,
 
         for (const eng::ScriptBaseUse& base : bases) {
             entry.deps.push_back(base.name);
+
+            // A BASE CLASS IS BOTH QUESTIONS AT ONCE: it has to be present,
+            // and it has to be present EARLIER - a class cannot derive from
+            // one that is merely declared.
+            entry.needs.push_back(base.name);
+
             if (!base.qualified) {
                 project.notes.push_back(
                     entry.virtualPath + ": " + entry.className + " derives from `" +
@@ -1040,6 +1152,13 @@ ProjectScripts GatherProjectScripts(const std::vector<std::string>& compiled,
             }
             if (eng::ReachesThroughReference(entry.code, var.name)) {
                 entry.deps.push_back(var.requiredType);
+            }
+
+            // THE WIDER ONE. Everything `deps` catches plus the two spellings
+            // that need the class present without needing it EARLIER - see
+            // the note on Entry::needs.
+            if (eng::ResolvesReference(entry.code, var.requiredType, var.name)) {
+                entry.needs.push_back(var.requiredType);
             }
 
             // ---- and the one mistake nothing used to mention -----------
@@ -1089,7 +1208,164 @@ ProjectScripts GatherProjectScripts(const std::vector<std::string>& compiled,
                 decl.memberName + ";` is still the component itself.");
         }
 
+        // ---- AND THE SAME TWO QUESTIONS ABOUT A MEMBER THE SCAN NEVER SAW -
+        //
+        // info.vars is what the INSPECTOR will draw, so a PRIVATE member is
+        // not in it and the loop above cannot be asked about one. Reading the
+        // declarations out of the text as well means an access level does not
+        // decide whether the project compiles - it used to, with a C2027 in a
+        // generated unit. See MembersOfScriptType; the predicates are these
+        // same two, unchanged.
+        //
+        // Duplicates are skipped rather than left for the closure to absorb,
+        // because `deps` is an ordering edge and counting one twice is not
+        // obviously harmless the way a repeated `needs` would be.
+        for (const std::string& other : project.names) {
+            if (other == entry.className) {
+                continue;
+            }
+
+            const auto want = [](std::vector<std::string>& into,
+                                 const std::string&        name) {
+                if (std::find(into.begin(), into.end(), name) == into.end()) {
+                    into.push_back(name);
+                }
+            };
+
+            for (const std::string& member : eng::MembersOfScriptType(entry.code, other)) {
+                if (eng::ReachesThroughReference(entry.code, member)) {
+                    want(entry.deps, other);
+                }
+                if (eng::ResolvesReference(entry.code, other, member)) {
+                    want(entry.needs, other);
+                }
+            }
+
+            // `Other::ScriptType` names the class itself, so it has to be
+            // present and earlier - and it can be written with no member of
+            // that type in the file at all.
+            if (eng::NamesScriptTypeQualified(entry.code, other)) {
+                want(entry.deps, other);
+                want(entry.needs, other);
+            }
+        }
         project.infoByPath[entry.virtualPath] = std::move(info);
+    }
+
+    // ---- pass three: whose definitions does each unit have to carry? -----
+    //
+    // See ProjectScripts::definitionsFor. Two things feed it: the closure
+    // over Entry::needs, and the scripts that must be everywhere regardless.
+    {
+        // ==================================================================
+        //  A SCRIPT WITH CODE OUTSIDE ITS CLASS GOES IN EVERY UNIT.
+        //
+        //  Each namespace in a generated unit ends with `using namespace
+        //  s_Other;` for every other script, which is what lets one script
+        //  call another's file-scope helper with no qualification. Nothing in
+        //  this project does - the one helper here is `static`, which is what
+        //  the comment above it in GameRules.cpp asks for - but a project
+        //  that did would stop compiling the moment its units were split,
+        //  because the namespace would hold only a class declaration.
+        //
+        //  SO ANYTHING THIS SCAN CANNOT ACCOUNT FOR IS KEPT EVERYWHERE, which
+        //  is the safe direction: the cost is a script that rebuilds more
+        //  often than it had to, and the alternative is a project that used
+        //  to build and now does not.
+        //
+        //  Only a class, its registrar, includes and using-lines are
+        //  "accounted for" - that is every script written from the templates.
+        // ==================================================================
+        const auto hasFileScopeCode = [](const Entry& entry) {
+            std::string rest = entry.code;
+
+            // `class Door` or `struct Door`, whichever the author wrote -
+            // ClassKeyOf has already read that off the definition.
+            const std::string opener = entry.classKey + " " + entry.className;
+            const std::size_t at     = rest.find(opener);
+            if (at == std::string::npos) {
+                return true;   // cannot see the class, so cannot account for it
+            }
+
+            // Cut the class out, brace by brace, so what is left is what sits
+            // outside it.
+            const std::size_t open = rest.find('{', at);
+            if (open == std::string::npos) {
+                return true;
+            }
+            int         depth = 0;
+            std::size_t end   = open;
+            for (; end < rest.size(); ++end) {
+                if (rest[end] == '{') {
+                    ++depth;
+                } else if (rest[end] == '}') {
+                    --depth;
+                    if (depth == 0) {
+                        ++end;
+                        break;
+                    }
+                }
+            }
+            if (depth != 0) {
+                return true;
+            }
+            rest.erase(at, end - at);
+
+            // What may remain, line by line.
+            std::istringstream lines(rest);
+            std::string        line;
+            while (std::getline(lines, line)) {
+                const std::size_t from = line.find_first_not_of(" \t\r");
+                if (from == std::string::npos) {
+                    continue;
+                }
+                const std::size_t to = line.find_last_not_of(" \t\r");
+                const std::string trimmed = line.substr(from, to - from + 1);
+
+                if (trimmed.empty() || trimmed == ";" || trimmed.starts_with("#") ||
+                    trimmed.starts_with("using ") ||
+                    trimmed.starts_with("ENGINE_REGISTER_SCRIPT")) {
+                    continue;
+                }
+                return true;
+            }
+            return false;
+        };
+
+        std::map<std::string, std::vector<std::string>> directNeeds;
+        std::vector<std::string>                        everywhere;
+        for (const Entry& entry : entries) {
+            if (entry.className.empty()) {
+                continue;
+            }
+            directNeeds[entry.className] = entry.needs;
+            if (hasFileScopeCode(entry)) {
+                everywhere.push_back(entry.className);
+            }
+        }
+
+        for (const auto& [name, unused] : directNeeds) {
+            std::vector<std::string> closed;
+            std::vector<std::string> stack{name};
+            stack.insert(stack.end(), everywhere.begin(), everywhere.end());
+
+            while (!stack.empty()) {
+                const std::string current = stack.back();
+                stack.pop_back();
+                if (std::find(closed.begin(), closed.end(), current) != closed.end()) {
+                    continue;
+                }
+                closed.push_back(current);
+
+                const auto found = directNeeds.find(current);
+                if (found != directNeeds.end()) {
+                    stack.insert(stack.end(), found->second.begin(),
+                                 found->second.end());
+                }
+            }
+            project.definitionsFor[name] = std::move(closed);
+        }
+
     }
 
     // ---- the order -----------------------------------------------------
@@ -1825,9 +2101,9 @@ std::vector<std::string> ScriptBuild::CompileSettings::ParseArguments() const {
     return arguments;
 }
 
-ScriptBuild::CompileSettings ScriptBuild::Settings() {
-    CompileSettings settings;
+namespace {
 
+void FillCompileDescription(ScriptBuild::CompileSettings& settings) {
     settings.standard      = "c++20";
     settings.forcedInclude = PchHeaderName();
 
@@ -1837,12 +2113,75 @@ ScriptBuild::CompileSettings ScriptBuild::Settings() {
     // have to be the ones cl.exe understands whatever compiled the editor.
     settings.msvc     = true;
     settings.driver   = "cl.exe";
-    settings.switches = {"/EHsc", ENGINE_SCRIPT_IS_DEBUG ? "/MDd" : "/MD", "/W3"};
+
+    // ======================================================================
+    //  /Z7 - DEBUG INFORMATION, AND WHY IT IS /Z7 AND NOT /Zi.
+    //
+    //  Without it a script has no line table, so there is nowhere for a
+    //  breakpoint to bind: you can edit a script, watch it run, and never
+    //  stop on a line of it. The compile is already unoptimised - no /O
+    //  switch is passed anywhere, so MSVC's default /Od applies - so this is
+    //  the ONLY thing that was missing, and it was missing silently.
+    //
+    //  /Z7 PUTS THE INFORMATION IN THE OBJECT. /Zi puts it in a separate
+    //  .pdb, and every difference between them lands on this build:
+    //
+    //    /Zi NEEDS /Fd, AND NEEDS IT IN FOUR PLACES. The .pch step and the
+    //      /MP step are separate cl invocations here, and naming different
+    //      .pdb files is error C2859 against the user's own line 1. Forget
+    //      /Fd entirely and the default vc140.pdb lands in the CURRENT
+    //      DIRECTORY - which for this build is wherever the editor was
+    //      started from, because RunCaptured passes no working directory and
+    //      build.bat has no cd. Measured.
+    //
+    //    /Zi SERIALISES THE PARALLEL COMPILE through mspdbsrv.exe, and
+    //      leaves that process behind. /MP exists here precisely to make a
+    //      cold build parallel.
+    //
+    //    /Z7 CANNOT LOSE ITS INFORMATION. There is no second file to go
+    //      missing, so there is no LNK4099 and no silently symbol-free PDB.
+    //
+    //  The cost is bigger objects - measured at about +31 MB over this
+    //  project's 23 units - and roughly 7% on the compile. The emitted CODE
+    //  is byte-identical; see the link line in WriteBuildScript for the two
+    //  /OPT switches that keep the DLL identical as well.
+    //
+    //  IN switches AND NOT IN A MEMBER OF ITS OWN, which is worth defending
+    //  because the banner on AppendParseFlags says nothing here is about
+    //  OUTPUT. /Z7 names no output: it writes no file and takes no path, and
+    //  all six places that emit these flags want it identically - including
+    //  the export, which relinks THESE OBJECTS and so cannot be allowed to
+    //  disagree. /Zi would have been an output flag in all but name, which
+    //  is the other half of why it is not the one chosen.
+    //
+    //  It does reach the two IDE config files, which describe a parse and do
+    //  not code-generate. That is inert rather than wrong - clang-cl accepts
+    //  it - and the alternative was a second list that had to agree with this
+    //  one.
+    // ======================================================================
+    settings.switches = {"/EHsc", ENGINE_SCRIPT_IS_DEBUG ? "/MDd" : "/MD", "/W3",
+                         "/Z7"};
 #else
     settings.msvc     = false;
     settings.driver   = g_compilerPath;
-    settings.switches = {"-fPIC", "-Wall"};
+
+    // -g for the same reason /Z7 is there on Windows. DWARF lives in the .o
+    // and the linker copies it into the .so, so there is no separate link
+    // switch to pair with it - which is the whole of the difference between
+    // the two platforms here.
+    settings.switches = {"-fPIC", "-Wall", "-g"};
 #endif
+}
+
+} // namespace
+
+ScriptBuild::CompileSettings ScriptBuild::Settings() {
+    CompileSettings settings;
+
+    // The standard, the driver and the switches. See FillCompileDescription
+    // for why they are not written out here: the build stamp needs the same
+    // answer and cannot afford what the rest of this function does.
+    FillCompileDescription(settings);
 
     // GENERIC, so the separator is a forward slash on every platform. MSVC
     // takes either one in /I, but a backslash is an escape sequence in JSON
@@ -2046,16 +2385,17 @@ ScriptBuild::Sources ScriptBuild::GatherSources() {
 //
 //  TWO THINGS THIS BUYS, and the second matters more than the first:
 //
-//    SPEED. Editing one script compiles one file and links one small library.
-//    The old single-library build recompiled all eleven every time, because
-//    one library is one link and one link needs every object.
+//    SPEED. Editing one script usually compiles one file and links one small
+//    library; see "AND THEN IT STOPPED BEING EVERY SCRIPT" for when it is
+//    more. The old build recompiled the lot every time: one library is one
+//    link, and one link needs every object.
 //
 //    A BROKEN SCRIPT STOPS BEING EVERYONE'S PROBLEM. With one library, a typo
 //    in one file meant nothing linked, so nothing was produced, so NO script
 //    ran. Now the failure costs exactly the script it is in.
 //
 //  AN EXPORT STILL GETS ONE userContent.dll. A shipped game has no reason to
-//  carry eleven libraries, and nothing is ever going to recompile one of them.
+//  carry a library per script, and nothing will ever recompile one of them.
 //  That is the same objects linked a different way - see BuildBundle - so
 //  exporting after a build is a link, not a rebuild.
 //
@@ -2389,9 +2729,10 @@ void PruneStrays(const fs::path& directory, std::string_view extension,
 //
 // `forceAll` is for the cases a timestamp cannot see - a different build
 // configuration, or the SET of scripts changing. The second one matters
-// because every unit carries the text of every script in the project, so
-// adding or removing one changes what all of them contain, and a REMOVED file
-// makes nothing newer. EveryUnitIsStale is the one place that decides.
+// because every unit DECLARES and ALIASES every script in the project, even
+// the ones whose bodies it leaves out, so adding or removing one changes what
+// all of them contain - and a REMOVED file makes nothing newer.
+// EveryUnitIsStale is the one place that decides.
 // `dryRun` asks the same question without touching anything, which is what
 // NeedsRebuild needs - it runs whenever the editor regains focus, and a check
 // that rewrote the generated units every time would be a check with opinions.
@@ -2572,8 +2913,27 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
             // to them by a script name.
             std::ofstream out(unit.unitPath, std::ios::trunc);
             if (out) {
+                // ==========================================================
+                //  EVERY SCRIPT DECLARED, ONLY THIS ONE'S SET DEFINED.
+                //
+                //  The list handed over is the whole project in dependency
+                //  order, exactly as before - that is what writes the
+                //  forward declaration and the alias for every script, which
+                //  is what keeps `Door door;` legal in any file. defineHere
+                //  is what narrows the BODIES to the closure this unit
+                //  actually resolves. See ScriptUnitSource::defineHere.
+                // ==========================================================
+                std::vector<eng::ScriptUnitSource> forThisUnit = project.ordered;
+                const auto wanted = project.definitionsFor.find(info.className);
+                for (eng::ScriptUnitSource& src : forThisUnit) {
+                    src.defineHere =
+                        wanted == project.definitionsFor.end() ||
+                        std::find(wanted->second.begin(), wanted->second.end(),
+                                  src.className) != wanted->second.end();
+                }
+
                 WritePchInclude(out);
-                out << eng::GenerateScriptUnit(info, project.ordered,
+                out << eng::GenerateScriptUnit(info, forThisUnit,
                                                unit.unitPath.generic_string());
             } else {
                 ENGINE_LOG_ERROR(eng::Channels::kEditor,
@@ -2724,11 +3084,38 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
     //  that the ABI check at ScriptLibrary.cpp exists to make impossible
     //  ACROSS builds, which this would have reintroduced WITHIN one.
     //
-    //  The cost is that touching one script rebuilds all of them, which is
-    //  what sharing a translation unit's content means. A full rebuild of 23
-    //  scripts is about 13 seconds on this machine.
-    // ======================================================================
-    globalTime = NewestOf(sources.compiled, globalTime);
+    //  ==================================================================
+    //  AND THEN IT STOPPED BEING EVERY SCRIPT, which is the whole of what
+    //  made the rebuild cheap again. The reasoning above is still exactly
+    //  right - it is the PREMISE that changed.
+    //
+    //  A unit no longer carries every script's text. It carries its own and
+    //  the closure of what it actually resolves, and nothing else; see
+    //  ProjectScripts::definitionsFor. So the correct question is no longer
+    //  "did ANY script change" but "did any script THIS UNIT CONTAINS
+    //  change" - which is correct by construction rather than by care,
+    //  because a library can only be holding a stale s_Door::Door if Door's
+    //  body is in it, and if Door's body is in it then Door changing makes
+    //  it stale.
+    //
+    //  The layout skew described above is therefore still impossible, and
+    //  for a better reason than before: not because everything is rebuilt,
+    //  but because nothing that does not contain a class can hold an old
+    //  copy of it.
+    //
+    //  A HELPER'S UNIT IS NOT AFFECTED BY A SCRIPT AT ALL. It is one
+    //  #include of the helper and contains no script's body, so a script
+    //  changing cannot change it. It stays stale on its own source and on
+    //  globalTime, which already carries the engine headers and the other
+    //  helpers.
+    //  ==================================================================
+
+    // Which file each script class came from, so a unit's definition set can
+    // be turned into timestamps. Built once rather than per unit.
+    std::map<std::string, fs::path> sourceOfClass;
+    for (const auto& [virtualPath, className] : project.classByPath) {
+        sourceOfClass[className] = fs::path(eng::FileSystem::Resolve(virtualPath));
+    }
 
     // ---- the precompiled header ------------------------------------------
 #if defined(_WIN32)
@@ -2762,17 +3149,96 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
         const auto sourceTime = FileTimeOr(unit.realSource, fs::file_time_type::max());
         const auto objectTime = FileTimeOr(unit.objectPath, fs::file_time_type::min());
 
+        // ------------------------------------------------------------------
+        //  THE NEWEST OF WHAT THIS UNIT ACTUALLY CONTAINS.
+        //
+        //  globalTime is everything a unit depends on without containing -
+        //  the engine's headers, the helper .cpp files it links against. On
+        //  top of that goes its own definition set, which for a script is
+        //  itself plus whatever it resolves, transitively.
+        //
+        //  A SET THIS DOES NOT RECOGNISE FALLS BACK TO EVERY SCRIPT, which is
+        //  what the build did before any of this and is the safe direction:
+        //  too much rebuilding costs seconds, too little costs a library
+        //  holding a class that has since changed shape.
+        // ------------------------------------------------------------------
+        auto definedTime = globalTime;
+        if (unit.isScript) {
+            const auto found = project.definitionsFor.find(unit.className);
+            if (found == project.definitionsFor.end()) {
+                definedTime = NewestOf(sources.compiled, definedTime);
+            } else {
+                for (const std::string& name : found->second) {
+                    const auto at = sourceOfClass.find(name);
+                    if (at == sourceOfClass.end()) {
+                        definedTime = NewestOf(sources.compiled, definedTime);
+                        break;
+                    }
+                    definedTime = std::max(
+                        definedTime, FileTimeOr(at->second, fs::file_time_type::max()));
+                }
+            }
+        }
+
         unit.stale = forceAll || !fs::exists(unit.objectPath, ec) ||
-                     sourceTime > objectTime || globalTime > objectTime;
+                     sourceTime > objectTime || definedTime > objectTime;
 
         if (unit.isScript) {
             const auto libraryTime = FileTimeOr(unit.libraryPath, fs::file_time_type::min());
             unit.needsLink = unit.stale || !fs::exists(unit.libraryPath, ec) ||
-                             objectTime > libraryTime || globalTime > libraryTime;
+                             objectTime > libraryTime || definedTime > libraryTime;
         }
 
         plan.anyToCompile = plan.anyToCompile || unit.stale;
         plan.anyToLink    = plan.anyToLink || unit.needsLink;
+
+        // ==================================================================
+        //  THE SYMBOL FILE GOES BEFORE THE LINK, AND A DEBUGGER IS THE
+        //  REASON.
+        //
+        //  Visual Studio holds a module's .pdb open until it DETACHES. Not
+        //  until the module unloads - measured: across the exact
+        //  SDL_UnloadObject this editor performs before every rebuild, the
+        //  failure moves from LNK1168 naming the .dll to LNK1201 naming the
+        //  .pdb. So an attached debugger, which is the entire point of
+        //  producing these files, would break the next build somebody
+        //  triggered by saving the script they were stopped in.
+        //
+        //  DELETING IT ALWAYS WORKS, which is the whole fix. Visual Studio
+        //  opens the file with FILE_SHARE_DELETE, so the name is freed
+        //  immediately, the debugger carries on reading the copy it already
+        //  has, and the link writes a fresh one. Measured on an identical
+        //  relink that had just failed with LNK1201: it then returned 0.
+        //
+        //  NO UNIQUE NAMES, NO COUNTER, NO SWEEP. That is what hot-reload
+        //  systems normally reach for, and it exists to avoid a lock that
+        //  this one does not have to avoid - it can simply remove it.
+        //
+        //  KEYED ON needsLink AND NOT ON stale, because the .pdb is written
+        //  by the LINK. A unit whose object is current but whose library is
+        //  being relinked still gets a new one.
+        // ==================================================================
+        if (unit.needsLink && !dryRun && unit.isScript) {
+            fs::path pdb = unit.libraryPath;
+            pdb.replace_extension(".pdb");
+
+            std::error_code pdbEc;
+            fs::remove(pdb, pdbEc);
+
+            // SAID OUT LOUD, because the alternative is LNK1201 arriving on
+            // its own - and that message blames disk space, an invalid path
+            // and privileges, in that order, and never mentions a debugger.
+            // Something that refuses FILE_SHARE_DELETE is holding it: an
+            // indexer, antivirus, or a debugger that is not Visual Studio.
+            if (fs::exists(pdb, pdbEc)) {
+                ENGINE_LOG_WARN(eng::Channels::kEditor,
+                                "'{}' could not be removed, so the link that is about "
+                                "to rewrite it may fail with LNK1201. Something has it "
+                                "open - a debugger that does not allow it to be "
+                                "deleted, an indexer, or antivirus.",
+                                pdb.string());
+            }
+        }
 
         // DELETED BEFORE COMPILING, so that "the object exists" means "it
         // compiled THIS TIME". The batch links a library only when its object
@@ -2805,9 +3271,9 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
             //  recompiles everything, and have ONE script fail to compile.
             //  Its object is gone, no new library is linked, and the old
             //  Release-built one is still sitting there - so the modules
-            //  folder holds ten Debug libraries and one Release library, and
-            //  the editor loads all eleven. Observed, before this line
-            //  existed.
+            //  folder holds Debug libraries for every script but that one,
+            //  whose Release library the editor loads too. Observed, before
+            //  this line existed.
             //
             //  Deleting it means that script shows as NOT FOUND until it
             //  compiles, which is honest: there genuinely is no usable build
@@ -2844,6 +3310,18 @@ BuildPlan PlanBuild(const ScriptBuild::Sources& sources, bool forceAll,
     PruneStrays(ObjectDirectory(), ".exp", stems);
     PruneStrays(ModuleDirectory(), LibrarySuffix(), stems);
 
+    // THE SYMBOL FILE GOES WITH ITS LIBRARY. A module is named
+    // <Script>__<hash of its virtual path>, so MOVING a script to another
+    // folder orphans one exactly as deleting it does - and these are about
+    // five megabytes each, because the engine's own type information
+    // dominates one however few scripts it carries. Without this line they
+    // accumulate for the life of the project.
+    //
+    // No .ilk arm, and that is not an oversight: the link passes
+    // /INCREMENTAL:NO, so there is never one to sweep. If that ever changes,
+    // this is the line that has to change with it.
+    PruneStrays(ModuleDirectory(), ".pdb", stems);
+
     return plan;
 }
 
@@ -2865,13 +3343,14 @@ std::string SourceSetText(const ScriptBuild::Sources& sources) {
 //  unusable.
 //
 //  AND THE SET OF SCRIPTS, which matters now in a way it did not before.
-//  Every unit carries the TEXT of every script in the project - that is what
-//  puts the other classes in scope - so adding or removing one changes what
-//  every unit contains. An ADDED file is also the newest file and would be
-//  noticed anyway; a DELETED one makes nothing newer, so without this check
-//  not a single unit is rebuilt and all 23 libraries go on registering a
-//  script whose source is gone. The symptom is the engine listing a script
-//  that no longer exists, and a scene still running it.
+//  Every unit DECLARES and ALIASES every script in the project - that is what
+//  puts the other names in scope, and it happens whether or not the unit
+//  carries that script's body - so adding or removing one changes what every
+//  unit contains. An ADDED file is also the newest file and would be noticed
+//  anyway; a DELETED one makes nothing newer, so without this check not a
+//  single unit is rebuilt and the libraries that held that script's body go
+//  on registering it. The symptom is the engine listing a script that no
+//  longer exists, and a scene still running it.
 // ===========================================================================
 bool EveryUnitIsStale(const ScriptBuild::Sources& sources) {
     if (BuildStampChanged()) {
@@ -3091,8 +3570,8 @@ ScriptBuild::Result ScriptBuild::Compile() {
         // ---- one compile step for everything out of date -----------------
         //
         // /MP hands the files to as many processes as there are cores. One
-        // invocation with eleven files is what makes a cold build parallel;
-        // eleven invocations would each pay for cl's own start-up.
+        // invocation with every out-of-date file is what makes a cold build
+        // parallel; one invocation each would pay for cl's start-up.
         if (plan.anyToCompile) {
             // The standard, the C runtime and the warning level all come from
             // one description now, so build.bat and the IDE files cannot
@@ -3146,9 +3625,51 @@ ScriptBuild::Result ScriptBuild::Compile() {
             }
             bat << " /Fe\"" << unit.libraryPath.string() << "\"";
             bat << " /link \"" << engineLib.string() << "\"";
+
+            // ============================================================
+            //  THE SWITCH THAT ACTUALLY TURNS DEBUGGING ON.
+            //
+            //  /Z7 on the compile is necessary and NOT sufficient, which is
+            //  the trap this comment exists for. cl forwards /DEBUG to the
+            //  linker only when a debug switch is on the LINK command line,
+            //  and this is a separate cl invocation over finished objects -
+            //  so /Z7 alone produces a DLL whose Debug Directories table is
+            //  empty and no .pdb at all. Measured, and it looks exactly like
+            //  the feature working until somebody sets a breakpoint.
+            //
+            //  WHERE THE .pdb LANDS NEEDS NO SWITCH. The implied path
+            //  follows /Fe's directory rather than the current one, so it
+            //  arrives beside its own DLL in modules/ - which is also where
+            //  a debugger looks when the absolute path recorded inside the
+            //  DLL no longer resolves, as it does not after the project
+            //  folder is moved. /PDB: would buy a tidier modules/ and cost
+            //  that second chance.
+            //
+            //  THE TWO /OPT SWITCHES ARE NOT POLISH. /DEBUG turns
+            //  incremental linking ON, and incremental linking suppresses
+            //  dead-code elimination and identical-COMDAT folding: measured
+            //  here as a DLL going from 438,272 bytes to 1,318,400, plus a
+            //  .ilk dropped beside it. Asking for them back makes the DLL
+            //  byte-for-byte the SIZE it is today, with the same code in it,
+            //  and leaves modules/ holding libraries and symbol files and
+            //  nothing else.
+            //
+            //  /INCREMENTAL:NO IS SAID OUT LOUD rather than left implied by
+            //  /OPT:REF, because the linker's way of resolving that conflict
+            //  is LNK4075 - a warning, in the one file the editor shows
+            //  somebody after a failure.
+            // ============================================================
+            bat << " /DEBUG /INCREMENTAL:NO /OPT:REF /OPT:ICF";
+
             // The import library and its exports table are build droppings.
-            // Sent to obj/ so that modules/ holds libraries and nothing else -
-            // the engine lists that folder and tries to load what it finds.
+            // Sent to obj/ so that modules/ holds libraries and nothing else
+            // that the engine's own folder listing has to step over.
+            //
+            // A .pdb IS NOT ONE OF THOSE. It is the other half of the DLL
+            // beside it, it is named after it, and it goes when it goes -
+            // PruneStrays sweeps both. ScriptLibrary::LoadModules asks
+            // FileSystem::ListFiles for one extension, so nothing ever tries
+            // to load it.
             bat << " /IMPLIB:\"" << (ObjectDirectory() / (unit.objectPath.stem().string() + ".lib")).string() << "\"";
             bat << "\n";
         }
@@ -3282,6 +3803,32 @@ ScriptBuild::Result ScriptBuild::Compile() {
             g_lastOutput.find("unresolved external symbol") != std::string::npos;
         const bool mentionsEngine = g_lastOutput.find("eng::") != std::string::npos;
 
+        // ------------------------------------------------------------------
+        //  A LINK THAT COULD NOT WRITE THE SYMBOL FILE.
+        //
+        //  LNK1201's own text offers three causes - disk space, an invalid
+        //  path, insufficient privilege - and the real one here is a fourth
+        //  it does not mention: something is holding the .pdb open and will
+        //  not let it be deleted. PlanBuild removes each one before the link
+        //  precisely so this cannot happen, and says so at the time, so
+        //  reaching here means the removal failed too.
+        //
+        //  NAMED, NOT DIAGNOSED. The editor must not tell somebody to close
+        //  Visual Studio: an indexer and antivirus produce exactly this, and
+        //  on a VS 18 default the holder is devenv.exe while on a VS 2022
+        //  default it may be a separate symbol worker. The three candidates
+        //  and the file's name are what somebody can act on.
+        // ------------------------------------------------------------------
+        if (g_lastOutput.find("LNK1201") != std::string::npos) {
+            ENGINE_LOG_ERROR(eng::Channels::kEditor,
+                             "NOTE: the link could not write a script's debug database "
+                             "(.pdb). Something has it open and will not release it - "
+                             "most often a debugger attached to this editor, otherwise "
+                             "a file indexer or antivirus. Detaching the debugger "
+                             "frees it; it is released on DETACH, not when the scripts "
+                             "unload.");
+        }
+
         std::string staleDetail;
         if (unresolved && mentionsEngine && EngineLibraryIsStale(staleDetail)) {
             ENGINE_LOG_ERROR(eng::Channels::kEditor,
@@ -3367,10 +3914,11 @@ ScriptBuild::Result ScriptBuild::Compile() {
         // ==================================================================
         //  REPORTED ONCE EACH, AND THAT IS NOT COSMETIC.
         //
-        //  A unit carries the TEXT of every script in the project - that is
-        //  what puts the other classes in scope and makes `Door door;` work -
-        //  so one mistake is compiled, and reported, once per unit. On this
-        //  project that is twenty-three copies of every line.
+        //  A unit carries the text of every script it RESOLVES, so a mistake
+        //  in one of those is compiled, and reported, once per unit that
+        //  carries it. For a script with code outside its class - which every
+        //  unit has to carry - that is still one copy per unit, twenty-three
+        //  of them on this project.
         //
         //  MSVC tells them apart by appending "(compiling source file
         //  <unit>.cpp)", which is the ONLY difference between those copies
@@ -3474,6 +4022,37 @@ ScriptBuild::Result ScriptBuild::Compile() {
                 ENGINE_LOG_WARN(eng::Channels::kEditor, "  {}", line);
             }
         }
+    }
+
+    // ======================================================================
+    //  A BUILD THAT SUCCEEDED AND PRODUCED NO DEBUG INFORMATION.
+    //
+    //  THE ONE FAILURE THIS WHOLE FEATURE HAS, and it is invisible by
+    //  construction: linking an object that carries no debug information
+    //  gives LNK4206, the linker exits 0, every file exists, and the only
+    //  symptom is a breakpoint that never binds - weeks later, in somebody
+    //  else's afternoon. LNK4099 is its twin for a .pdb the linker could not
+    //  find. Neither appears above, because the block above only speaks when
+    //  the exit code is non-zero, and a warning does not change it.
+    //
+    //  The cause is always the same shape: an object compiled without /Z7
+    //  reaching this link. The build stamp now carries the flags, so the
+    //  ordinary way in - an editor upgraded while .build/ still holds the
+    //  previous editor's objects - cannot happen. This is the net under
+    //  everything else, and a rebuild from clean is what it asks for.
+    //
+    //  ASKED OF THE TEXT because there is nothing else to ask. The linker
+    //  does not report this through an exit code, and reading the PDBs back
+    //  to prove they contain line tables would cost more on every build than
+    //  this costs on the one build that is wrong.
+    // ======================================================================
+    if (g_lastOutput.find("LNK4206") != std::string::npos ||
+        g_lastOutput.find("LNK4099") != std::string::npos) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                        "the scripts built, but the linker says it had no debug "
+                        "information to put in them - so breakpoints in a script will "
+                        "not bind. Something in .build/obj was compiled without /Z7. "
+                        "Delete .build and build again.");
     }
 
     // Record what went into this build, so a deleted script is noticed later.
@@ -3657,6 +4236,29 @@ ScriptBuild::Result ScriptBuild::BuildBundle() {
         }
         bat << " /Fe\"" << output.string() << "\"";
         bat << " /link \"" << engineLib.string() << "\"";
+
+        // ==================================================================
+        //  NO /DEBUG HERE, AND THAT IS THE ONE PLACE THE TWO PATHS DIVERGE
+        //  ON PURPOSE.
+        //
+        //  The objects ARE the same objects - they carry /Z7 either way, and
+        //  this file's own rule is that the two paths must not disagree about
+        //  how anything was compiled. What differs is the LINK, and this one
+        //  produces the thing a player receives.
+        //
+        //  WITHOUT /DEBUG this DLL is byte-size-identical to the one this
+        //  function produced before debug information existed, with no .pdb
+        //  beside it. So turning breakpoints on for the editor cannot change
+        //  what anybody ships, which is the strongest thing that can be said
+        //  about a change to a build.
+        //
+        //  A DEBUGGABLE EXPORT IS A SEPARATE DECISION with a real question
+        //  behind it - whether to ship the symbols, archive them, or write
+        //  them somewhere the copy in GameExport.cpp would not pick up - and
+        //  it is not this one. Debugging happens in the editor, where the
+        //  scripts are being written.
+        // ==================================================================
+
         bat << " /IMPLIB:\"" << (ObjectDirectory() / "userContent.lib").string() << "\"";
         bat << "\n";
     }

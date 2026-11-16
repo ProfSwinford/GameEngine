@@ -113,6 +113,15 @@ void EventPump::Poll() {
             case SDL_EVENT_MOUSE_WHEEL:
                 event.kind   = RawEventKind::MouseWheel;
                 event.wheelY = sdlEvent.wheel.y;
+
+                // THE WHEEL CARRIES A POSITION TOO, and it is needed for the
+                // same reason the buttons' is: whoever decides whether the
+                // tool layer wants this event has to know where it happened.
+                // Left at zero it would read as the top-left corner of the
+                // window, which is some panel's business and never the
+                // game's.
+                event.mouseX = sdlEvent.wheel.mouse_x;
+                event.mouseY = sdlEvent.wheel.mouse_y;
                 break;
 
             case SDL_EVENT_WINDOW_RESIZED:
@@ -241,10 +250,15 @@ void EventPump::Poll() {
                 consumed = false;
                 break;
 
+            // WHERE IT HAPPENED, not where the cursor is by the time this
+            // runs. See the note on GuiHooks::WantsMouse: all three of these
+            // carry their own position, which is the only thing in this loop
+            // that cannot have gone stale.
             case RawEventKind::MouseButtonDown:
             case RawEventKind::MouseMove:
             case RawEventKind::MouseWheel:
-                consumed = guiHandled && gui.WantsMouse != nullptr && gui.WantsMouse();
+                consumed = guiHandled && gui.WantsMouse != nullptr &&
+                           gui.WantsMouse(event.mouseX, event.mouseY);
                 break;
             default:
                 consumed = false;

@@ -150,8 +150,8 @@ public:
 
     // The same, for a FOLDER of one-library-per-script. Every library in it is
     // loaded, and the scene is rebound once at the end rather than after each
-    // - rebinding eleven times would have ten of them find scripts that have
-    // not been loaded yet.
+    // - rebinding once per library would have all but the last find scripts
+    // that have not been loaded yet.
     //
     // ONE THAT WILL NOT LOAD DOES NOT STOP THE OTHERS. It is reported and the
     // rest carry on, which is the whole point of building them separately: a

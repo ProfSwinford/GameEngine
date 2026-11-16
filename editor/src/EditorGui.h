@@ -72,6 +72,21 @@ public:
     static void SetGameInputFocus(bool focused);
     static bool HasGameInputFocus();
 
+    // ======================================================================
+    //  Hands the MOUSE to the game, by PLACE rather than by focus: the
+    //  rectangle is the Game view's picture in window pixels, and a click
+    //  inside it while `live` reaches the game's input map instead of being
+    //  claimed by the interface.
+    //
+    //  CALLED EVERY FRAME THE PANEL DRAWS, AND CLEARED ON EVERY FRAME IT DOES
+    //  NOT. A Game view that is closed, collapsed or behind another tab in
+    //  its dock node must not leave a live rectangle behind, or clicks on
+    //  whatever is drawn there instead would be posted to the game.
+    // ======================================================================
+    static void SetGameViewArea(float x, float y, float width, float height,
+                                bool live);
+    static void ClearGameViewArea();
+
     static bool IsInitialised();
 };
 

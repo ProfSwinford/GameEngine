@@ -17,9 +17,9 @@
 //  Not degraded assistance. None.
 //
 //  What it takes to fix that is small, and the editor already knows all of
-//  it: two include directories, a standard, three switches and one forced
-//  include - see CompileSettings in ScriptBuild.h. The only thing missing was
-//  somewhere to write it down that an IDE actually reads.
+//  it: two include directories, a standard, a handful of switches and one
+//  forced include - see CompileSettings in ScriptBuild.h. The only thing
+//  missing was somewhere to write it down that an IDE actually reads.
 //
 //  ==========================================================================
 //  TWO FILES, BECAUSE NOTHING READS BOTH

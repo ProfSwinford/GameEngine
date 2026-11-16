@@ -33,6 +33,7 @@ namespace fs = std::filesystem;
 
 constexpr const char* kCppPropertiesFile  = "CppProperties.json";
 constexpr const char* kCompileCommandsFile = "compile_commands.json";
+constexpr const char* kLaunchFile          = ".vscode/launch.json";
 
 // ---------------------------------------------------------------------------
 //  WRITTEN AS TEXT RATHER THAN BUILT WITH NLOHMANN, and for the reason
@@ -497,6 +498,100 @@ bool WriteCompileCommands(const fs::path& root,
     return WriteWholeFile(root / kCompileCommandsFile, text.str(), outError);
 }
 
+// ---------------------------------------------------------------------------
+//  .vscode/launch.json - ATTACHING A DEBUGGER TO THE RUNNING EDITOR.
+//
+//  THE OTHER TWO FILES DESCRIBE A PARSE. This one is the only thing in the
+//  project that turns the scripts' debug information into something somebody
+//  can use: the editor compiles every script with /Z7 and links it with
+//  /DEBUG, so a breakpoint in assets/scripts/Anything.cpp will bind - but
+//  only once a debugger is attached to the process that loaded it, and
+//  nothing anywhere said how.
+//
+//  ==========================================================================
+//  TWO CONFIGURATIONS, BECAUSE ONE OF THEM IS NEWER THAN SOME INSTALLS.
+//
+//  "program" on an attach request - naming the executable instead of picking
+//  a process - is recent in the C/C++ extension. An older one ignores the key
+//  and leaves a configuration that attaches to nothing, which is why the
+//  process-picker version is written beside it rather than instead of it.
+//
+//  requireExactSource IS TRUE ON PURPOSE. A script that fails to compile
+//  leaves the LAST GOOD library loaded - that is the whole point of one
+//  library per script - so the code running is not the code on screen. A
+//  debugger that bound to it anyway would show somebody stepping through
+//  lines that are not the ones executing, which is a worse lie than refusing.
+//
+//  ==========================================================================
+//  NOT WRITTEN OVER, which is the one way this differs from its two
+//  neighbours.
+//
+//  Those are generated descriptions nobody edits by hand - absolute paths,
+//  rebuilt whenever anything moves. A launch configuration is a file people
+//  add their own entries to, and quietly replacing it on a menu click would
+//  lose work. If one is there, it is left alone and the summary says so.
+//
+//  AND IT IS THE ONE OF THE THREE WORTH COMMITTING, which follows from the
+//  same difference: there is not an absolute path in it. CppProperties.json
+//  and compile_commands.json name this machine's engine headers and this
+//  machine's toolchain, so a copy from somebody else's checkout is not stale
+//  but WRONG - which is why ScriptIde.h says they are not worth committing
+//  and why .gitignore has both. This one says "attach to editor.exe" and
+//  means the same thing everywhere.
+//
+//  There is nothing for Visual Studio here, and that is not an oversight:
+//  launch.vs.json has no form for attaching to a running process on Windows.
+//  Ctrl+Alt+P once, then Shift+Alt+P - Reattach falls back to matching on the
+//  process name - is the whole of it, and the editor guide says so.
+// ---------------------------------------------------------------------------
+bool WriteLaunchJson(const fs::path& root, bool& outWritten, std::string& outError) {
+    outWritten = false;
+
+    const fs::path path = root / kLaunchFile;
+
+    std::error_code ec;
+    if (fs::exists(path, ec)) {
+        return true;   // somebody's own; see the note above
+    }
+
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        outError = "could not create " + path.parent_path().generic_string();
+        return false;
+    }
+
+    // STRICT JSON, no comments: this is read by VS Code's own parser, which
+    // does accept them - but the schema is served to people as JSON and a
+    // file that only one editor can read is not worth the explanation. The
+    // explanation is in the editor guide, where it can be longer.
+    std::ostringstream text;
+    text << "{\n";
+    text << "  \"version\": \"0.2.0\",\n";
+    text << "  \"configurations\": [\n";
+    text << "    {\n";
+    text << "      \"name\": \"Attach to the running editor\",\n";
+    text << "      \"type\": \"cppvsdbg\",\n";
+    text << "      \"request\": \"attach\",\n";
+    text << "      \"program\": \"editor.exe\",\n";
+    text << "      \"requireExactSource\": true\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"Attach to the running editor (pick it yourself)\",\n";
+    text << "      \"type\": \"cppvsdbg\",\n";
+    text << "      \"request\": \"attach\",\n";
+    text << "      \"processId\": \"${command:pickProcess}\",\n";
+    text << "      \"requireExactSource\": true\n";
+    text << "    }\n";
+    text << "  ]\n";
+    text << "}\n";
+
+    if (!WriteWholeFile(path, text.str(), outError)) {
+        return false;
+    }
+    outWritten = true;
+    return true;
+}
+
 } // namespace
 
 bool WriteIdeFiles(std::string& outSummary, std::string& outError) {
@@ -573,9 +668,23 @@ bool WriteIdeFiles(std::string& outSummary, std::string& outError) {
         return false;
     }
 
+    // NOT FATAL IF IT CANNOT BE WRITTEN, unlike the two above. Those are what
+    // the request was for; this one is a convenience for one editor, and a
+    // project folder that will not take a .vscode directory should not cost
+    // somebody the IntelliSense configuration they asked for.
+    bool        wroteLaunch = false;
+    std::string launchError;
+    if (!WriteLaunchJson(root, wroteLaunch, launchError)) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor, "{} was not written: {}", kLaunchFile,
+                        launchError);
+    }
+
     std::ostringstream summary;
     summary << "wrote " << kCppPropertiesFile << " and " << kCompileCommandsFile << " ("
             << described << " script" << (described == 1 ? "" : "s") << ")";
+    if (wroteLaunch) {
+        summary << " and " << kLaunchFile;
+    }
     outSummary = summary.str();
 
     ENGINE_LOG_INFO(eng::Channels::kEditor,
@@ -583,6 +692,16 @@ bool WriteIdeFiles(std::string& outSummary, std::string& outError) {
                     "and {} is for clangd and anything built on it",
                     outSummary, root.generic_string(), kCppPropertiesFile,
                     kCompileCommandsFile);
+
+    if (wroteLaunch) {
+        ENGINE_LOG_INFO(eng::Channels::kEditor,
+                        "{} attaches VS Code to this editor - scripts are compiled "
+                        "with debug information, so a breakpoint in one will bind",
+                        kLaunchFile);
+    } else if (launchError.empty()) {
+        ENGINE_LOG_INFO(eng::Channels::kEditor,
+                        "{} was already there and has been left alone", kLaunchFile);
+    }
     return true;
 }
 

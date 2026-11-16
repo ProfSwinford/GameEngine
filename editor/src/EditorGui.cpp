@@ -30,6 +30,17 @@ namespace {
 bool          g_initialised = false;
 SDL_Renderer* g_renderer    = nullptr;
 bool          g_gameFocus   = false;
+
+// The Game view's picture, in window pixels, as it was drawn LAST frame, and
+// whether the game was live in it. Published by GamePanel::Draw and read by
+// HookWantsMouse. All zero means "there is no game view to click into", which
+// is what a closed, collapsed or background-tabbed panel has to look like -
+// see GamePanel::OnHidden.
+float         g_gameX       = 0.0f;
+float         g_gameY       = 0.0f;
+float         g_gameW       = 0.0f;
+float         g_gameH       = 0.0f;
+bool          g_gameLive    = false;
 bool          g_layoutBuilt = false;
 
 // Moves a pre-existing imgui.ini to the place the editor now keeps it.
@@ -97,8 +108,38 @@ bool HookWantsKeyboard() {
     return ImGui::GetIO().WantCaptureKeyboard;
 }
 
-bool HookWantsMouse() {
-    return g_initialised && ImGui::GetIO().WantCaptureMouse;
+// ===========================================================================
+//  THE MOUSE IS HANDED OVER BY PLACE, WHERE THE KEYBOARD IS HANDED OVER BY
+//  FOCUS - and that difference is the whole of this function.
+//
+//  A key press has no location, so "who is typing" is the only question and
+//  focus answers it. A click has one, and the right question is "is this
+//  point inside the running game?" Focus would be the wrong test even though
+//  it is the one used above: with the Game view focused, clicking the
+//  Toolbar's Stop button is a click the editor does NOT want given away, and
+//  the game would fire a shot on its way to being stopped.
+//
+//  AGAINST THE EVENT'S OWN POSITION, never ImGui's cursor. See the note on
+//  GuiHooks::WantsMouse - this rectangle was latched during the last frame's
+//  draw, but a docked panel cannot move while a click is being delivered,
+//  whereas the cursor can cross the whole window during one long frame. The
+//  stale fact here is the one that does not change.
+//
+//  AND ONLY WHILE THE GAME IS LIVE, which carries ImGui's own hover test -
+//  see GamePanel::Draw. That is what stops a modal, a popup or a
+//  drag-and-drop hovering over the view from having its clicks swallowed by
+//  the game underneath it. ImGui already answers that correctly, and
+//  re-deriving it from a rectangle would not.
+// ===========================================================================
+bool HookWantsMouse(float windowX, float windowY) {
+    if (!g_initialised) {
+        return false;
+    }
+    if (g_gameLive && windowX >= g_gameX && windowY >= g_gameY &&
+        windowX < g_gameX + g_gameW && windowY < g_gameY + g_gameH) {
+        return false;
+    }
+    return ImGui::GetIO().WantCaptureMouse;
 }
 
 } // namespace
@@ -249,6 +290,19 @@ void EditorGui::SetGameInputFocus(bool focused) {
 }
 
 bool EditorGui::HasGameInputFocus() { return g_gameFocus; }
+
+void EditorGui::SetGameViewArea(float x, float y, float width, float height,
+                                bool live) {
+    g_gameX    = x;
+    g_gameY    = y;
+    g_gameW    = width;
+    g_gameH    = height;
+    g_gameLive = live;
+}
+
+void EditorGui::ClearGameViewArea() {
+    SetGameViewArea(0.0f, 0.0f, 0.0f, 0.0f, false);
+}
 
 void EditorGui::BeginDockspace() {
     if (!g_initialised) {

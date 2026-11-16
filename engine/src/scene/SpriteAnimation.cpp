@@ -425,14 +425,20 @@ void SpriteAnimationComponent::ShowFrame(std::size_t index) {
     }
     m_saidNoSprite = false;
 
-    // THE PICTURE THE SCENE FILE ASKED FOR, captured the first time it is
-    // taken away rather than reloaded later from TexturePath(). Putting it
-    // back is then a pointer copy that cannot fail and cannot log - which is
+    // THE PICTURE THE SPRITE IS AUTHORED TO SHOW, captured as it is taken
+    // away rather than reloaded later from TexturePath(). Putting it back
+    // is then a pointer copy that cannot fail and cannot log - which is
     // what makes it affordable in OnDetach, where a hundred dying animated
     // bullets would otherwise be a hundred fresh textures to fix a picture
     // nobody will see.
-    if (m_shown == kAuthoredFrame) {
+    //
+    // RE-CAPTURED WHENEVER THAT PICTURE CHANGES, not only on the first take-
+    // away. One string compare: m_texturePath moves exactly when the authored
+    // picture moves, and GetTexture() is still that picture here because
+    // nothing has shown a frame over it yet.
+    if (m_shown == kAuthoredFrame || sprite->TexturePath() != m_authoredPath) {
         m_authoredTexture = sprite->GetTexture();
+        m_authoredPath    = sprite->TexturePath();
     }
 
     // ONE POINTER COMPARE, and it skips most steps: at twelve frames a second
@@ -453,19 +459,45 @@ void SpriteAnimationComponent::RestoreAuthoredIfOurs() {
     SpriteComponent* sprite =
         (Owner() != nullptr) ? Owner()->Find<SpriteComponent>() : nullptr;
     if (sprite != nullptr) {
-        // ONLY IF IT IS STILL SHOWING ONE OF OUR FRAMES. A script or a
-        // drag-and-drop may have set the sprite's picture since, and putting
-        // the authored one back over that would undo somebody else's change.
+        // ======================================================================
+        //  TWO TESTS, AND NEITHER ONE IS THE OTHER.
+        //
+        //  THE SNAPSHOT IS ONLY GOOD WHILE THE AUTHORED PICTURE HAS NOT MOVED.
+        //  ShowFrame keeps the two in step, but ShowFrame DOES NOT RUN while a
+        //  clip is paused or has finished - Step returns before it - so a
+        //  script that authors a new picture in one of those states and then
+        //  stops arrives here with a snapshot from before it. Handing that
+        //  back would undo the script's own SetTexture, which is the opposite
+        //  of what Stop means. The path is the test because SetTexture writes
+        //  it and ShowTexture deliberately does not, so it moves exactly when
+        //  the authored picture moves. Both sides are empty on a sprite with
+        //  no picture, which compares equal and restores as before.
+        //
+        //  AND ONLY IF IT IS STILL SHOWING ONE OF OUR FRAMES. A script calling
+        //  ShowTexture directly changes the picture WITHOUT changing the path,
+        //  so the test above cannot see it; putting the authored picture back
+        //  over that would undo somebody else's change just as surely.
+        //
+        //  THE FRAME TEST ALONE IS NOT ENOUGH, which is the reason the first
+        //  one is here. A standing pose is commonly cut from the walk strip -
+        //  `Down` = f0, standDown, f2, standDown is an ordinary way to list a
+        //  clip - so the picture a script authors can BE one of m_frames, and
+        //  then "is it ours?" answers yes about a picture that is not ours.
+        // ======================================================================
+        const bool snapshotIsCurrent = sprite->TexturePath() == m_authoredPath;
+
         const TextureRef& showing = sprite->GetTexture();
         const bool        ours =
             std::find(m_frames.begin(), m_frames.end(), showing) != m_frames.end();
-        if (ours) {
+
+        if (snapshotIsCurrent && ours) {
             sprite->ShowTexture(m_authoredTexture);
         }
     }
 
     m_shown = kAuthoredFrame;
     m_authoredTexture.reset();
+    m_authoredPath.clear();
 }
 
 std::string_view SpriteAnimationComponent::CurrentFrameName() const {

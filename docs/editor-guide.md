@@ -196,6 +196,33 @@ the program dies on the first allocation that crosses the heap boundary. The
 check is a comparison rather than a date, so going *back* to an older engine
 rebuilds too.
 
+### How much rebuilds when you edit one script
+
+Usually **one file and one library**. Each script compiles into a translation
+unit of its own, and that unit carries its own class plus the classes it
+actually *resolves* — the ones it reaches through with `->`, calls `.Get()` on,
+or tests with `if (ref)`. Most scripts resolve none of the others, so most
+edits cost a second or two.
+
+Three cases cost more, and all three are visible in the Console line that says
+how many files are compiling:
+
+| what you edited | what rebuilds |
+| --- | --- |
+| a script nothing else reaches into | that one |
+| one of a pair that reach into each other | both |
+| a script with code **outside** its class — a free function, an `enum`, a constant | every script |
+
+The last one is the one to know about. Anything at file scope is reachable
+from every other script without an include, so the build keeps that script in
+every unit; it cannot tell who might be calling it. Putting a shared helper in
+a `.cpp` of its own instead — which is compiled once and linked into every
+script library — keeps it out of everybody's unit and off everybody's rebuild.
+
+**Holding a reference is free.** `Door door;`, `door.IsSet()`, setting it,
+clearing it and having it drawn in the Inspector all work on a name, so they
+create no dependency at all. Only resolving one does.
+
 ### "the compiled scripts were built by ..., but this is ..."
 
 If you see that line, the scripts in `.build/` were compiled for a different
@@ -716,7 +743,15 @@ frame-by-frame animation viewer.
 
 A non-looping animation **holds its last frame** when it finishes. Nothing is
 destroyed and nothing is reported - that is what "played once" means - and a
-script can ask `IsFinished()` to act on it.
+script can ask `IsFinished()` to act on it. That is usually the point: a door
+whose opening animation has finished stays open because the last frame is still
+on screen, with no script involved.
+
+**`Pause()` holds the frame too; `Stop()` is the one that hands the sprite its
+own image back.** If an animated entity should show a picture of your choosing
+when it is not animating, set that picture on the SpriteComponent and have the
+script call `Stop()` - see "Which picture is on screen when nothing is playing"
+in the scripting reference.
 
 Every copy of an entity starts its animation together, so forty enemies loaded
 from one scene file animate in lockstep. There is no per-entity start offset
@@ -1411,8 +1446,8 @@ always builds on the spot, whether anything changed or not.
 ### What an exported game gets
 
 **One `userContent.dll`**, not the per-script libraries. A shipped game is never
-going to recompile a script, and eleven libraries would mean eleven import
-tables and eleven lots of load-time work for nothing.
+going to recompile a script, and a library per script would mean an import
+table and a round of load-time work apiece, for nothing.
 
 It is the same object files linked a different way, so exporting straight after
 a build is a link and not a rebuild — a second or two.
@@ -1857,6 +1892,62 @@ to look. If it is not listed at all, either it did not compile - look further
 up the Console - or the file is missing its `ENGINE_REGISTER_SCRIPT` line,
 which the editor also warns about by name. The Inspector shows the same hook
 list for the selected entity's script.
+
+### Stepping through a script in a debugger
+
+**Put a breakpoint on a line of your own script and it will stop there.** Every
+script is compiled with debug information (`/Z7`) and every script library is
+linked with `/DEBUG`, so `.build/modules/` holds a `.pdb` beside each `.dll`
+and the line tables name your own file — `assets/scripts/Gun.cpp`, not the
+generated unit the compiler actually sees.
+
+Nothing needs switching on. It is not a setting, it does not depend on whether
+the editor was built Debug or Release, and it costs the running game nothing:
+the DLLs are byte-for-byte the same size they were before, with the same code
+in them.
+
+**Attach to the editor, not to your game.** The scripts run inside the editor
+process, so that is the process to attach to.
+
+| | |
+| --- | --- |
+| **Visual Studio** | Debug → Attach to Process (**Ctrl+Alt+P**), type `editor`, Attach. After that, **Shift+Alt+P** reattaches with no dialog at all — it falls back to matching on the process name, so it keeps working after a restart. |
+| **VS Code** | Run → Start Debugging (**F5**) and pick *Attach to the running editor*. That configuration is written for you: **Project → Write IDE Files** puts it in `.vscode/launch.json` beside the IntelliSense files. |
+
+Breakpoints bind as soon as the module loads, so you can set one, press
+Rebuild, and stop on the next frame.
+
+**Editing a script while stopped on a breakpoint works.** Saving triggers a
+rebuild, the editor unloads the libraries, relinks them and loads them again,
+and the debugger stays attached. Visual Studio holds a `.pdb` open until you
+*detach* — not until the scripts unload — so the editor removes each symbol
+file immediately before relinking it, which it is allowed to do even while the
+debugger is reading it. If something else has one open and will not let go,
+the Console says which file and why before the linker's own `LNK1201` arrives.
+
+**Two things are worth knowing before you go looking for them:**
+
+- **A breakpoint may bind in more than one place.** Every script library
+  contains the text of every script in the project — that is what lets one
+  script name another without a header — so `Gun.cpp:51` exists in all 23
+  modules, and only the copy in `Gun`'s own module ever runs. Stepping and
+  variables are unaffected; it is the breakpoint list that looks busy. To be
+  specific in Visual Studio, use a function breakpoint with a module
+  qualifier: `{,,Gun__65c7fbd9.dll}s_Gun::Gun::OnFixedUpdate`. Note the
+  namespace: inside a generated unit your class lives in `s_<Name>`.
+- **`.build/` grows by about 130 MB on a 23-script project** — roughly 6 MB of
+  symbols per script, most of it the engine's own type information, which
+  every module carries. It is all inside `.build/`, which is already ignored
+  by git and safe to delete.
+
+**If a breakpoint will not bind**, the usual cause is that the code running is
+not the code on screen: a script that fails to compile leaves the last working
+library loaded, deliberately, so the game keeps running while you fix it. The
+Console says so by name. Build it successfully and the breakpoint binds.
+
+**An exported game carries no symbols.** `userContent.dll` is linked without
+`/DEBUG`, so a shipped game is exactly what it was before this existed — same
+size, no `.pdb` beside it, nothing to leak.
 
 ### When the scripts will not link
 

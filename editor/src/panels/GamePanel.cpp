@@ -53,6 +53,11 @@ void GamePanel::Draw() {
 
     if (!m_target.IsValid()) {
         ImGui::TextDisabled("this view could not be created");
+
+        // NOTHING TO CLICK INTO. Returning without clearing would leave last
+        // frame's rectangle live over a panel that is now drawing an error
+        // message.
+        EditorGui::ClearGameViewArea();
         return;
     }
 
@@ -85,6 +90,24 @@ void GamePanel::Draw() {
         eng::Vec2{io.MousePos.x - origin.x, io.MousePos.y - origin.y},
         eng::Vec2{size.x, size.y},
         live && ImGui::IsMouseDown(ImGuiMouseButton_Left), live);
+
+    // ----------------------------------------------------------------------
+    //  AND THE SAME RECTANGLE TO THE EVENT PUMP, so that a click reaches the
+    //  game's INPUT MAP and not only its UI.
+    //
+    //  BOTH HALVES OF THE MOUSE ARE PUBLISHED FROM THIS ONE PLACE, out of the
+    //  one origin, size and live, which is what stops them ever disagreeing
+    //  about where the game is. A UI button that lights up while
+    //  Input::IsPressed("Fire") stays false is a very hard afternoon.
+    //
+    //  WHY IT IS NEEDED AT ALL: ImGui claims the mouse whenever the cursor is
+    //  over any of its windows, and the Game view IS one - so without this,
+    //  every click over the running game was marked consumed and InputMap
+    //  skipped it. Keyboard actions worked and mouse actions did not, while a
+    //  standalone build, which installs no GUI hooks, was fine. See
+    //  EditorGui::SetGameViewArea.
+    // ----------------------------------------------------------------------
+    EditorGui::SetGameViewArea(origin.x, origin.y, size.x, size.y, live);
 
     // FOCUS is what routes the keyboard, and it is deliberately focus rather
     // than merely hovering: hovering would mean the player stopped responding

@@ -1089,7 +1089,13 @@ void ScenePanel::RenderView() {
     //  same shape.
     // ======================================================================
     eng::Scene& scene = eng::Engine::Get().GetScene();
-    const eng::Vec2 gameViewport = eng::Engine::Get().GetCamera().ViewportSize();
+    // THE GAME VIEW'S SIZE, not the camera's current viewport. The camera's
+    // is whatever was last rendered into, and this panel draws BEFORE the
+    // Game panel does - so reading it here gave the window's size and this
+    // box outlined the whole window instead of what a player would see. The
+    // pointer's viewport is the Game view's picture, published by
+    // GamePanel::Draw; see eng::Pointer::InWorld for the same trap.
+    const eng::Vec2 gameViewport = eng::UISystem::PointerViewport();
 
     if (gameViewport.x > 0.0f && gameViewport.y > 0.0f) {
         scene.ForEach([&](eng::Entity& entity) {

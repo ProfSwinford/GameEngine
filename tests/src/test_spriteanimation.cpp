@@ -21,8 +21,13 @@
 //  No texture is ever created, so none of these are exercised:
 //    * SpriteComponent::ShowTexture actually changing what is drawn
 //    * the pinned frame vector keeping textures alive
-//    * the authored picture being captured and put back
 //    * the one-pointer-compare guard that skips most steps
+//
+//  WHICH PICTURE GETS PUT BACK IS REACHABLE, THOUGH, and that is where this
+//  area's one bug lived. The decision is made by comparing a path and a
+//  reference; both of those are real here and only the pixels behind them
+//  are not, so a hand-made Texture is enough to tell one picture from
+//  another. The last test in this file does exactly that.
 //  Those were checked by running the player over four hundred frames and
 //  reading the log: seven textures cut at the start and not one load line
 //  afterwards, which is the only way "is the right picture on screen, and is
@@ -56,6 +61,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -819,6 +825,120 @@ TEST_CASE("Stop rewinds and hands the sprite its own picture back") {
     played.anim->Play();
     played.Steps(1);
     CHECK(played.anim->CurrentFrame() == 0);
+}
+
+// ===========================================================================
+//  THE AUTHORED PICTURE IS WHATEVER THE SPRITE SAYS IT IS *NOW*.
+//
+//  A character script authors the standing picture for the way it is facing
+//  and plays the matching walk, both out of one sheet:
+//
+//      renderer->SetTexture(standing[facing]);
+//      anim->Play(walkAnimation[facing]);
+//
+//  ONE SHEET, so Play(AnimationRef) reduces to Play(name), and nothing on
+//  that path ends the take-away: m_shown stays a real frame from the first
+//  change of direction to the last. The snapshot used to be captured once,
+//  on that first take-away, and never again - so Stop() at the end of an
+//  attack put back the picture from the START OF THE PLAY SESSION, for the
+//  rest of it. The Inspector showed the new path the whole time, which is
+//  what made it look like anything but a stale pointer.
+//
+//  A HAND-MADE TEXTURE STANDS IN FOR THE ONE THERE IS NO RENDERER TO CUT.
+//  Texture is a plain struct whose destructor copes with a null `native`, so
+//  a shared_ptr to one is a picture that is DISTINGUISHABLE - the single
+//  thing ResourceManager cannot hand back in this binary, and the reason the
+//  rest of this area is out of reach. ShowTexture installs it without
+//  touching m_texturePath, exactly as playback does, which leaves the sprite
+//  in the state a running game is in all the time: a real picture, and an
+//  authored path that names it.
+// ===========================================================================
+TEST_CASE("a picture authored mid-clip is the one Stop puts back") {
+    const Played played("step-reauthor", "textures/hero.png#walk");
+
+    SpriteComponent* sprite = played.entity->Find<eng::SpriteComponent>();
+    REQUIRE(sprite != nullptr);
+
+    // The fixture authored #f3, and eight steps take it away - which is where
+    // the old code captured its one and only snapshot.
+    played.Steps(8);
+    REQUIRE(played.anim->CurrentFrame() == 1);
+    REQUIRE(sprite->TexturePath() == "textures/hero.png#f3");
+
+    // The script turns the character round MID-CLIP: a new authored path, and
+    // the picture that goes with it.
+    //
+    // #f0 ON PURPOSE, because it is also walk's first frame. A standing pose
+    // cut from the walk strip is the ordinary way to cut one, and it is the
+    // case a check on texture identity alone would miss - "the sprite is
+    // showing one of our frames" is true of the authored picture itself.
+    const TextureRef standing = std::make_shared<Texture>();
+    sprite->SetTexture("textures/hero.png#f0");
+    sprite->ShowTexture(standing);
+
+    played.Steps(8);
+    REQUIRE(played.anim->CurrentFrame() == 2);
+
+    played.anim->Stop();
+
+    // The picture it is authored to show NOW. Before this was fixed, the
+    // sprite got back whatever it was holding eight steps in.
+    CHECK(sprite->GetTexture() == standing);
+    CHECK(sprite->TexturePath() == "textures/hero.png#f0");
+}
+
+// ===========================================================================
+//  AND STOP DOES NOT UNDO A PICTURE AUTHORED WHILE NOTHING WAS PLAYING.
+//
+//  THE WINDOW THE TEST ABOVE CANNOT REACH. ShowFrame is what keeps the
+//  snapshot in step with the sprite, and ShowFrame does not run while a clip
+//  is paused or has finished - Step returns before it. So a script that
+//  authors a picture in one of those states and then stops gets here with a
+//  snapshot from before it, and Stop would hand that back OVER the script's
+//  own SetTexture.
+//
+//  #f0 IS THE WHOLE POINT, AGAIN. It is one of walk's frames, so the frame
+//  test alone says "yes, ours" about a picture that is not ours. A standing
+//  pose cut from the walk strip is the ordinary way to cut one - the project
+//  this was found in lists `Down` as f0, standDown, f2, standDown - so this
+//  is the common case rather than a contrived one.
+//
+//  WHAT IS CHECKED IS THAT THE SNAPSHOT IS NOT FORCED BACK. There is no
+//  renderer, so the picture SetTexture installs is empty and the frames are
+//  empty too; the hand-made texture is the only distinguishable reference,
+//  and it is the one Stop must NOT put back.
+// ===========================================================================
+TEST_CASE("Stop leaves a picture authored while paused alone") {
+    const Played played("step-paused-author", "textures/hero.png#walk");
+
+    SpriteComponent* sprite = played.entity->Find<eng::SpriteComponent>();
+    REQUIRE(sprite != nullptr);
+
+    // A distinguishable picture for the sprite to be holding when the clip
+    // first takes it away, so the snapshot is something this test can name.
+    const TextureRef authored = std::make_shared<Texture>();
+    sprite->ShowTexture(authored);
+    REQUIRE(sprite->TexturePath() == "textures/hero.png#f3");
+
+    played.Steps(8);
+    REQUIRE(played.anim->CurrentFrame() == 1);
+
+    // Paused: from here ShowFrame never runs, so nothing re-captures.
+    played.anim->Pause();
+    REQUIRE_FALSE(played.anim->IsPlaying());
+
+    // The script authors a new picture - and it is one of walk's own frames.
+    sprite->SetTexture("textures/hero.png#f0");
+    REQUIRE(sprite->GetTexture() != authored);
+
+    played.anim->Stop();   // no step in between
+
+    // The script's picture, not the one from before the pause.
+    CHECK(sprite->GetTexture() != authored);
+    CHECK(sprite->TexturePath() == "textures/hero.png#f0");
+
+    // And the component still forgot the frame it was on, as Stop promises.
+    CHECK(played.anim->CurrentFrame() == SpriteAnimationComponent::kAuthoredFrame);
 }
 
 TEST_CASE("an animation that does not play on start costs nothing until it does") {
