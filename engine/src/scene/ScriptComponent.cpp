@@ -493,6 +493,36 @@ bool ScriptRegistry::SetExposer(std::string_view scriptName,
     return true;
 }
 
+bool ScriptRegistry::SetActionHandlers(std::string_view   scriptName,
+                                       const char* const* methodNames,
+                                       const bool*        bound,
+                                       std::size_t        count,
+                                       void (*dispatch)(ScriptBehaviour&, std::size_t,
+                                                        const ActionEvent&)) {
+    if (dispatch == nullptr || methodNames == nullptr || count == 0) {
+        return false;
+    }
+
+    const auto it = Table().find(std::string(scriptName));
+    if (it == Table().end()) {
+        // Same reasoning as the exposer above: the generated call is compiled
+        // into the same unit as the registration and runs after it, so this
+        // cannot happen - and if it ever does, the symptom would be a script
+        // whose OnJump is silently never called, which is worth a line.
+        ENGINE_LOG_WARN(Channels::kScene,
+                        "action handlers arrived for '{}', which is not a registered "
+                        "script",
+                        scriptName);
+        return false;
+    }
+
+    it->second.actionHandlers     = methodNames;
+    it->second.actionHandlerBound = bound;
+    it->second.actionHandlerCount = count;
+    it->second.actionDispatch     = dispatch;
+    return true;
+}
+
 bool ScriptRegistry::IsRegistered(std::string_view scriptName) {
     return Table().contains(std::string(scriptName));
 }

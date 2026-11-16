@@ -364,6 +364,12 @@ class UIImageComponent;
 class UITextComponent;
 class UIButtonComponent;
 class UISliderComponent;
+class PlayerInputComponent;
+
+// Forward-declared rather than included. input/InputActions.h pulls in the
+// whole action-map asset, and this is the scene layer - a function pointer
+// taking an incomplete type by reference needs no more than the name.
+struct ActionEvent;
 
 class ScriptBehaviour {
 public:
@@ -841,6 +847,35 @@ public:
         CreateFn    create = nullptr;
         ScriptHooks hooks;
 
+        // ---- input action handlers -----------------------------------
+        //
+        //  Installed by the generated unit, right after the script's own
+        //  ENGINE_REGISTER_SCRIPT and inside the same namespace - which is
+        //  the one place in the generated file that runs exactly once per
+        //  script and names the class correctly in every build path.
+        //
+        //  HERE AND NOT IN ScriptHooks, which matters: that struct is built
+        //  inside the script DLL and passed across by VALUE, so a field
+        //  added to it is a script-ABI change and needs ENGINE_SCRIPT_ABI
+        //  bumped. An Entry is built on THIS side of the boundary from the
+        //  arguments, so adding to it costs nothing and cannot leave a
+        //  stale DLL passing a short struct.
+        //
+        //  The names are the METHOD names - "OnJump", not "Jump" - and the
+        //  array lives in the script DLL's own static storage, so it is
+        //  dropped with the Entry when the library unloads.
+        const char* const* actionHandlers     = nullptr;
+
+        // WHICH OF THEM CAN ACTUALLY BE CALLED. The scanner is allowed to
+        // guess, so the names above are candidates; this is the compiler's
+        // answer for each - false for a private one, or one whose
+        // parameters no action can fill. Dispatch skips them and the load
+        // report does not claim them.
+        const bool*        actionHandlerBound = nullptr;
+        std::size_t        actionHandlerCount = 0;
+        void (*actionDispatch)(ScriptBehaviour&, std::size_t,
+                               const ActionEvent&) = nullptr;
+
         // Which file this class was written in, straight from __FILE__.
         //
         // It earns its place twice. It lets the same script be registered
@@ -881,6 +916,22 @@ public:
     // the call arrives.
     static bool SetExposer(std::string_view scriptName,
                            void (*expose)(ScriptBehaviour*, ScriptFields&));
+
+    // ---- the action handlers a BUILD STEP found ---------------------
+    //
+    //  The same shape as SetExposer and for the same reason: the editor
+    //  reads the script's source, works out which methods look like input
+    //  handlers, and generates a unit that calls this. Nothing the author
+    //  writes mentions it.
+    //
+    //  False when no script by that name is registered - which is not an
+    //  error worth stopping for, only worth not pretending about.
+    static bool SetActionHandlers(std::string_view scriptName,
+                                  const char* const* methodNames,
+                                  const bool*        bound,
+                                  std::size_t        count,
+                                  void (*dispatch)(ScriptBehaviour&, std::size_t,
+                                                   const ActionEvent&));
 
     static bool         IsRegistered(std::string_view scriptName);
     static const Entry* Find(std::string_view scriptName);

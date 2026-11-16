@@ -2407,6 +2407,8 @@ TEST_CASE("the alias macro names a ComponentRef for every component") {
                                  eng::ComponentRef<eng::UIButtonComponent>>);
     static_assert(std::is_same_v<UISliderComponent,
                                  eng::ComponentRef<eng::UISliderComponent>>);
+    static_assert(std::is_same_v<PlayerInputComponent,
+                                 eng::ComponentRef<eng::PlayerInputComponent>>);
 
     // AND A LOOKUP UNWRAPS BACK TO THE COMPONENT, which is what makes
     // `renderer = Find<SpriteComponent>();` compile at all.
@@ -2440,7 +2442,13 @@ TEST_CASE("every component's bare name scans as a reference") {
              Expected{"    UIImageComponent a;", "UIImageComponent"},
              Expected{"    UITextComponent a;", "UITextComponent"},
              Expected{"    UIButtonComponent a;", "UIButtonComponent"},
-             Expected{"    UISliderComponent a;", "UISliderComponent"}}) {
+             Expected{"    UISliderComponent a;", "UISliderComponent"},
+             Expected{"    PlayerInputComponent a;", "PlayerInputComponent"},
+             // The SHORT spelling too, because it is a prefix of the long
+             // one and lives in the other half of kTypeSpellings - so this
+             // row and the one above it are what prove the prefix cannot
+             // swallow the longer name.
+             Expected{"    PlayerInput a;", "PlayerInputComponent"}}) {
         const ScriptSourceInfo info = ScanScriptSource(Wrap(e.decl));
         REQUIRE(Var(info, "a") != nullptr);
         CHECK(Var(info, "a")->fieldType == ScriptFieldType::Entity);
@@ -2508,4 +2516,229 @@ TEST_CASE("several of them in one script are all reported") {
     REQUIRE(found.size() == 2);
     CHECK(found[0].memberName == "a");
     CHECK(found[1].memberName == "b");
+}
+
+// ===========================================================================
+//  ActionHandlerDeclarations - which methods look like input action handlers.
+//
+//  THE SCANNER IS ALLOWED TO GUESS, which is why these cases look lenient.
+//  Everything it finds becomes a call wrapped in `if constexpr (requires
+//  ...)`, so a wrong guess compiles away instead of breaking a build. What it
+//  must NOT do is miss a real handler, or claim one of the engine's own
+//  fixed hooks.
+// ===========================================================================
+
+TEST_CASE("a method named after an action is found") {
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        class Player : public MyScriptBehaviour {
+        public:
+            void OnJump() { }
+            void OnMove(eng::Vec2 direction) { m_move = direction; }
+            void OnLean(float amount) { }
+        };
+    )");
+
+    REQUIRE(found.size() == 3);
+    CHECK(found[0] == "OnJump");
+    CHECK(found[1] == "OnMove");
+    CHECK(found[2] == "OnLean");
+}
+
+TEST_CASE("the engine's own hooks are not actions") {
+    // OnStart is not an action called "Start". Leaving these in would mean an
+    // action somebody named "Update" called the frame hook a second time.
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        class Thing : public MyScriptBehaviour {
+        public:
+            void OnStart() { }
+            void OnUpdate() { }
+            void OnFixedUpdate() { }
+            void OnDestroy() { }
+            void OnExpose(eng::ScriptVars& vars) { }
+            void OnTriggerEnter(eng::EntityId other) { }
+            void OnTriggerStay(eng::EntityId other) { }
+            void OnTriggerExit(eng::EntityId other) { }
+            void OnCollisionEnter(const eng::Collision2D& hit) { }
+            void OnCollisionStay(eng::EntityId other) { }
+            void OnCollisionExit(eng::EntityId other) { }
+            void OnEnable() { }
+            void OnDisable() { }
+        };
+    )");
+
+    CHECK(found.empty());
+}
+
+TEST_CASE("a capital after On is required, so ordinary words are not handlers") {
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        void Once() { }
+        void Only(int x) { }
+        void OnePerSecond() { }
+        void On() { }
+    )");
+
+    // "Once" would otherwise be a handler for an action called "ce".
+    CHECK(found.empty());
+}
+
+TEST_CASE("what is not a handler declaration at all") {
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        int OnJump();                  // not void
+        void OnJump;                   // no parameter list
+        auto f = [](){ OnFire(); };    // a CALL, with no void before it
+        OnReload();                    // likewise
+    )");
+
+    CHECK(found.empty());
+}
+
+TEST_CASE("a handler declared and then defined is one handler") {
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        class Gun : public MyScriptBehaviour {
+        public:
+            void OnFire();
+        };
+        void Gun::OnFire() { }
+    )");
+
+    REQUIRE(found.size() == 1);
+    CHECK(found[0] == "OnFire");
+}
+
+TEST_CASE("a guess that is wrong is harmless, and that is the design") {
+    // ALL THREE OF THESE ARE FOUND, and none of them is really a handler:
+    // one is private, one is in a comment, one takes something no action can
+    // supply. Each becomes a generated call guarded by `if constexpr
+    // (requires ...)`, which fails and compiles the call away - so being
+    // wrong here costs nothing, and that is precisely why the scanner is
+    // allowed to be this simple. ScriptVars.h states the rule it is obeying:
+    // generated code can never stop a script from compiling.
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        class Odd : public MyScriptBehaviour {
+        private:
+            void OnSecret() { }
+        public:
+            // void OnGhost() { }
+            void OnHit(eng::EntityId other) { }
+        };
+    )");
+
+    REQUIRE(found.size() == 3);
+    CHECK(found[0] == "OnSecret");
+    CHECK(found[1] == "OnGhost");
+    CHECK(found[2] == "OnHit");
+}
+
+TEST_CASE("spacing and qualifiers do not matter") {
+    const std::vector<std::string> found = ActionHandlerDeclarations(R"(
+        virtual void OnJump();
+        void    OnFire   ( ) { }
+        inline void OnMove(eng::Vec2 v) { }
+    )");
+
+    REQUIRE(found.size() == 3);
+    CHECK(found[0] == "OnJump");
+    CHECK(found[1] == "OnFire");
+    CHECK(found[2] == "OnMove");
+}
+
+// ===========================================================================
+//  ENGINE_SCRIPT_MAYBE_ACTIONS - who is allowed to be strict about a script
+//  that nothing would ever call.
+//
+//  A script whose only method is OnJump() has no lifecycle hook at all, and
+//  yet a Player Input really does call it - so the catch-all static_assert in
+//  ScriptHooks.h needs an escape hatch, and this macro is it. The header
+//  defaults it to TRUE on purpose: a fresh checkout, the game_scripts
+//  type-check, an IDE before the first build and the compile check behind the
+//  documentation's examples all parse a script with no generated file
+//  anywhere, so none of them knows the answer, and being strict on a guess
+//  refused code that was fine.
+//
+//  WHICH LEAVES THE GENERATOR AS THE ONLY PLACE THAT CAN SAY "false". The
+//  bracketing these cases pin is now the whole of what still makes the
+//  catch-all fire for a genuinely dead script: take it away and the assert
+//  silently stops refusing anything, with every other test in this suite
+//  still green.
+// ===========================================================================
+
+namespace {
+
+// The value in force where a body STARTS: the last #define at or before it,
+// which is what the compiler will have seen there. Checking by position and
+// not merely by presence is the point - a define that drifts below the body
+// it describes reads identically in a whole-file search and does nothing.
+std::string MaybeActionsAt(const std::string& unit, const std::string& realPath) {
+    const std::string marker = "#line 1 \"" + realPath + "\"";
+    const std::size_t body   = unit.find(marker);
+    REQUIRE(body != std::string::npos);
+
+    const std::string define = "#define ENGINE_SCRIPT_MAYBE_ACTIONS ";
+    const std::size_t at     = unit.rfind(define, body);
+    REQUIRE(at != std::string::npos);
+
+    const std::size_t from = at + define.size();
+    return unit.substr(from, unit.find('\n', from) - from);
+}
+
+} // namespace
+
+TEST_CASE("the generated unit is strict around a body with no handlers") {
+    const ScriptSourceInfo info = ScanScriptSource(R"(
+        class Quiet final : public eng::ScriptBehaviour {
+        public:
+            void OnUpdate() {}
+        };
+        ENGINE_REGISTER_SCRIPT(Quiet)
+    )");
+
+    const std::vector<ScriptUnitSource> sources{
+        UnitSource("Quiet", "class Quiet final : public eng::ScriptBehaviour {\n"
+                            "public:\n    void OnUpdate() {}\n};\n"),
+        UnitSource("Noisy", "class Noisy final : public eng::ScriptBehaviour {\n"
+                            "public:\n    void OnJump() {}\n};\n"),
+    };
+
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/p/.build/u.cpp");
+
+    // Quiet declares no handler, so the catch-all has to stay free to refuse
+    // it on the day somebody deletes its OnUpdate as well.
+    CHECK(MaybeActionsAt(unit, "C:/p/assets/scripts/Quiet.cpp") == "false");
+
+    // Noisy's ONLY method is a handler. Same unit, opposite answer - which is
+    // what resetting between bodies is for.
+    CHECK(MaybeActionsAt(unit, "C:/p/assets/scripts/Noisy.cpp") == "true");
+}
+
+TEST_CASE("the generated unit leaves the permissive answer behind it") {
+    // Everything past the last body - the registrars, the dispatchers, and
+    // whatever a later edit puts below them - is not a script body, so the
+    // value in force there should be the one the header would have given.
+    const ScriptSourceInfo info = ScanScriptSource(R"(
+        class Quiet final : public eng::ScriptBehaviour {
+        public:
+            void OnUpdate() {}
+        };
+        ENGINE_REGISTER_SCRIPT(Quiet)
+    )");
+
+    const std::vector<ScriptUnitSource> sources{
+        UnitSource("Quiet", "class Quiet final : public eng::ScriptBehaviour {\n"
+                            "public:\n    void OnUpdate() {}\n};\n"),
+    };
+
+    const std::string unit = GenerateScriptUnit(info, sources, "C:/p/.build/u.cpp");
+
+    const std::string define = "#define ENGINE_SCRIPT_MAYBE_ACTIONS ";
+    const std::size_t last   = unit.rfind(define);
+    REQUIRE(last != std::string::npos);
+    CHECK(unit.compare(last, define.size() + 4, define + "true") == 0);
+}
+
+TEST_CASE("a path with no generator assumes a script may have handlers") {
+    // COMPILED, not searched for, so the strict answer cannot come back by
+    // accident. This is the value a handler-only script is judged by in every
+    // build that has not run the generator, and `false` here is exactly what
+    // refused `class PauseMenu` whose one method was OnPause().
+    CHECK(ENGINE_SCRIPT_MAYBE_ACTIONS);
 }

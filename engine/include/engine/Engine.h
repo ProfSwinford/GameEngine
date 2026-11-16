@@ -34,6 +34,7 @@
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/input/InputMap.h>
+#include <engine/input/PlayerInputComponent.h>
 #include <engine/input/Pointer.h>
 #include <engine/math/Mat3.h>
 #include <engine/math/Overlap.h>
@@ -256,6 +257,9 @@ typedef eng::ComponentRef<eng::SpriteAnimationComponent> SpriteAnimator;
 typedef eng::ComponentRef<eng::CameraComponent>          CameraRef;
 typedef eng::ComponentRef<eng::TilemapComponent>         Tilemap;
 typedef eng::ComponentRef<eng::SpinComponent>            SpinRef;
+
+// Unity's own spelling for this one, and it was free.
+typedef eng::ComponentRef<eng::PlayerInputComponent>     PlayerInput;
 
 // The concrete colliders. Unity's names exactly, and the abstract base is
 // deliberately absent - see the note below on why Collider2D is a pointer.

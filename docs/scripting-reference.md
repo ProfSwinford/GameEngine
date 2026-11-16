@@ -734,6 +734,72 @@ costs. It is worth paying for an edge; for an axis it is a frame of latency for
 nothing, so leave those where they are unless you want every input read in one
 place.
 
+### Being told instead of asking: action maps
+
+Everything above is the **polling** half, and it is unchanged. There is a
+second, separate half where the engine calls a method on your script when an
+action happens — Unity ships both for the same reason, and so does this:
+polling reads better when input drives one character every frame, events read
+better when the input is occasional or has to reach several places.
+
+Write the method and nothing else. No registration, no subscription:
+
+```cpp
+class PlayerShip final : public eng::ScriptBehaviour {
+public:
+    void OnJump() { m_jumpQueued = true; }            // the action "Jump"
+    void OnMove(eng::Vec2 direction) { m_move = direction; }
+    void OnLean(float amount) { m_lean = amount; }
+};
+```
+
+The method is `On` plus the action's name. It may take the value, a single
+number, or nothing at all — whichever you declare is the one that gets called.
+**It must be public**, because the engine calls it from outside the class.
+
+The actions themselves live in a **`.oinput` file** under `assets/input/`, one
+file holding several **action maps**, with one map current at a time. Put a
+**Player Input** component on the entity, point it at the file, and name the
+map it starts on. Edit the file in the **Input Actions** window — double-click
+it in the Assets panel, or **View → Input Actions**, where **+ New** writes one
+bound to the same controls `config/engine.json` already uses. Every type named
+here has a page in the [API reference](api/index.html) under **Input**.
+
+This is a different system from the `config/engine.json` contexts above. A
+project can use either, or both, and they never have to agree.
+
+**When each one fires** is Unity's rule exactly, and it is worth knowing:
+
+| Action type | Called |
+|---|---|
+| `Button` | once, on the **press**. There is no call on the release — poll `IsReleased` for that. |
+| `Value` | on every change, **and once more with zero** when it stops. |
+| `Pass Through` | on every change, with no phases at all. |
+
+That final zero is the point of a `Value` action: a script that started moving
+when `OnMove` handed it a direction is told when the direction becomes nothing,
+so it cannot walk into a wall forever.
+
+From another script, hold a reference and change what the controls mean:
+
+```cpp
+class PauseMenu final : public eng::ScriptBehaviour {
+public:
+    PlayerInput player;          // drag the Player entity onto this
+
+    void Open()  { player->SwitchCurrentActionMap("Menu"); }
+    void Close() { player->SwitchCurrentActionMap("Gameplay"); }
+};
+```
+
+A map **replaces** rather than layering — unlike a context — so while `Menu` is
+current nothing in `Gameplay` is consulted at all. That is what lets `Escape`
+mean *Pause* in one map and *Cancel* in the other with nothing to arbitrate
+between them. Switching with a key still held does the two sensible things: a
+`Value` action adopts it (hold a direction while a level loads and you walk
+forward), a `Button` waits for a fresh press (so the key that opened the menu
+does not immediately close it).
+
 The mouse, which cannot be rebound and so is not an action:
 
 ```cpp
@@ -1248,6 +1314,7 @@ one you already know. All of these name the same type:
 | `SpinComponent` | `SpinRef` | | `UIRectComponent` | `UIRectRef` |
 | `UIImageComponent` | `UIImageRef` | | `UITextComponent` | `UITextRef` |
 | `UIButtonComponent` | `UIButtonRef` | | `UISliderComponent` | `UISliderRef` |
+| `PlayerInputComponent` | `PlayerInput` | | | |
 
 `eng::ComponentRef<eng::TheComponent>` is accepted as well, so a tilemap slot
 can be spelled any of three ways and they are one type:

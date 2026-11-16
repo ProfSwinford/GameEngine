@@ -774,6 +774,40 @@ to load the moment it is dropped on something.
 
 ---
 
+## Input Actions
+
+**View → Input Actions**, or double-click a `.oinput` in the Assets panel.
+
+Three panes, left to right: the **action maps** in the file, the **actions** in
+the selected map with their bindings under them, and the **properties** of
+whatever is selected. `+` on each adds at that level.
+
+**Press `+ New`** — in this window or `+ Input` in the Assets panel — to make
+one. It is not empty: a new file starts bound to the same controls
+`config/engine.json` already binds, so it is playable the moment it exists. It
+refuses to overwrite a file that is already there.
+
+A file holds **several maps and one is current at a time**, so `Escape` can
+mean *Pause* while playing and *Cancel* while the menu is up. A map *replaces*
+rather than layering - unlike an input context - so while one is current,
+nothing in any other map is consulted at all.
+
+Under each action the window shows **the method it will call**. That is worth
+reading before you write the handler: the name drops punctuation and
+upper-cases only the first letter, so an action called `move camera` calls
+`OnMovecamera`, not `OnMoveCamera`.
+
+To use the file, put a **Player Input** component on an entity, point its
+*Actions* field at it, and pick a *Default map*. Scripts on that entity then
+answer actions by declaring public methods - see **Being told instead of
+asking** in [scripting-reference.md](scripting-reference.md).
+
+It edits a copy and saves through the file, so a half-typed rename cannot
+reach a running scene. **Save** is greyed out until something changes, and
+**Revert** throws the changes away.
+
+---
+
 ## Console
 
 The log. Everything the engine and your own code write, with filters by level,
@@ -1574,14 +1608,15 @@ variables of. That is `Color`, `Vec2`, `Vector2`, `EntityRef`, `PrefabRef`,
 `TransformRef`, `SpriteRenderer`, `SpriteAnimator`, `Rigidbody2D`, `CameraRef`,
 `Tilemap`, `SpinRef`, `BoxCollider2D`, `CircleCollider2D`, `CapsuleCollider2D`,
 `EdgeCollider2D`, `PolygonCollider2D`, `TilemapCollider2D`, `UIRectRef`,
-`UIImageRef`, `UITextRef`, `UIButtonRef`, `UISliderRef` — and every
+`UIImageRef`, `UITextRef`, `UIButtonRef`, `UISliderRef`, `PlayerInput` — and every
 component's **own** name, because that is a reference too: `TransformComponent`,
 `SpriteComponent`, `SpriteAnimationComponent`, `Rigidbody2DComponent`,
 `CameraComponent`, `TilemapComponent`, `TilemapColliderComponent`,
 `SpinComponent`, `ScriptComponent`, `BoxColliderComponent`,
 `CircleColliderComponent`, `CapsuleColliderComponent`, `EdgeColliderComponent`,
 `PolygonColliderComponent`, `UIRectComponent`, `UIImageComponent`,
-`UITextComponent`, `UIButtonComponent` and `UISliderComponent`.
+`UITextComponent`, `UIButtonComponent`, `UISliderComponent` and
+`PlayerInputComponent`.
 
 The reason is that a script's name becomes available to every other script
 without an include — that is what lets you write `Door door;`. So a script

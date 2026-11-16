@@ -118,4 +118,6 @@
     using UIImageComponent = ::eng::ComponentRef<::eng::UIImageComponent>;     \
     using UITextComponent = ::eng::ComponentRef<::eng::UITextComponent>;       \
     using UIButtonComponent = ::eng::ComponentRef<::eng::UIButtonComponent>;   \
-    using UISliderComponent = ::eng::ComponentRef<::eng::UISliderComponent>;
+    using UISliderComponent = ::eng::ComponentRef<::eng::UISliderComponent>;   \
+    using PlayerInputComponent =                                               \
+        ::eng::ComponentRef<::eng::PlayerInputComponent>;

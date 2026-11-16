@@ -1,0 +1,88 @@
+{
+  "_comment": "An Input Actions asset. ONE file, SEVERAL action maps, one of them current at a time - the same shape as Unity's .inputactions. Drop this on a Player Input component and name which map starts current; switching to another map while the game runs is a pointer change inside this already-loaded file, with no disk access. This is NOT config/engine.json's \"input\" section: that one is the polling system (Input::IsPressed), it is project-wide, and nothing here affects it. A project may use either or both.",
+
+  "_bindings": "A binding is \"Device.Name\", spelled exactly as config/engine.json spells it - \"Key.\" followed by any key name SDL knows, or \"Mouse.\" followed by Left, Right or Middle. SDL's modifier keys are TWO WORDS: \"Key.Left Ctrl\", not \"Key.LCtrl\". A STRING is one control; an OBJECT is a composite built out of several.",
+
+  "inputActions": 1,
+  "defaultMap": "Gameplay",
+
+  "maps": [
+    {
+      "name": "Gameplay",
+      "actions": [
+        {
+          "_note": "One action instead of the four MoveLeft/Right/Up/Down that config/engine.json needs, which is most of the point. A script writes void OnMove(eng::Vec2 value) and is handed the direction already worked out. Two whole composites, so WASD and the arrow keys both work and holding one of each does not add up - the louder one wins. Diagonals are cut back to length 1 by default, the same correction GetAxis2D makes.",
+          "name": "Move",
+          "type": "Value",
+          "controlType": "Vector2",
+          "bindings": [
+            { "composite": "2DVector",
+              "up": "Key.W",  "down": "Key.S",    "left": "Key.A",    "right": "Key.D" },
+            { "composite": "2DVector",
+              "up": "Key.Up", "down": "Key.Down", "left": "Key.Left", "right": "Key.Right" }
+          ]
+        },
+        {
+          "_note": "A Button raises on the PRESS and not on the release, which is Unity's rule. A script writes void OnJump().",
+          "name": "Jump",
+          "type": "Button",
+          "bindings": ["Key.Space"]
+        },
+        {
+          "_note": "Two bindings, one action. Either one raises OnFire() once - not twice - and letting go of only one of them is not a release.",
+          "name": "Fire",
+          "type": "Button",
+          "bindings": ["Mouse.Left", "Key.Return"]
+        },
+        {
+          "name": "Interact",
+          "type": "Button",
+          "bindings": ["Key.E"]
+        },
+        {
+          "_note": "Escape is Pause here and Cancel in the Menu map below. That is the reason this file holds both: a map REPLACES rather than layering, so while Menu is current nothing in Gameplay is consulted at all and there is nothing to arbitrate between the two meanings.",
+          "name": "Pause",
+          "type": "Button",
+          "bindings": ["Key.Escape"]
+        },
+        {
+          "_note": "A 1DAxis composite: one number from -1 to 1. A script writes void OnLean(float value).",
+          "name": "Lean",
+          "type": "Value",
+          "controlType": "Axis",
+          "bindings": [
+            { "composite": "1DAxis", "positive": "Key.E", "negative": "Key.Q" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "Menu",
+      "actions": [
+        {
+          "name": "Navigate",
+          "type": "Value",
+          "controlType": "Vector2",
+          "bindings": [
+            { "composite": "2DVector",
+              "up": "Key.Up", "down": "Key.Down", "left": "Key.Left", "right": "Key.Right" },
+            { "composite": "2DVector",
+              "up": "Key.W",  "down": "Key.S",    "left": "Key.A",    "right": "Key.D" }
+          ]
+        },
+        {
+          "name": "Submit",
+          "type": "Button",
+          "bindings": ["Key.Return", "Key.Space", "Mouse.Left"]
+        },
+        {
+          "_note": "Switching to this map while Escape is still held does NOT fire Cancel - a button held from before the switch is ignored until it is let go of, or opening the menu would instantly close it again. A Value action like Navigate behaves the opposite way and adopts whatever is already held, which is Unity's initial state check.",
+          "name": "Cancel",
+          "type": "Button",
+          "bindings": ["Key.Escape"]
+        }
+      ]
+    }
+  ]
+}

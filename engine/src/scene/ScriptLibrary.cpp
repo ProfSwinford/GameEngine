@@ -144,10 +144,50 @@ bool LoadOne(std::string_view virtualPath, std::string& outError) {
 // reads as one list.
 void LogLoadedScripts() {
     ScriptRegistry::ForEachEntry([](const char* name, const ScriptRegistry::Entry& e) {
-        const std::string hooks = DescribeHooks(e.hooks);
-        if (e.hooks.start == nullptr && e.hooks.update == nullptr &&
-            e.hooks.fixedUpdate == nullptr &&
-            e.hooks.destroy == nullptr && !e.hooks.AnyContact()) {
+        // ---- the input action handlers, and ONLY the ones that bound -----
+        //
+        //  THIS IS THE ONE PLACE THAT CAN BE EXACT ABOUT THEM. The
+        //  compile-time check in ScriptHooks.h cannot see an action handler
+        //  at all, because the name comes from a .oinput asset no header has
+        //  read - so a script driven entirely by a Player Input is reported
+        //  as having nothing unless this says otherwise.
+        //
+        //  AND THE SCANNER IS ALLOWED TO GUESS, so the registered list is
+        //  candidates rather than handlers. actionHandlerBound carries the
+        //  compiler's verdict on each. Naming a private OnSecret here as an
+        //  input handler would send somebody hunting for a binding that was
+        //  never the problem.
+        std::string inputHandlers;
+        for (std::size_t i = 0; i < e.actionHandlerCount; ++i) {
+            if (e.actionHandlerBound != nullptr && !e.actionHandlerBound[i]) {
+                continue;
+            }
+            inputHandlers += inputHandlers.empty() ? "input: " : ", ";
+            inputHandlers += e.actionHandlers[i];
+        }
+
+        // DescribeHooks puts "NO HOOKS - check the spelling..." where an empty
+        // list would be, which is right when there is nothing else and flatly
+        // contradictory beside a list of input handlers. So the fixed-hook
+        // test is made here and the placeholder asked for only when it is
+        // still true.
+        const bool noFixedHooks =
+            e.hooks.start == nullptr && e.hooks.update == nullptr &&
+            e.hooks.fixedUpdate == nullptr && e.hooks.destroy == nullptr &&
+            !e.hooks.AnyContact() && e.hooks.expose == nullptr;
+
+        std::string hooks;
+        if (noFixedHooks && !inputHandlers.empty()) {
+            hooks = inputHandlers;
+        } else if (inputHandlers.empty()) {
+            hooks = DescribeHooks(e.hooks);
+        } else {
+            hooks = DescribeHooks(e.hooks) + ", " + inputHandlers;
+        }
+
+        const bool nothingWouldRun = noFixedHooks && inputHandlers.empty();
+
+        if (nothingWouldRun) {
             ENGINE_LOG_WARN(Channels::kScene, "    script '{}' has {}", name, hooks);
         } else {
             ENGINE_LOG_INFO(Channels::kScene, "    script '{}' - {}", name, hooks);

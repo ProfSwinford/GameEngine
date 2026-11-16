@@ -50,6 +50,7 @@ inline constexpr const char* kPayloadScript  = "ASSET_SCRIPT";
 inline constexpr const char* kPayloadFont    = "ASSET_FONT";
 inline constexpr const char* kPayloadTile    = "ASSET_TILE";
 inline constexpr const char* kPayloadPrefab  = "ASSET_PREFAB";
+inline constexpr const char* kPayloadInput   = "ASSET_INPUT";
 
 // Everything else the Assets panel can pick up: a FOLDER, and any file whose
 // kind nothing here recognises. Neither of those means anything to an entity,
@@ -68,7 +69,7 @@ inline constexpr const char* kPayloadAssetItem = "ASSET_ITEM";
 // place is what stops the two ends drifting apart as kinds are added.
 inline constexpr const char* kAllAssetPayloads[] = {
     kPayloadTexture, kPayloadScene, kPayloadScript, kPayloadFont, kPayloadTile,
-    kPayloadPrefab,  kPayloadAssetItem,
+    kPayloadPrefab,  kPayloadInput,   kPayloadAssetItem,
 };
 
 enum class AssetKind {
@@ -85,6 +86,11 @@ enum class AssetKind {
     // A .oprefab: an entity and its children, saved, with every instance of
     // it still linked back. See engine/include/engine/scene/Prefab.h.
     Prefab,
+
+    // A .oinput: several action maps, one of which is current at a time.
+    // Dropped on a Player Input component. See
+    // engine/include/engine/input/InputActionAsset.h.
+    InputActions,
 };
 
 // Works out what kind of file this is, from its EXTENSION and its folder -

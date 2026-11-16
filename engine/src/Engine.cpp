@@ -7,6 +7,7 @@
 // ============================================================================
 
 #include <engine/Engine.h>
+#include <engine/input/InputActions.h>
 
 #include <SDL3/SDL.h>
 
@@ -133,6 +134,7 @@ bool Engine::SceneSubsystem::Init(const BootConfig&) {
     SpriteAnimationSystem::RegisterComponentTypes();
     ScriptSystem::RegisterComponentTypes();
     UISystem::RegisterComponentTypes();
+    PlayerInputSystem::RegisterComponentTypes();
 
     // The camera is a component like any other - see CameraComponent.h.
     ComponentFactory::Register(CameraComponent::kTypeName,
@@ -187,6 +189,8 @@ void Engine::SceneSubsystem::Shutdown() {
     SpriteRenderSystem::Clear();
     TilemapRenderSystem::Clear();
     TileLibrary::Clear();
+    PlayerInputSystem::Clear();
+    InputActionLibrary::Clear();
     CameraSystem::Clear();
     Scene::SetActive(nullptr);
     engine.m_scene.reset();
@@ -560,6 +564,8 @@ bool Engine::EnterPlayMode(std::string& outError) {
     // while you were editing is not the game's business, and a key that was
     // somehow left down would have the player moving before the first frame.
     InputMap::ResetState();
+    InputActions::ReleaseAll();
+    PlayerInputSystem::ResetAll();
 
     ENGINE_LOG_INFO(Channels::kEditor, "play mode started");
     return true;
@@ -577,6 +583,8 @@ void Engine::ExitPlayMode() {
     // precisely how the key gets stuck, and the editor itself should not be
     // left believing something is held while the game is not even running.
     InputMap::ResetState();
+    InputActions::ReleaseAll();
+    PlayerInputSystem::ResetAll();
 
     // Anything still queued belongs to the play session and must not be
     // applied to the restored scene - a destroy queued on the last frame of
@@ -632,6 +640,18 @@ bool Engine::BeginFrame() {
     m_events.Poll();
     InputMap::Update(m_events);
 
+    // THE PHYSICAL SET, AND IT IS NOT GATED ON ANYTHING - deliberately, and
+    // beside InputMap's own update because the reason is identical. Poll
+    // clears its list every frame, so an event nobody reads is gone for
+    // good: gate this and letting go of a key while the game is paused
+    // leaves that key held for the rest of the session. Deciding what the
+    // presses MEAN is a separate call that is gated; see Simulate, and the
+    // long note in input/InputActions.h.
+    //
+    // It takes the pump rather than the events so that whatever the editor's
+    // GUI claimed is skipped here exactly as InputMap skips it.
+    InputActions::Sample(m_events);
+
     if (m_events.QuitRequested()) {
         m_quitRequested = true;
     }
@@ -655,6 +675,25 @@ bool Engine::BeginFrame() {
 }
 
 void Engine::Simulate() {
+    // INPUT EVENTS BEFORE THE STEPS, and once per frame rather than once per
+    // step. A frame may ask for four steps or none, so dispatching inside the
+    // loop below would deliver one press four times on a slow frame and not at
+    // all on a fast one. Before the loop rather than after it, so a script
+    // polling Value() from OnFixedUpdate reads THIS frame's dispatch.
+    //
+    // GATED LIKE THE SCRIPTS, because an input event IS script code running:
+    // in edit mode the clock is paused and no steps are asked for, so a key
+    // pressed over the Scene view must not reach a game that is not playing.
+    // Note IsPaused and not m_inPlayMode - a pause menu at a time scale of
+    // zero has no steps and is not paused, and it has to keep hearing input
+    // or nothing can ever un-pause it.
+    //
+    // The SAMPLING half is ungated and lives in BeginFrame; input/InputActions.h
+    // explains at length why those two cannot be one call.
+    if (!m_clock.IsPaused() || m_stepsThisFrame > 0) {
+        PlayerInputSystem::FrameDispatch();
+    }
+
     // Everything inside this bracket is a fixed simulation step, which is
     // what makes Time::DeltaTime() return the fixed step rather than the
     // frame time while a script's OnFixedUpdate is running. See core/Time.h.

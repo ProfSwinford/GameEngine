@@ -29,6 +29,9 @@ set(ENGINE_SOURCES
     src/fs/UserPaths.cpp              # where this user's own settings live
 
     src/input/InputMap.cpp            # key presses -> named actions
+    src/input/InputActionAsset.cpp     # .oinput: action maps, loaded as an asset
+    src/input/InputActions.cpp        # named actions -> OnJump() and friends
+    src/input/PlayerInputComponent.cpp # Unity's PlayerInput: an action map on an entity
     src/input/Pointer.cpp              # where the mouse is, in view and world space
 
     src/math/Mat3.cpp
@@ -100,7 +103,10 @@ set(ENGINE_HEADERS
     include/engine/debug/Debug.h
     include/engine/fs/FileSystem.h
     include/engine/fs/UserPaths.h
+    include/engine/input/InputActionAsset.h
+    include/engine/input/InputActions.h
     include/engine/input/InputMap.h
+    include/engine/input/PlayerInputComponent.h
     include/engine/input/Pointer.h
     include/engine/math/Mat3.h
     include/engine/math/Overlap.h

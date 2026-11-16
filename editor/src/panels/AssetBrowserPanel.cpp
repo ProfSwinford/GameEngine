@@ -11,6 +11,7 @@
 #include "ScriptBuild.h"
 #include "ScriptTemplate.h"
 #include "panels/HierarchyPanel.h"   // kPayloadEntity, for an entity dropped in here
+#include "panels/InputActionsPanel.h"   // CreateDefault, for "+ Input"
 #include "panels/TilePalettePanel.h"
 
 #include <engine/resource/ImportSettings.h>
@@ -81,6 +82,7 @@ ImVec4 ColourFor(AssetKind kind) {
         case AssetKind::Font:    return ImVec4(0.88f, 0.70f, 0.95f, 1.0f);
         case AssetKind::Tile:    return ImVec4(0.55f, 0.92f, 0.85f, 1.0f);
         case AssetKind::Prefab:  return ImVec4(0.55f, 0.78f, 0.95f, 1.0f);
+        case AssetKind::InputActions: return ImVec4(0.95f, 0.72f, 0.55f, 1.0f);
         case AssetKind::Unknown: break;
     }
     return ImVec4(0.62f, 0.62f, 0.66f, 1.0f);
@@ -94,6 +96,7 @@ const char* LabelFor(AssetKind kind) {
         case AssetKind::Font:    return "TTF";
         case AssetKind::Tile:    return "TILE";
         case AssetKind::Prefab:  return "PFB";
+        case AssetKind::InputActions: return "INP";
         case AssetKind::Unknown: break;
     }
     return "---";
@@ -650,6 +653,37 @@ void AssetBrowserPanel::DrawBreadcrumb() {
         std::snprintf(m_newScriptName, sizeof(m_newScriptName), "%s", "NewScript");
     }
     ImGui::SameLine();
+    if (ImGui::SmallButton("+ Input")) {
+        // STRAIGHT TO assets/input/ AND NOT THE FOLDER BEING BROWSED, unlike
+        // + Script and + Tile. A Player Input component names a path, the
+        // engine's own default and every example put them in one place, and a
+        // file somewhere else works but is the kind of difference nobody
+        // remembers choosing. WriteTextFile makes the folder if it has to.
+        //
+        // Named with a number when the obvious name is taken, rather than
+        // refusing: a button that does nothing until you go and read an error
+        // is a button that looks broken.
+        std::string path  = "input/PlayerControls.oinput";
+        int         spare = 2;
+        while (eng::FileSystem::Exists(path) && spare < 100) {
+            path = "input/PlayerControls" + std::to_string(spare) + ".oinput";
+            ++spare;
+        }
+
+        std::string error;
+        if (!InputActionsPanel::CreateDefault(path, error)) {
+            ENGINE_LOG_ERROR(eng::Channels::kEditor, "{}", error);
+        } else {
+            Refresh();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("A new action maps file in assets/input/, bound to the\n"
+                          "same controls config/engine.json already binds.\n"
+                          "Opens in the Input Actions window.");
+    }
+
+    ImGui::SameLine();
     if (ImGui::SmallButton("+ Tile")) {
         m_openNewTile = true;
 
@@ -998,6 +1032,10 @@ void AssetBrowserPanel::DrawEntry(const Tile& tile, int index) {
                 ImGui::TextDisabled("drag into the Scene view, onto an entity, or "
                                     "double-click to place one");
                 break;
+            case AssetKind::InputActions:
+                ImGui::TextDisabled("drag onto an entity to give it a Player Input, "
+                                    "or double-click to edit the file");
+                break;
             case AssetKind::Unknown:
                 break;
         }
@@ -1070,6 +1108,12 @@ void AssetBrowserPanel::DrawEntry(const Tile& tile, int index) {
             TilePaintState& tiles = TilePaintState::Get();
             tiles.tilePath        = tile.path;
             tiles.revealRequested = true;
+        } else if (kind == AssetKind::InputActions) {
+            // A .oinput is JSON and the system editor WOULD open it, which
+            // is a perfectly good way to edit one. The Input Actions window
+            // is a better one: it knows what a composite is, it can list
+            // the maps, and it names the method each action will call.
+            EditorState::Get().requestedInputActions = tile.path;
         } else if (kind == AssetKind::Prefab) {
             // ==============================================================
             //  DOUBLE-CLICK PLACES ONE, which is NOT what Unity does - Unity

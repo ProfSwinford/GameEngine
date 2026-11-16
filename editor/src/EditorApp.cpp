@@ -32,6 +32,7 @@
 #include "panels/HierarchyPanel.h"
 #include "panels/InspectorPanel.h"
 #include "panels/ScenePanel.h"
+#include "panels/InputActionsPanel.h"
 #include "panels/TilePalettePanel.h"
 
 #include <imgui.h>
@@ -227,6 +228,13 @@ bool EditorApp::Init(const std::string& projectRoot) {
     auto tiles         = std::make_unique<TilePalettePanel>();
     m_tilePalettePanel = tiles.get();
     AddPanel(std::move(tiles));                        // tiles, and the brush
+    auto inputActions   = std::make_unique<InputActionsPanel>();
+    m_inputActionsPanel = inputActions.get();
+    // CLOSED UNTIL IT IS ASKED FOR. It edits one asset and most sessions
+    // never touch one, so it starts out of the way - the Assets panel's
+    // double-click opens it, as the Tile Palette is opened.
+    inputActions->SetOpen(false);
+    AddPanel(std::move(inputActions));                 // action maps and bindings
     AddPanel(std::make_unique<BuildPanel>());          // what ships, and in what order
     AddPanel(std::make_unique<ConsolePanel>());        // the log
 

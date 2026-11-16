@@ -240,6 +240,15 @@ constexpr std::array kTypeSpellings{
     TypeSpelling{"UIButtonRef", ScriptFieldType::Entity, "UIButtonComponent"},
     TypeSpelling{"UISliderRef", ScriptFieldType::Entity, "UISliderComponent"},
 
+    // "PlayerInput" IS A PREFIX OF "PlayerInputComponent", which is in the
+    // block below and is therefore tried SECOND - the one place this array's
+    // own "longest spelling first" rule is not visibly obeyed. It is safe,
+    // and not by luck: WordAt refuses a match whose next character is an
+    // identifier character, so `PlayerInputComponent p;` cannot match the
+    // short entry at all. Said out loud because the next person to reorder
+    // these two blocks needs to know it is load-bearing.
+    TypeSpelling{"PlayerInput", ScriptFieldType::Entity, "PlayerInputComponent"},
+
     // ---- and the components' OWN names, which are references too -------
     //
     // `SpriteComponent renderer;` is a slot you drag an entity onto, exactly
@@ -261,6 +270,8 @@ constexpr std::array kTypeSpellings{
     TypeSpelling{"TilemapColliderComponent", ScriptFieldType::Entity,
                  "TilemapColliderComponent"},
     TypeSpelling{"SpinComponent", ScriptFieldType::Entity, "SpinComponent"},
+    TypeSpelling{"PlayerInputComponent", ScriptFieldType::Entity,
+                 "PlayerInputComponent"},
     // ScriptComponent is NOT here, and scene/ComponentAliases.h says why:
     // a reference to "whichever script is on that entity" is not a useful
     // question, and the spelling for a particular one is that script's own
@@ -2049,6 +2060,82 @@ bool AssignedFromFind(std::string_view text, std::string_view member) {
 //  per call site, none of them on the declaration that is actually wrong.
 //  This is the only place that reads the declaration.
 // ===========================================================================
+namespace {
+
+// The engine's own hooks, which are called by name from elsewhere and are not
+// actions. Kept beside the scanner rather than derived from ScriptHooks.h,
+// because that header's concepts are types rather than a list and this is a
+// text scan with no types in sight.
+bool IsEngineHookName(std::string_view name) {
+    static constexpr std::string_view kHooks[] = {
+        "OnStart",          "OnUpdate",        "OnFixedUpdate",
+        "OnDestroy",        "OnExpose",        "OnEnable",
+        "OnDisable",        "OnTriggerEnter",  "OnTriggerStay",
+        "OnTriggerExit",    "OnCollisionEnter", "OnCollisionStay",
+        "OnCollisionExit",
+    };
+    for (const std::string_view hook : kHooks) {
+        if (hook == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+std::vector<std::string> ActionHandlerDeclarations(std::string_view code) {
+    std::vector<std::string> found;
+    const std::string        text(code);
+
+    std::size_t at = 0;
+    while ((at = FindWord(text, "void", at)) != std::string::npos) {
+        const std::size_t afterVoid = at + 4;
+        at                          = afterVoid;
+
+        std::size_t i = afterVoid;
+        while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) {
+            ++i;
+        }
+
+        // "On" FOLLOWED BY A CAPITAL. Unity upper-cases the first letter of
+        // the action when it builds the method name, so every handler has
+        // one - and requiring it is what keeps `OnePerSecond` and `Only`
+        // from being read as handlers for "ePerSecond" and "ly".
+        if (i + 2 >= text.size() || text[i] != 'O' || text[i + 1] != 'n') {
+            continue;
+        }
+        const char third = text[i + 2];
+        if ((third < 'A' || third > 'Z') && third != '_') {
+            continue;
+        }
+
+        const std::size_t nameAt = i;
+        while (i < text.size() && IsIdentChar(text[i])) {
+            ++i;
+        }
+        const std::string name = text.substr(nameAt, i - nameAt);
+
+        while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) {
+            ++i;
+        }
+        if (i >= text.size() || text[i] != '(') {
+            continue;
+        }
+        if (IsEngineHookName(name)) {
+            continue;
+        }
+
+        // Declared and then defined is one handler, not two.
+        if (std::find(found.begin(), found.end(), name) == found.end()) {
+            found.push_back(name);
+        }
+        at = i;
+    }
+
+    return found;
+}
+
 std::vector<ComponentPointerDecl> ComponentPointerDeclarations(std::string_view code) {
     std::vector<ComponentPointerDecl> found;
 
@@ -2322,6 +2409,28 @@ std::string GenerateScriptScopeHeader(const std::vector<ScriptUnitSource>& sourc
     out += "// the registrar object is left out, and an IDE never links.\n";
     out += "#undef ENGINE_REGISTER_SCRIPT\n";
     out += "#define ENGINE_REGISTER_SCRIPT(Type) ENGINE_SCRIPT_CHECKS(::Type)\n";
+
+    // ======================================================================
+    //  AND THE CATCH-ALL IS RELAXED FOR THIS PATH, deliberately and only
+    //  here.
+    //
+    //  This header is force-included into the author's own .cpp, which is
+    //  then compiled on its own - by the IDE for its squiggles, and by the
+    //  game_scripts type-check target. The file about to be compiled is not
+    //  named anywhere in here, so this header cannot say whether THAT
+    //  script is one of the ones with action handlers. It knows only that
+    //  some of them are.
+    //
+    //  Given a choice between refusing a script that is fine and accepting
+    //  one that is empty, it takes the second - which is this codebase's
+    //  standing rule about generated code, applied where the generator
+    //  genuinely cannot tell. Nothing is lost: the real build compiles the
+    //  generated UNIT, where the bracketing around each body makes the same
+    //  check exact, and a script with no hooks at all is still refused
+    //  there and reported again at load time.
+    // ======================================================================
+    out += "#undef ENGINE_SCRIPT_MAYBE_ACTIONS\n";
+    out += "#define ENGINE_SCRIPT_MAYBE_ACTIONS true\n";
     return out;
 }
 
@@ -2510,6 +2619,32 @@ std::string GenerateScriptUnit(const ScriptSourceInfo&              info,
         // cost was that a script read on its own said something different
         // from the unit, and every IDE underlined working code.
 
+        // ==================================================================
+        //  TELL ENGINE_SCRIPT_CHECKS THAT THIS ONE HAS HANDLERS.
+        //
+        //  The catch-all in ScriptHooks.h refuses a script with none of the
+        //  fixed lifecycle hooks, and a script whose only members are
+        //  void OnJump() and void OnMove(eng::Vec2) has none of them - it is
+        //  driven entirely by a Player Input component. C++20 cannot
+        //  enumerate members to discover that, so this says so instead.
+        //
+        //  AROUND THE BODY AND NOT INSIDE IT, and set back to false
+        //  afterwards, because the next script wrapped in this same file
+        //  must be judged on its own. BEFORE the #line directive, so the
+        //  author's own line numbering is untouched and a diagnostic still
+        //  points at the line they wrote.
+        // ==================================================================
+        //  EVERY BODY IS BRACKETED, with the true answer either way - not just
+        //  the ones that have handlers. The macro defaults to PERMISSIVE
+        //  (ScriptHooks.h says why: every path without a generator has no
+        //  information and a strict default there refuses valid code), so this
+        //  is the only place that can be strict. Saying "false" around a
+        //  script that really has no handlers is what keeps the catch-all
+        //  working for the build that actually ships.
+        const std::vector<std::string> handlers = ActionHandlerDeclarations(src.text);
+        out += "#undef ENGINE_SCRIPT_MAYBE_ACTIONS\n";
+        out += handlers.empty() ? "#define ENGINE_SCRIPT_MAYBE_ACTIONS false\n"
+                                : "#define ENGINE_SCRIPT_MAYBE_ACTIONS true\n";
 
         out += "#line 1 \"";
         out += src.realPath;
@@ -2525,6 +2660,99 @@ std::string GenerateScriptUnit(const ScriptSourceInfo&              info,
         out += " \"";
         out += unitPath;
         out += "\"\n";
+
+        // Back to the header's default, so the next body in this same file is
+        // judged on its own answer rather than on this one's.
+        out += "#undef ENGINE_SCRIPT_MAYBE_ACTIONS\n";
+        out += "#define ENGINE_SCRIPT_MAYBE_ACTIONS true\n";
+
+        // ==================================================================
+        //  THE INPUT ACTION HANDLERS, INSIDE THIS SCRIPT'S OWN NAMESPACE.
+        //
+        //  HERE AND NOWHERE ELSE, and the site is the whole of why this
+        //  works. Two earlier shapes were tried and both are broken:
+        //
+        //    APPENDED TO THE EXPOSER - which is emitted only when
+        //    `!info.vars.empty()`, so a script whose only member is
+        //    void OnPause() gets no exposer, no dispatcher, and silence.
+        //    Exactly the scripts the feature is for.
+        //
+        //    AS A TRAIT SPECIALIZATION READ BY ENGINE_SCRIPT_CHECKS - which
+        //    cannot name the class in both build paths. The scope header
+        //    redefines the macro to ENGINE_SCRIPT_CHECKS(::Type) and the
+        //    author's file is compiled at global scope, so the class there is
+        //    ::PauseMenu while here it is s_PauseMenu::PauseMenu. A
+        //    specialization on one does not cover the other, and the global
+        //    cannot be forward-declared without making every cross-script
+        //    bare name ambiguous.
+        //
+        //  This spot has neither problem: it runs once per BODY, after the
+        //  class is complete, inside the namespace that names it - and the
+        //  scope header never emits it at all, because an IDE has no use for
+        //  a dispatcher.
+        //
+        //  A TEMPLATE, so the requires-ladders in ENGINE_CALL_ACTION_HANDLER
+        //  sit in a dependent context where a failed requirement is
+        //  unambiguously "no" rather than an error.
+        // ==================================================================
+        // (already scanned above, where the body is bracketed)
+        if (!handlers.empty()) {
+            out += "\nnamespace {\n";
+            out += "constexpr const char* kActionHandlerNames[] = {";
+            for (std::size_t h = 0; h < handlers.size(); ++h) {
+                out += (h == 0) ? "\"" : ", \"";
+                out += handlers[h];
+                out += "\"";
+            }
+            out += "};\n";
+
+            // WHICH OF THEM THE COMPILER CAN ACTUALLY REACH. The scanner is
+            // allowed to guess, so the names above are candidates; this is
+            // the answer for each one, worked out by the same three-shape
+            // test the call ladder uses. A private method, or one taking
+            // something no action can supply, comes out false here and is
+            // never claimed as a handler at load time.
+            out += "constexpr bool kActionHandlerBound[] = {";
+            for (std::size_t h = 0; h < handlers.size(); ++h) {
+                out += (h == 0) ? "" : ", ";
+                out += "ENGINE_ACTION_HANDLER_BINDS(";
+                out += src.className;
+                out += ", ";
+                out += handlers[h];
+                out += ")";
+            }
+            out += "};\n\n";
+
+            out += "template <class T>\n";
+            out += "void DispatchAction(::eng::ScriptBehaviour& behaviour, "
+                   "std::size_t index,\n";
+            out += "                    const ::eng::ActionEvent& event) {\n";
+            out += "    T& self = static_cast<T&>(behaviour);\n";
+            out += "    (void)self;\n";
+            out += "    (void)event;\n";
+            out += "    switch (index) {\n";
+            for (std::size_t h = 0; h < handlers.size(); ++h) {
+                out += "        case " + std::to_string(h) + ":\n";
+                out += "            ENGINE_CALL_ACTION_HANDLER(self, " + handlers[h] +
+                       ", event);\n";
+                out += "            break;\n";
+            }
+            out += "        default: break;\n";
+            out += "    }\n";
+            out += "}\n\n";
+
+            out += "const bool kActionHandlersRegistered =\n";
+            out += "    ::eng::ScriptRegistry::SetActionHandlers(\"";
+            out += src.className;
+            out += "\", kActionHandlerNames,\n";
+            out += "                                             kActionHandlerBound,\n";
+            out += "                                             ";
+            out += std::to_string(handlers.size());
+            out += ", &DispatchAction<";
+            out += src.className;
+            out += ">);\n";
+            out += "} // namespace\n";
+        }
 
         // AND NO ALIAS AFTER IT ANY MORE: it is already at the top of the
         // file, with every other script's, which is what lets a reference

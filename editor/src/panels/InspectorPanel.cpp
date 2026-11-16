@@ -1497,6 +1497,96 @@ void DrawSpin(eng::SpinComponent& spin) {
 }
 
 // ---------------------------------------------------------------------------
+//  PlayerInputComponent
+// ---------------------------------------------------------------------------
+// Unity's PlayerInput inspector, with Unity's two fields: which .oinput file,
+// and which of that file's maps the game starts on.
+//
+// THE MAP LIST COMES FROM THE FILE, not from a fixed enum, which is the whole
+// reason this is laid out by hand rather than with row::Combo - BeginCombo's
+// popup outlives the call, so a group cannot be closed around it. See the
+// note at the end of FieldRow.h. DrawScript's "Bind to" does the same.
+void DrawPlayerInput(eng::PlayerInputComponent& input) {
+    char buffer[256];
+    std::snprintf(buffer, sizeof(buffer), "%s", input.ActionsPath().c_str());
+    if (row::InputTextWithHint("Actions", "input/player.oinput  (blank = none)",
+                                 buffer, sizeof(buffer))) {
+        std::string error;
+        input.SetActions(buffer, error);
+        EditorState::Get().MarkDirty();
+    }
+
+    // DROPPING THE FILE ON IT, which is how every other asset is assigned
+    // here - and the only discoverable way to learn a .oinput goes in this
+    // field at all.
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kPayloadInput)) {
+            std::string error;
+            input.SetActions(static_cast<const char*>(payload->Data), error);
+            EditorState::Get().MarkDirty();
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    // Cached after the first look, so scrolling the Inspector does not read
+    // the file sixty times a second.
+    const eng::InputActionAsset* asset = input.Asset();
+
+    row::Label("Default map");
+    if (ImGui::BeginCombo("##Default map", input.DefaultMapName().c_str())) {
+        // EACH EMPTY CASE SAYS WHICH ONE IT IS. "no maps" and "that file is
+        // broken" and "you have not chosen a file" are three different
+        // problems with three different fixes, and an empty list answers none
+        // of them.
+        if (input.ActionsPath().empty()) {
+            ImGui::TextDisabled("no actions file is set");
+        } else if (asset == nullptr) {
+            ImGui::TextDisabled("that file would not load - see the Console");
+        } else if (asset->Maps().empty()) {
+            ImGui::TextDisabled("that file has no action maps in it");
+        } else {
+            for (const eng::ActionMap& map : asset->Maps()) {
+                if (ImGui::Selectable(map.Name().c_str(),
+                                      map.Name() == input.DefaultMapName())) {
+                    input.SetDefaultMapName(map.Name());
+                    EditorState::Get().MarkDirty();
+                }
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    bool enabled = input.IsEnabled();
+    if (row::Checkbox("Enabled", &enabled)) {
+        if (enabled) {
+            input.Enable();
+        } else {
+            input.Disable();
+        }
+        EditorState::Get().MarkDirty();
+    }
+
+    // WHAT IT IS ACTUALLY ON RIGHT NOW, shown only when that differs from the
+    // authored map - which is exactly when somebody is confused about why the
+    // controls are not what the field above says. A script switched it.
+    const std::string current = input.CurrentActionMapName();
+    if (!current.empty() && current != input.DefaultMapName()) {
+        ImGui::TextDisabled("currently on '%s' - a script switched it", current.c_str());
+    }
+
+    if (asset != nullptr) {
+        if (const eng::ActionMap* map = asset->FindMap(current)) {
+            ImGui::TextDisabled("%zu action(s) in this map", map->Actions().size());
+        }
+    }
+
+    ImGui::TextWrapped("The file holds SEVERAL maps and one is current at a time. A "
+                       "script changes which with playerInput->SwitchCurrentActionMap"
+                       "(\"Menu\"), so Escape can mean Pause while playing and Cancel "
+                       "while the menu is up with nothing to arbitrate between them.");
+}
+
+// ---------------------------------------------------------------------------
 //  ScriptComponent
 // ---------------------------------------------------------------------------
 // The script's name, drawn as a link that opens the file it came from in
@@ -4646,6 +4736,10 @@ void DrawAssetInspector(const std::string& path) {
             ImGui::TextDisabled("a script has no import settings.");
             ImGui::TextDisabled("its variables appear on the entity it is attached to.");
             return;
+        case AssetKind::InputActions:
+            ImGui::TextDisabled("an action map file has no import settings.");
+            ImGui::TextDisabled("drop it on a Player Input, or open it in a text editor.");
+            return;
         case AssetKind::Unknown:
             break;
     }
@@ -4746,7 +4840,12 @@ void InspectorPanel::Draw() {
     if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->Rect(),
                                          ImGui::GetID("##inspector_drop"))) {
         std::string message;
-        for (const char* payloadId : {kPayloadTexture, kPayloadScript}) {
+        // A SEPARATE LIST from AcceptAssetDropOnEntity's, and it has to be
+        // kept in step by hand - the two do not share code. A kind missing
+        // here still works when dropped on the entity's row in the Hierarchy
+        // and does nothing when dropped on the Inspector, which reads as the
+        // panel being broken rather than as a missing case.
+        for (const char* payloadId : {kPayloadTexture, kPayloadScript, kPayloadInput}) {
             const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payloadId);
             if (payload == nullptr) {
                 continue;
@@ -5054,6 +5153,9 @@ void InspectorPanel::Draw() {
                     static_cast<eng::SpriteAnimationComponent&>(component));
             } else if (type == eng::SpinComponent::kTypeName) {
                 DrawSpin(static_cast<eng::SpinComponent&>(component));
+            } else if (type == eng::PlayerInputComponent::kTypeName) {
+                DrawPlayerInput(
+                    static_cast<eng::PlayerInputComponent&>(component));
             } else if (type == eng::ScriptComponent::kTypeName) {
                 DrawScript(static_cast<eng::ScriptComponent&>(component));
             } else if (type == eng::CameraComponent::kTypeName) {

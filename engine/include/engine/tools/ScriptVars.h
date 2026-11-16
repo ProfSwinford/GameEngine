@@ -370,6 +370,35 @@ struct ComponentPointerDecl {
 };
 std::vector<ComponentPointerDecl> ComponentPointerDeclarations(std::string_view code);
 
+// ===========================================================================
+//  A METHOD THAT LOOKS LIKE AN INPUT ACTION HANDLER.
+//
+//  Unity's rule is that the action "Jump" calls a method named On plus the
+//  action's name, so `void OnJump()`. This finds the CANDIDATES in a script's
+//  source. Which of them is really a handler is not decided here and cannot
+//  be: it depends on which action map happens to be loaded at the time, which
+//  is a run-time fact about an asset this scanner has never seen.
+//
+//  DELIBERATELY GENEROUS, AND IT COSTS NOTHING TO BE. The generated dispatch
+//  wraps every call in `if constexpr (requires ...)`, so a method this picked
+//  up by mistake - a private one, one whose parameters do not fit, one inside
+//  a comment, one that is not a member function at all - COMPILES AWAY rather
+//  than breaking the build. That is this file's standing rule applied
+//  literally: generated code can never stop a script from compiling, so the
+//  scanner is allowed to guess.
+//
+//  THE ENGINE'S OWN FIXED HOOKS ARE EXCLUDED BY NAME. OnStart is not an
+//  action called "Start", and leaving it in would mean an action somebody
+//  named "Update" quietly called the frame hook twice.
+//
+//  Returns the METHOD names, not the action names, and deliberately: turning
+//  "Jump" into "OnJump" is Unity's own forward rule and is done once, at
+//  dispatch, against the action actually in the map. Reversing it here would
+//  mean guessing whether `OnMoveCamera` came from "Move Camera" or
+//  "MoveCamera" - a question with two right answers and no way to pick.
+// ===========================================================================
+std::vector<std::string> ActionHandlerDeclarations(std::string_view code);
+
 // Is `member` assigned from a Find<...>() call? A reference member cannot be -
 // Find returns a pointer and EntityRef has no assignment from one - so this
 // answering true means the line cannot compile, and the scan can say so in

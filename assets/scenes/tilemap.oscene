@@ -125,7 +125,12 @@
           "type": "Rigidbody2DComponent"
         },
         {
-          "script": "TilemapWalker",
+          "actions": "input/player.oinput",
+          "defaultMap": "Gameplay",
+          "type": "PlayerInputComponent"
+        },
+        {
+          "script": "PlayerActions",
           "type": "ScriptComponent"
         },
         {

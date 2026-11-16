@@ -222,6 +222,12 @@ struct EditorState {
     // the editor does not get an exemption from the engine's own rules.
     std::string requestedScene;
 
+    // A .oinput somebody double-clicked in the Assets panel. Read and
+    // cleared by the Input Actions window on its next draw, for the same
+    // reason requestedScene above is a request rather than a call: a panel
+    // does not reach into another panel mid-frame.
+    std::string requestedInputActions;
+
     // What the Inspector or the Hierarchy asked to do to a prefab instance,
     // applied by EditorApp once no panel is still describing an entity. See
     // PrefabRequest above.
@@ -581,6 +587,7 @@ private:
     bool m_ready = false;
     class GamePanel*  m_gamePanel  = nullptr;
     class TilePalettePanel* m_tilePalettePanel = nullptr;
+    class InputActionsPanel* m_inputActionsPanel = nullptr;
     class AssetBrowserPanel* m_assetBrowserPanel = nullptr;
 
     char m_saveAsPath[256] = {};

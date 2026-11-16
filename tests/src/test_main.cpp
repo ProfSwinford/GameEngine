@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
     eng::SpriteAnimationSystem::RegisterComponentTypes();
     eng::ScriptSystem::RegisterComponentTypes();
     eng::UISystem::RegisterComponentTypes();
+    eng::PlayerInputSystem::RegisterComponentTypes();
 
     // The camera is a component like any other - see CameraComponent.h - and
     // Engine::Init registers it by hand for the same reason.

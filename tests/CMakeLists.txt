@@ -32,6 +32,11 @@ set(TEST_SOURCES
     src/test_scriptapi.cpp
     src/test_spriteanimation.cpp
     src/test_debug.cpp
+    src/test_inputactions.cpp
+    src/test_inputactionasset.cpp
+    src/test_inputactionlibrary.cpp
+    src/test_playerinput.cpp
+    src/test_inputdispatch.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})
