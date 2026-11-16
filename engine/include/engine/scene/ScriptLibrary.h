@@ -7,16 +7,32 @@
 //  ==========================================================================
 //  TWO SHAPES, AND THE EDITOR AND A SHIPPED GAME WANT DIFFERENT ONES
 //
-//    WHILE DEVELOPING: one library PER SCRIPT, in .build/modules/. Editing one
-//      script recompiles one file and relinks one small library instead of
-//      rebuilding everything, and - the part that matters more - A SCRIPT THAT
-//      WILL NOT COMPILE NO LONGER STOPS THE OTHERS. With a single library a
-//      typo in one file meant nothing linked, so nothing ran.
+//    WHILE DEVELOPING: one library PER SCRIPT, in .build/modules/. Two things
+//      follow from that, and the second one matters more.
+//
+//      EDITING ONE SCRIPT USUALLY REBUILDS ONE LIBRARY. "Usually" is the
+//      honest word and it is worth the sentence. A unit carries its own
+//      script plus the ones it RESOLVES - reaches through with `->`, calls
+//      .Get() on, or tests with `if (ref)` - transitively. Most scripts
+//      resolve none, so most edits compile one file and relink one library;
+//      a mutual pair rebuilds both; and a script with code outside its class
+//      is carried by every unit, so editing that one rebuilds all of them.
+//      The editor's ScriptBuild computes the set and its comments argue it.
+//
+//      This was briefly not true at all. When a bare `Door door;` became a
+//      reference to another script, every unit started carrying every
+//      script's TEXT so the names would be in scope, and one edit rebuilt all
+//      of them, at a cost growing as the square. Carrying only what is
+//      reached is what brought it back; a file-scope edit still pays it.
+//
+//      AND A SCRIPT THAT WILL NOT COMPILE NO LONGER STOPS THE OTHERS, which
+//      is the half that was never in doubt. With a single library a typo in
+//      one file meant nothing linked, so nothing ran.
 //
 //    IN A SHIPPED GAME: one userContent.dll holding all of them. A game has no
-//      reason to carry eleven libraries, their import tables and eleven times
-//      the load-time relocation work, and nothing is ever going to recompile
-//      one of them.
+//      reason to carry one library per script, an import table and a round of
+//      load-time relocation each, and nothing is ever going to recompile one
+//      of them.
 //
 //  Both are loaded by the same code below; a bundle is just the case where the
 //  list has one entry in it.

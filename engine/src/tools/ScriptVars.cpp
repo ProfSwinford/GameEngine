@@ -206,14 +206,79 @@ struct TypeSpelling {
 };
 
 constexpr std::array kTypeSpellings{
-    // ---- Unity's component names, which are REFERENCES here as they are
-    //      reference types in C#. See scene/ComponentRef.h.
-    // `Transform` is impossible as a field type - ScriptBehaviour::Transform()
-    // hides it - and Collider2D is a pointer to an abstract base that
-    // Entity::Find cannot look up. Engine.h argues both at length.
+    // ---- the component-reference aliases from Engine.h, which are
+    //      REFERENCES here as they are reference types in C#. See
+    //      scene/ComponentRef.h.
+    //
+    // EVERY CONCRETE COMPONENT HAS ONE, and it has to be listed here as well
+    // as in Engine.h: an alias leaves no `ComponentRef<...>` text for the
+    // long-spelling branch below to read, so the constraint cannot be lifted
+    // out of the declaration and has to be written down. A name added to
+    // Engine.h and forgotten here is exposed with NO constraint, so the
+    // Inspector's picker offers every entity in the scene.
+    //
+    // THE TWO THAT ARE DELIBERATELY ABSENT: `Transform` is impossible as a
+    // field type - ScriptBehaviour::Transform() hides it - and Collider2D is
+    // a pointer to an abstract base that Entity::Find cannot look up.
+    // Engine.h argues both at length, and CameraRef's name as well.
     TypeSpelling{"TransformRef", ScriptFieldType::Entity, "TransformComponent"},
     TypeSpelling{"SpriteRenderer", ScriptFieldType::Entity, "SpriteComponent"},
     TypeSpelling{"Rigidbody2D", ScriptFieldType::Entity, "Rigidbody2DComponent"},
+    TypeSpelling{"SpriteAnimator", ScriptFieldType::Entity, "SpriteAnimationComponent"},
+    TypeSpelling{"CameraRef", ScriptFieldType::Entity, "CameraComponent"},
+    TypeSpelling{"Tilemap", ScriptFieldType::Entity, "TilemapComponent"},
+    TypeSpelling{"SpinRef", ScriptFieldType::Entity, "SpinComponent"},
+    TypeSpelling{"BoxCollider2D", ScriptFieldType::Entity, "BoxColliderComponent"},
+    TypeSpelling{"CircleCollider2D", ScriptFieldType::Entity, "CircleColliderComponent"},
+    TypeSpelling{"CapsuleCollider2D", ScriptFieldType::Entity, "CapsuleColliderComponent"},
+    TypeSpelling{"EdgeCollider2D", ScriptFieldType::Entity, "EdgeColliderComponent"},
+    TypeSpelling{"PolygonCollider2D", ScriptFieldType::Entity, "PolygonColliderComponent"},
+    TypeSpelling{"TilemapCollider2D", ScriptFieldType::Entity, "TilemapColliderComponent"},
+    TypeSpelling{"UIRectRef", ScriptFieldType::Entity, "UIRectComponent"},
+    TypeSpelling{"UIImageRef", ScriptFieldType::Entity, "UIImageComponent"},
+    TypeSpelling{"UITextRef", ScriptFieldType::Entity, "UITextComponent"},
+    TypeSpelling{"UIButtonRef", ScriptFieldType::Entity, "UIButtonComponent"},
+    TypeSpelling{"UISliderRef", ScriptFieldType::Entity, "UISliderComponent"},
+
+    // ---- and the components' OWN names, which are references too -------
+    //
+    // `SpriteComponent renderer;` is a slot you drag an entity onto, exactly
+    // as `Invisibility invis;` is for a script - see scene/ComponentAliases.h
+    // for the alias that makes it so. Without these entries the scan would
+    // still read the declaration as a component held BY VALUE and refuse to
+    // draw it, which is the state this pair of lists exists to prevent.
+    //
+    // The QUALIFIED spelling is deliberately absent: `eng::SpriteComponent x;`
+    // really is the class by value, and the by-value diagnostic should still
+    // fire for it.
+    TypeSpelling{"TransformComponent", ScriptFieldType::Entity, "TransformComponent"},
+    TypeSpelling{"SpriteComponent", ScriptFieldType::Entity, "SpriteComponent"},
+    TypeSpelling{"SpriteAnimationComponent", ScriptFieldType::Entity,
+                 "SpriteAnimationComponent"},
+    TypeSpelling{"Rigidbody2DComponent", ScriptFieldType::Entity, "Rigidbody2DComponent"},
+    TypeSpelling{"CameraComponent", ScriptFieldType::Entity, "CameraComponent"},
+    TypeSpelling{"TilemapComponent", ScriptFieldType::Entity, "TilemapComponent"},
+    TypeSpelling{"TilemapColliderComponent", ScriptFieldType::Entity,
+                 "TilemapColliderComponent"},
+    TypeSpelling{"SpinComponent", ScriptFieldType::Entity, "SpinComponent"},
+    // ScriptComponent is NOT here, and scene/ComponentAliases.h says why:
+    // a reference to "whichever script is on that entity" is not a useful
+    // question, and the spelling for a particular one is that script's own
+    // bare name. Held by value it is an ordinary mistake and still reported.
+    TypeSpelling{"BoxColliderComponent", ScriptFieldType::Entity, "BoxColliderComponent"},
+    TypeSpelling{"CircleColliderComponent", ScriptFieldType::Entity,
+                 "CircleColliderComponent"},
+    TypeSpelling{"CapsuleColliderComponent", ScriptFieldType::Entity,
+                 "CapsuleColliderComponent"},
+    TypeSpelling{"EdgeColliderComponent", ScriptFieldType::Entity,
+                 "EdgeColliderComponent"},
+    TypeSpelling{"PolygonColliderComponent", ScriptFieldType::Entity,
+                 "PolygonColliderComponent"},
+    TypeSpelling{"UIRectComponent", ScriptFieldType::Entity, "UIRectComponent"},
+    TypeSpelling{"UIImageComponent", ScriptFieldType::Entity, "UIImageComponent"},
+    TypeSpelling{"UITextComponent", ScriptFieldType::Entity, "UITextComponent"},
+    TypeSpelling{"UIButtonComponent", ScriptFieldType::Entity, "UIButtonComponent"},
+    TypeSpelling{"UISliderComponent", ScriptFieldType::Entity, "UISliderComponent"},
 
     TypeSpelling{"eng::EntityRef", ScriptFieldType::Entity},
     TypeSpelling{"EntityRef", ScriptFieldType::Entity},
@@ -595,15 +660,22 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
         //  THE STAR BELONGS TO WHICHEVER SIDE IT WAS WRITTEN ON, so both are
         //  checked and neither spelling is the special case.
         //
-        //  AND A POINTER NEED NOT HAVE A STAR AT ALL. Engine.h hands scripts
-        //  Unity-shaped aliases that are already pointers - Rigidbody2D,
-        //  Collider2D, SpriteRenderer, GameObject - so
-        //  `Rigidbody2D m_body = nullptr;` is correct, and
-        //  assets/scripts/TilemapWalker.cpp writes exactly that. Initialising
-        //  from nullptr is the one thing a value cannot do, which tells the
-        //  two apart without this parser having to know what any of those
-        //  names mean. It stays pure: no registry, no engine state. See
-        //  ScriptVars.h.
+        //  AND A POINTER NEED NOT HAVE A STAR AT ALL. Engine.h still hands
+        //  scripts two aliases that ARE pointers - Collider2D and GameObject
+        //  - so `Collider2D area = nullptr;` is a pointer with no star in
+        //  sight. Initialising from nullptr is the one thing a value cannot
+        //  do, which tells the two apart without this parser having to know
+        //  what any of those names mean. It stays pure: no registry, no
+        //  engine state. See ScriptVars.h.
+        //
+        //  THIS LIST USED TO NAME Rigidbody2D AND SpriteRenderer TOO, and it
+        //  had gone stale: both are eng::ComponentRef now, so the
+        //  `Rigidbody2D m_body = nullptr;` this comment called correct does
+        //  not compile at all, and TilemapWalker.cpp - cited here as the
+        //  worked example - writes `eng::Rigidbody2DComponent* m_body =
+        //  nullptr;` instead. A `= nullptr` beside a ComponentRef still lands
+        //  in this branch and is still told it is a pointer, which is the
+        //  best this parser can do: the line is wrong whichever it is.
         // ================================================================
         const bool starOnType =
             !typeText.empty() && (typeText.back() == '*' || typeText.back() == '&');
@@ -631,10 +703,18 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
                 "onto, and `member->Method()` calls it. For a component the engine "
                 "defines, the type to write is TransformRef, SpriteRenderer, "
                 "Rigidbody2D or eng::ComponentRef<TheComponent> - see "
-                "scene/ComponentRef.h and scene/ScriptRef.h. For one on THIS "
+                "scene/ComponentRef.h and scene/ScriptRef.h. For a plain "
+                "`Entity*`, the type is eng::EntityRef - the Inspector draws it "
+                "and it survives a save, which a pointer cannot. For one on THIS "
                 "entity, which is what a pointer beside a script usually is, ask "
-                "with Find<T>() where you use it, or eng::FindScriptOn<T>() for a "
-                "script";
+                "with Find<eng::TheComponent>() where you use it - and for a "
+                "SCRIPT on this entity, with "
+                "eng::FindScriptOn<TheScript::ScriptType>(*Owner()). THE "
+                "::ScriptType IS NOT OPTIONAL: a bare script name means a "
+                "REFERENCE to the script, so FindScriptOn<TheScript> asks for "
+                "something no entity carries - it used to compile and return "
+                "null for ever, and is now refused with a static_assert saying "
+                "this";
             outWasSkipped = !outSkipped.name.empty();
             return false;
         }
@@ -664,14 +744,36 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
         // so it must not assert that the member IS a component - only say what
         // follows if it is. A component held by value is never right: the
         // entity owns it, and a script asks for it where it is used.
+        // THE SUGGESTION MUST NOT DOUBLE THE NAMESPACE. Pasting the author's
+        // own token after a literal "Find<eng::" produced
+        // Find<eng::eng::SpriteAnimationComponent>() for anybody who had
+        // qualified the member's type - an instruction that cannot compile,
+        // handed out at the moment they were already stuck.
+        const std::string qualified =
+            typeText.starts_with("eng::") ? typeText : "eng::" + typeText;
+
+        // AND THE LIST OMITTED EVERY REFERENCE SPELLING THE INSPECTOR DRAWS,
+        // which made this the most misleading message in the file: a reader
+        // who had just declared a component by value concluded that no
+        // component could be drawn at all, when in fact ComponentRef, the
+        // Engine.h aliases and a bare script name are all drawn as slots.
+        // The authority is fields::Traits<T>::known, not this sentence; see
+        // scene/ScriptFields.h.
         outSkipped.name   = declarator;
         outSkipped.reason = "its type '" + typeText +
                             "' is not one the Inspector can draw - it handles float, "
                             "int, bool, std::string, Vec2, Color, EntityRef, "
-                            "PrefabRef, ImageRef and AnimationRef. If '" + typeText +
+                            "PrefabRef, ImageRef, AnimationRef, a REFERENCE to a "
+                            "component (eng::ComponentRef<T>, or one of Engine.h's "
+                            "aliases - TransformRef, SpriteRenderer, Rigidbody2D and "
+                            "the rest) and a REFERENCE to another script, which is "
+                            "simply its own name. If '" + typeText +
                             "' is a component, this declares one by value, which is "
-                            "not how a script holds one - ask for it with Find<eng::" +
-                            typeText + ">() where you use it";
+                            "not how a script holds one. Two ways round it: ask for "
+                            "it where you use it with Find<" + qualified +
+                            ">(), which hands back a pointer, or declare "
+                            "eng::ComponentRef<" + qualified +
+                            "> and drag an entity onto the slot";
         outWasSkipped = true;
         return false;
     }
@@ -1155,8 +1257,19 @@ std::string GenerateExposerFor(const ScriptSourceInfo& info,
         //  the lambda takes `S` and the class is substituted into it.
         //
         //  The effect: a variable this parser imagined, or one that turned out
-        //  to be inaccessible, COMPILES AWAY instead of failing. It is then
-        //  absent from the Inspector and present in the skipped report.
+        //  to be inaccessible, COMPILES AWAY instead of failing rather than
+        //  taking somebody's build down from a generated file.
+        //
+        //  IT IS THEN ABSENT FROM THE INSPECTOR AND FROM THE SKIPPED REPORT
+        //  BOTH, and this comment used to claim the second one caught it. It
+        //  cannot: info.skipped is filled in while READING the source, and a
+        //  variable that reaches this loop was accepted - it is in info.vars,
+        //  the Console has already named it in "exposing ...", and the guard
+        //  is the compiler disagreeing afterwards. A variable could be
+        //  announced and then vanish with nothing said.
+        //
+        //  The check emitted after this loop is what makes the claim true,
+        //  from the one place that can see the answer. See the note on it.
         //
         //  AND THE GUARD HAS TO ASK ABOUT THE TYPE SEPARATELY, which is the
         //  part that is easy to get wrong. ScriptFields::Var is an
@@ -1235,6 +1348,67 @@ std::string GenerateExposerFor(const ScriptSourceInfo& info,
             out += "                    }\n";
         }
         out += "                }(self, fields);\n";
+    }
+
+    // =======================================================================
+    //  AND THEN: DID EVERY VARIABLE ACTUALLY ARRIVE?
+    //
+    //  THE GAP THIS CLOSES was in the comment above rather than in the code,
+    //  which is the worst place for one to be. It said a variable whose guard
+    //  turns out false is "absent from the Inspector and present in the
+    //  skipped report". The first half is true. The second never was: the
+    //  skipped report is info.skipped, which this parser fills in while
+    //  READING the source, and a variable that got this far is in info.vars -
+    //  it was accepted, the Console has already announced it by name, and the
+    //  guard below is the compiler disagreeing hours later. It then appeared
+    //  in neither list and nothing said a word.
+    //
+    //  SO THE GENERATED CODE ASKS, because it is the only thing present at
+    //  the moment the answer exists. The parser cannot know - the guard is
+    //  resolved by the compiler, against the real class, long after the scan.
+    //  The editor cannot know - it would have to construct a script to find
+    //  out. The exposer runs with a real object and a real field list in
+    //  front of it.
+    //
+    //  ONCE PER LIBRARY LOAD, not once per component: the static lives in the
+    //  script's own DLL, so it resets when that library is rebuilt and
+    //  reloaded - which is exactly when the answer could have changed.
+    //
+    //  AN ARRAY IS ASKED ABOUT BY ITS FIRST ELEMENT. The loop that expands it
+    //  runs over std::size() at run time, so there is no static list of names
+    //  to check - but the guard is inside that loop and does not vary with
+    //  the index, so either every element arrived or none did.
+    // =======================================================================
+    if (!info.vars.empty()) {
+        out += "\n                static bool engineExposeChecked = false;\n";
+        out += "                if (!engineExposeChecked) {\n";
+        out += "                    engineExposeChecked = true;\n";
+        out += "                    for (const char* expected : {";
+        bool first = true;
+        for (const ScriptVarDecl& var : info.vars) {
+            if (!first) {
+                out += ", ";
+            }
+            first = false;
+            out += '"';
+            out += Escaped(var.name);
+            out += var.isArray ? "[0]\"" : "\"";
+        }
+        out += "}) {\n";
+        out += "                        if (fields.Find(expected) != nullptr) {\n";
+        out += "                            continue;\n";
+        out += "                        }\n";
+        out += "                        ENGINE_LOG_WARN(::eng::Channels::kScene,\n";
+        out += "                            \"the script '";
+        out += Escaped(info.className);
+        out += "' declares '{}', and the editor read it as a variable - but the "
+               "compiler could not expose it, so it is not in the Inspector. Its "
+               "type is not one the Inspector can draw, or it is not reachable "
+               "from outside the class. Give it a type from the list in "
+               "scene/ScriptFields.h, or make it private to say it is not "
+               "meant to be tuned.\", expected);\n";
+        out += "                    }\n";
+        out += "                }\n";
     }
 
     out += "            });\n    }\n};\n";
@@ -1502,6 +1676,27 @@ std::string StripComments(std::string_view source) {
 }
 
 
+std::string_view ScriptNameShadowsFieldType(std::string_view scriptName) {
+    if (scriptName.empty()) {
+        return {};
+    }
+
+    for (const TypeSpelling& spelling : kTypeSpellings) {
+        // QUALIFIED SPELLINGS ARE SKIPPED, and skipping them is correct
+        // rather than lazy: "eng::Color" and "std::string" cannot be a class
+        // name - the colons are not identifier characters, so no script can
+        // be called that and no alias can shadow them. It is the BARE
+        // spellings beside them that a script name can collide with.
+        if (spelling.spelling.find(':') != std::string_view::npos) {
+            continue;
+        }
+        if (spelling.spelling == scriptName) {
+            return spelling.spelling;
+        }
+    }
+    return {};
+}
+
 // WHICH KEYWORD THE AUTHOR USED, because every script is now FORWARD-DECLARED
 // before any of them is defined and a declaration that says `class` for a
 // `struct` earns warning C4099 - about a line in a generated file, naming a
@@ -1537,10 +1732,7 @@ std::string ClassKeyOf(std::string_view code, std::string_view className) {
 //
 //  THE DISTINCTION THE ORDER TURNS ON, and it is a real one rather than a
 //  nicety. Declaring `DoorSwitch doorSwitch;` needs DoorSwitch DECLARED,
-//  which every script is before any of them is defined. So does testing it,
-//  `if (doorSwitch)`, and exposing it, and assigning it - everything that
-//  goes through ScriptRef's own members, because those are members of a
-//  TEMPLATE and are compiled once the whole unit has been read.
+//  which every script is before any of them is defined.
 //
 //  `doorSwitch->OpensOnce()` is different: that is ordinary member lookup in
 //  DoorSwitch, done where it is written, and it needs the class FINISHED. So
@@ -1551,6 +1743,36 @@ std::string ClassKeyOf(std::string_view code, std::string_view className) {
 //  reached through, every unit compiles; add one `->` and that line alone
 //  fails with `error C2027: use of undefined type`, while the `if` above it
 //  is accepted.
+//
+//  ==========================================================================
+//  WHAT "THE `if` ABOVE IT IS ACCEPTED" DEPENDS ON, which this used to state
+//  as though it were a property of ScriptRef and is not.
+//
+//  It said testing a reference - `if (doorSwitch)` - goes through ScriptRef's
+//  own members and so needs nothing complete. Only the first half is true.
+//  operator bool calls Get(), and Get()'s body holds the static_assert that
+//  asks whether T derives from ScriptBehaviour - which MSVC cannot answer for
+//  an incomplete T: `error C2139: an undefined class is not allowed as an
+//  argument to compiler intrinsic type trait '__is_base_of'`.
+//
+//  IT COMPILES HERE BECAUSE OF THE UNIT, NOT BECAUSE OF THE TYPE. Member
+//  functions of a class template are instantiated at the END of the
+//  translation unit, and every unit this build writes contains every script's
+//  definition - so by the time operator bool is instantiated, DoorSwitch is
+//  whole. That is what makes it safe, and it is a property of the one-unit-
+//  carries-everything arrangement rather than of ScriptRef.
+//
+//  SO THIS FUNCTION IS RIGHT FOR THE QUESTION IT ANSWERS and would be wrong
+//  for a different one. Ordering within a unit turns on `->` alone, which is
+//  resolved where it is written. "Which definitions does this script need in
+//  its unit at all" is a LARGER set - `->`, .Get(), and every boolean test -
+//  and anything that splits the units has to compute that one instead. The
+//  measured boundary:
+//
+//      compiles with T merely declared   the member itself, arrays of them,
+//                                        IsSet, Clear, Set, TargetName, and
+//                                        being exposed through f.Ref
+//      needs T complete                  operator bool, Get(), ->
 // ===========================================================================
 bool ReachesThroughReference(std::string_view text, std::string_view member) {
     if (member.empty()) {
@@ -1578,6 +1800,338 @@ bool ReachesThroughReference(std::string_view text, std::string_view member) {
     return false;
 }
 
+bool ResolvesReference(std::string_view text, std::string_view typeName,
+                       std::string_view member) {
+    if (member.empty()) {
+        return false;
+    }
+
+    std::size_t at = text.find(member);
+    while (at != std::string::npos) {
+        const std::size_t end = at + member.size();
+
+        const bool wholeWord =
+            (at == 0 || !IsIdentChar(text[at - 1])) &&
+            (end >= text.size() || !IsIdentChar(text[end]));
+
+        if (wholeWord) {
+            // ---- is this the DECLARATION rather than a use? --------------
+            //
+            // `DoorSwitch doorSwitch;` names the member once without using
+            // it, and counting that would make every held reference look
+            // like a resolved one - which is the whole distinction.
+            std::size_t before = at;
+            while (before > 0 && (text[before - 1] == ' ' || text[before - 1] == '\t')) {
+                --before;
+            }
+            const bool declaration =
+                !typeName.empty() && before >= typeName.size() &&
+                text.compare(before - typeName.size(), typeName.size(), typeName) == 0 &&
+                (before == typeName.size() ||
+                 !IsIdentChar(text[before - typeName.size() - 1]));
+
+            if (!declaration) {
+                std::size_t after = end;
+                while (after < text.size() &&
+                       (text[after] == ' ' || text[after] == '\t')) {
+                    ++after;
+                }
+
+                // AN ELEMENT OF AN ARRAY IS STILL THE ELEMENT. `others[0]`
+                // resolves nothing by itself; what follows the bracket is
+                // what decides, exactly as for a plain member.
+                if (after < text.size() && text[after] == '[') {
+                    int depth = 0;
+                    while (after < text.size()) {
+                        if (text[after] == '[') {
+                            ++depth;
+                        } else if (text[after] == ']') {
+                            --depth;
+                            if (depth == 0) {
+                                ++after;
+                                break;
+                            }
+                        }
+                        ++after;
+                    }
+                    while (after < text.size() &&
+                           (text[after] == ' ' || text[after] == '\t')) {
+                        ++after;
+                    }
+                }
+
+                // ======================================================
+                //  A DOT IS ALMOST ALWAYS SAFE, AND ONCE IS NOT.
+                //
+                //  ScriptRef<T> adds exactly three members to EntityRef:
+                //  Get(), operator-> and operator bool. All three resolve
+                //  the reference and so need T whole; everything else
+                //  somebody can write after a dot - IsSet, Set, Clear,
+                //  TargetName, Target, Id - is EntityRef's and is compiled
+                //  against a name rather than against T.
+                //
+                //  So `.Get()` is the one dot that counts, and missing it
+                //  would be the dangerous direction: a definition left out
+                //  of a unit that needed it.
+                // ======================================================
+                if (after >= text.size() || text[after] != '.') {
+                    return true;
+                }
+
+                std::size_t name = after + 1;
+                while (name < text.size() &&
+                       (text[name] == ' ' || text[name] == '\t')) {
+                    ++name;
+                }
+                std::size_t nameEnd = name;
+                while (nameEnd < text.size() && IsIdentChar(text[nameEnd])) {
+                    ++nameEnd;
+                }
+                if (text.compare(name, nameEnd - name, "Get") == 0) {
+                    return true;
+                }
+            }
+        }
+        at = text.find(member, at + 1);
+    }
+    return false;
+}
+
+
+// ===========================================================================
+//  THE HALF info.vars CANNOT SEE: A MEMBER THE INSPECTOR NEVER GETS TO DRAW.
+//
+//  Both predicates above are asked about a member from the SCANNED VARIABLE
+//  LIST, and that list is the list the Inspector will draw. A private member
+//  is not in it - it was never a candidate - so a unit whose only use of
+//  another script goes through one looked, to the closure that decides which
+//  definitions a unit carries, like a unit that used nothing.
+//
+//  THE SYMPTOM WAS A MEMBER'S ACCESS LEVEL DECIDING WHETHER THE PROJECT
+//  COMPILED, which is not a thing C++ has ever done. These two lines built:
+//
+//      public:  Invisibility invis;        invis->ToggleInvisibility();
+//
+//  and the same two under `private:` were
+//
+//      error C2027: use of undefined type 's_Invisibility::Invisibility'
+//
+//  because the generated unit carried the forward declaration and no body.
+//  `private:` is what the script template tells people to write, so this was
+//  reachable by following the instructions rather than by doing anything odd.
+//
+//  SO THE DECLARATIONS ARE READ OUT OF THE TEXT, at every access level, and
+//  the same two predicates then run on them unchanged. Nothing here judges
+//  what a USE means - that is still ResolvesReference's job and there is one
+//  copy of it.
+//
+//  OVER-APPROXIMATING IS THE SAFE DIRECTION, exactly as it is above: a
+//  parameter named like a member, or a type mentioned in a way this does not
+//  understand, costs one unit a rebuild. Missing a declaration costs a
+//  definition, and that is the C2027.
+// ===========================================================================
+std::vector<std::string> MembersOfScriptType(std::string_view text,
+                                             std::string_view typeName) {
+    std::vector<std::string> found;
+    if (typeName.empty()) {
+        return found;
+    }
+
+    std::size_t at = text.find(typeName);
+    while (at != std::string::npos) {
+        const std::size_t end = at + typeName.size();
+
+        const bool wholeWord = (at == 0 || !IsIdentChar(text[at - 1])) &&
+                               (end >= text.size() || !IsIdentChar(text[end]));
+        if (wholeWord) {
+            // `Door door;` and `Door door[4];`: the type, whitespace, then a
+            // name. Everything else that mentions the type - a cast, a
+            // template argument, `Door::ScriptType` - leaves no identifier
+            // here and is left to the caller.
+            std::size_t after = end;
+            while (after < text.size() && (text[after] == ' ' || text[after] == '\t')) {
+                ++after;
+            }
+            const std::size_t nameAt = after;
+            while (after < text.size() && IsIdentChar(text[after])) {
+                ++after;
+            }
+            if (after > nameAt) {
+                std::string name(text.substr(nameAt, after - nameAt));
+                if (std::find(found.begin(), found.end(), name) == found.end()) {
+                    found.push_back(std::move(name));
+                }
+            }
+        }
+        at = text.find(typeName, at + 1);
+    }
+    return found;
+}
+
+// ===========================================================================
+//  THE MISTAKE NOTHING USED TO MENTION: A REFERENCE ASSIGNED FROM Find.
+//
+//  `invis = Find<Invisibility>();` is the first thing somebody writes, because
+//  it is the shape Unity's GetComponent has. Every part of it is wrong here -
+//  Find hands back a POINTER, a reference is not assigned from one, and Find
+//  cannot look a script up at all - and what the author used to get was a bare
+//  C2679 whose only type name was `s_TheirScript::Invisibility`, a namespace
+//  this build invented and that appears in no file they can open.
+//
+//  THE SCAN CAN SEE THIS, which is the point. It has the declaration and it
+//  has the text, so it can say the one sentence the compiler cannot: that the
+//  member is a reference and a reference is filled in differently.
+//
+//  NEVER A FALSE ALARM ON A REFERENCE. There is no assignment from a pointer
+//  to EntityRef - that is exactly why the line fails - so a member this
+//  answers true for is a member that cannot compile.
+// ===========================================================================
+bool AssignedFromFind(std::string_view text, std::string_view member) {
+    if (member.empty()) {
+        return false;
+    }
+
+    std::size_t at = text.find(member);
+    while (at != std::string::npos) {
+        const std::size_t end = at + member.size();
+
+        const bool wholeWord = (at == 0 || !IsIdentChar(text[at - 1])) &&
+                               (end >= text.size() || !IsIdentChar(text[end]));
+        if (wholeWord) {
+            std::size_t after = end;
+            while (after < text.size() && (text[after] == ' ' || text[after] == '\t')) {
+                ++after;
+            }
+
+            // A PLAIN `=`. Not `==`, which is a comparison, and not `+=` and
+            // friends, which cannot be the first thing after the name.
+            if (after < text.size() && text[after] == '=' &&
+                (after + 1 >= text.size() || text[after + 1] != '=')) {
+                const std::size_t      semi = text.find(';', after);
+                const std::string_view rhs  = text.substr(
+                    after + 1,
+                    (semi == std::string::npos ? text.size() : semi) - after - 1);
+
+                // `Find<` on the right, as a whole word - so FindEntity and
+                // somebody's own NearestFind are not mistaken for it.
+                std::size_t f = rhs.find("Find");
+                while (f != std::string::npos) {
+                    const bool  startsWord = f == 0 || !IsIdentChar(rhs[f - 1]);
+                    std::size_t angle      = f + 4;
+                    while (angle < rhs.size() &&
+                           (rhs[angle] == ' ' || rhs[angle] == '\t')) {
+                        ++angle;
+                    }
+                    if (startsWord && angle < rhs.size() && rhs[angle] == '<') {
+                        return true;
+                    }
+                    f = rhs.find("Find", f + 1);
+                }
+            }
+        }
+        at = text.find(member, at + 1);
+    }
+    return false;
+}
+
+// ===========================================================================
+//  A BARE COMPONENT NAME WITH A STAR, which is the one line that changed
+//  meaning when engine components became references.
+//
+//  `Rigidbody2DComponent* body;` used to be a pointer to the component. The
+//  bare name is an alias for eng::ComponentRef now - that is what makes
+//  `SpriteComponent renderer;` a slot, the whole point of the change - so the
+//  same line declares a pointer to a REFERENCE, and every use of it fails
+//  somewhere else: at the assignment, and again at each `body->`.
+//
+//  NOTHING ELSE WOULD SAY SO. The member is usually private, so the scan that
+//  feeds the Inspector never sees it and the author gets C2440 and a C2039
+//  per call site, none of them on the declaration that is actually wrong.
+//  This is the only place that reads the declaration.
+// ===========================================================================
+std::vector<ComponentPointerDecl> ComponentPointerDeclarations(std::string_view code) {
+    std::vector<ComponentPointerDecl> found;
+
+    for (const TypeSpelling& spelling : kTypeSpellings) {
+        // The bare component names are exactly the entries whose spelling IS
+        // the component they constrain to. The aliases (SpriteRenderer and
+        // the rest) are not affected: they were always references.
+        if (spelling.required.empty() || spelling.spelling != spelling.required) {
+            continue;
+        }
+
+        std::size_t at = code.find(spelling.spelling);
+        while (at != std::string::npos) {
+            const std::size_t end = at + spelling.spelling.size();
+
+            const bool wholeWord =
+                (at == 0 || !IsIdentChar(code[at - 1])) &&
+                (end >= code.size() || !IsIdentChar(code[end]));
+
+            // AND NOT QUALIFIED. `eng::SpriteComponent*` names the CLASS, so
+            // a star on it is an ordinary raw pointer and entirely correct -
+            // it is the escape hatch this whole message points people at.
+            // Reporting it would be noise, and worse: it would tell an author
+            // to "fix" the one spelling that did not need fixing. A colon is
+            // not an identifier character, so the whole-word test above lets
+            // it through on its own.
+            const bool qualified =
+                at >= 2 && code[at - 1] == ':' && code[at - 2] == ':';
+
+            if (wholeWord && !qualified) {
+                std::size_t after = end;
+                while (after < code.size() &&
+                       (code[after] == ' ' || code[after] == '\t')) {
+                    ++after;
+                }
+                if (after < code.size() && code[after] == '*') {
+                    ++after;
+                    while (after < code.size() &&
+                           (code[after] == ' ' || code[after] == '\t')) {
+                        ++after;
+                    }
+                    const std::size_t nameAt = after;
+                    while (after < code.size() && IsIdentChar(code[after])) {
+                        ++after;
+                    }
+                    if (after > nameAt) {
+                        ComponentPointerDecl decl;
+                        decl.typeName   = std::string(spelling.spelling);
+                        decl.memberName = std::string(code.substr(nameAt, after - nameAt));
+                        found.push_back(std::move(decl));
+                    }
+                }
+            }
+            at = code.find(spelling.spelling, at + 1);
+        }
+    }
+    return found;
+}
+
+// Is the script named through `Name::`, which in practice is `Name::ScriptType`
+// - the one spelling that reaches the CLASS rather than a reference to it?
+// Whatever takes it needs the definition: FindScriptOn dynamic_casts to it and
+// a base clause derives from it, and both want it EARLIER in the unit.
+//
+// Without this, `eng::FindScriptOn<Other::ScriptType>(*Owner())` compiled only
+// when the same file happened to declare an `Other`-typed member as well, so
+// the advice to write it failed for a reason nothing explained.
+bool NamesScriptTypeQualified(std::string_view text, std::string_view typeName) {
+    if (typeName.empty()) {
+        return false;
+    }
+
+    std::size_t at = text.find(typeName);
+    while (at != std::string::npos) {
+        const std::size_t end = at + typeName.size();
+        if ((at == 0 || !IsIdentChar(text[at - 1])) && end + 1 < text.size() &&
+            text[end] == ':' && text[end + 1] == ':') {
+            return true;
+        }
+        at = text.find(typeName, at + 1);
+    }
+    return false;
+}
 std::vector<ScriptBaseUse> BaseScriptsOf(std::string_view                text,
                                          std::string_view                className,
                                          const std::vector<std::string>& names) {
@@ -1806,12 +2360,19 @@ std::string GenerateScriptUnit(const ScriptSourceInfo&              info,
     out += "#include <string>\n";
     out += "#include <type_traits>\n";
 
+    // ONLY WHAT IS ACTUALLY DEFINED HERE contributes its includes. A script
+    // left out of this unit contributes a declaration and an alias, and
+    // neither of those needs a header - hoisting its includes would make
+    // every unit pay for every script's headers, which is most of what
+    // leaving a script out is meant to save.
     std::vector<std::string> includes;
     std::vector<std::string> bodies;
     bodies.reserve(sources.size());
     for (const ScriptUnitSource& src : sources) {
         std::string body;
-        SplitOutIncludes(src.text, includes, body);
+        if (src.defineHere) {
+            SplitOutIncludes(src.text, includes, body);
+        }
         bodies.push_back(std::move(body));
     }
 
@@ -1865,12 +2426,38 @@ std::string GenerateScriptUnit(const ScriptSourceInfo&              info,
     for (std::size_t i = 0; i < sources.size(); ++i) {
         const ScriptUnitSource& src = sources[i];
 
+        // ==================================================================
+        //  DECLARED ABOVE, DEFINED HERE ONLY IF THIS UNIT NEEDS IT.
+        //
+        //  Its namespace, its forward declaration and its alias are already
+        //  written, so every other script in this unit can still HOLD a
+        //  reference to it, set one, test whether one was filled in, and have
+        //  it drawn in the Inspector. What it cannot do is RESOLVE one - `->`,
+        //  .Get(), or a boolean test - and ResolvesReference is what put this
+        //  script into the unit's set when something here does.
+        //
+        //  LEAVING IT OUT IS THE WHOLE POINT. Every unit used to carry every
+        //  script's body, so editing any one of them invalidated all of them.
+        //  Carrying only what is reached is what makes one edit rebuild one
+        //  library. See ScriptUnitSource::defineHere.
+        // ==================================================================
+        if (!src.defineHere) {
+            continue;
+        }
+
         out += "namespace s_";
         out += src.className;
         out += " {\n";
 
         // ==================================================================
         //  WHAT MAKES ANOTHER SCRIPT'S FILE-SCOPE HELPERS REACHABLE.
+        //
+        //  AND IT ONLY REACHES WHAT IS DEFINED IN THIS UNIT. A using-directive
+        //  naming a namespace that holds nothing but a class declaration is
+        //  legal and finds nothing, so a call to a helper in a script this
+        //  unit left out is "identifier not found" at the author's own line.
+        //  The editor keeps any script with file-scope code in every unit for
+        //  exactly that reason; see hasFileScopeCode in ScriptBuild.cpp.
         //
         //  Wrapping each script in a namespace of its own is what lets the
         //  bare name be a reference, but it also hid every free function and
@@ -1914,6 +2501,15 @@ std::string GenerateScriptUnit(const ScriptSourceInfo&              info,
             }
             out += AliasLine(other.className);
         }
+
+        // NOTHING HERE FOR THE ENGINE'S OWN COMPONENTS, and that is the
+        // point. Their aliases are members of ScriptBehaviour, which every
+        // script inherits - see scene/ComponentAliases.h - so they are
+        // already in scope inside the class without this file writing a
+        // line. They were emitted here for one version of this feature; the
+        // cost was that a script read on its own said something different
+        // from the unit, and every IDE underlined working code.
+
 
         out += "#line 1 \"";
         out += src.realPath;

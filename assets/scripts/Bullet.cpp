@@ -35,7 +35,6 @@
 class Bullet final : public eng::ScriptBehaviour {
 public:
     ImageRef sprite;                 // what the bullet looks like - drag a sprite here
-    SpriteComponent* m_renderer; // the SpriteComponent beside this script
 
     int         damage = 1;          // how much this takes off the target
     std::string hits   = "Enemy";    // the tag of the things it damages
@@ -46,8 +45,8 @@ public:
         // every undo step - so the rule in docs/scripting-reference.md is to
         // ask with Find each time. This needs it once, on the way in, so a
         // local is the whole of it.
-        m_renderer = Find<SpriteComponent>();
-        if (m_renderer == nullptr) {
+        auto* renderer = Find<SpriteComponent>();
+        if (renderer == nullptr) {
             ENGINE_LOG_ERROR(eng::Channels::kGame,
                              "Bullet on '{}' needs a SpriteComponent "
                              "beside it, and there is none - it will not draw",
@@ -67,7 +66,7 @@ public:
         // So the field is an OVERRIDE, not a requirement: leave it empty and
         // the sprite keeps whatever the prefab gave it.
         if (sprite.IsSet()) {
-            m_renderer->SetTexture(sprite);
+            renderer->SetTexture(sprite);
         }
     }
 

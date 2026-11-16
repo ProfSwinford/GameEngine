@@ -905,6 +905,41 @@ ProjectScripts GatherProjectScripts(const std::vector<std::string>& compiled,
     for (Entry& entry : entries) {
         eng::ScriptSourceInfo info = eng::ScanScriptSource(entry.text, project.names);
 
+        // ==================================================================
+        //  A SCRIPT NAMED AFTER A TYPE SCRIPTS DECLARE VARIABLES OF.
+        //
+        //  THE NET UNDER THE ASSETS PANEL, exactly as the duplicate-name
+        //  check below is. IsValidScriptName refuses this at the moment
+        //  somebody types the name, which is where it belongs - but a file
+        //  can arrive without ever being named here: copied in, cloned with
+        //  the project, or renamed on disk while the editor was shut.
+        //
+        //  AND THIS ONE DAMAGES THE OTHER SCRIPTS RATHER THAN ITSELF, which
+        //  is why it is worth a line of its own. A script called Color
+        //  compiles and runs perfectly; what breaks is `Color tint;` in every
+        //  other script, which stops meaning a colour and starts meaning a
+        //  reference to this one - silently, with the Inspector drawing an
+        //  entity slot and the Console reporting the variable as exposed.
+        //  Nothing downstream can tell that from somebody genuinely wanting a
+        //  reference, so this is the only place it can be said.
+        //
+        //  A WARNING AND NOT A REFUSAL, matching the duplicate below: the
+        //  fix is to rename the file, and refusing the build takes away the
+        //  editor somebody needs in order to do that.
+        // ==================================================================
+        if (const std::string_view shadowed =
+                eng::ScriptNameShadowsFieldType(entry.className);
+            !shadowed.empty()) {
+            project.notes.push_back(
+                entry.virtualPath + ": this script is called '" + entry.className +
+                "', which is also the name of a type scripts declare variables of. "
+                "In every other script in this project `" + std::string(shadowed) +
+                " something;` now means a reference to THIS script rather than a "
+                "value - the Inspector will draw a drag-an-entity slot where the "
+                "declaration asked for a value, and nothing else will report it. "
+                "Rename the script and its class.");
+        }
+
         // A SCRIPT POINTING AT ITS OWN KIND, which is a fair thing to want -
         // a door that opens the next door along - and the one spelling the
         // bare name cannot have. Inside `class Door` the name `Door` is the
@@ -999,12 +1034,61 @@ ProjectScripts GatherProjectScripts(const std::vector<std::string>& compiled,
             if (var.requiredType.empty() || var.requiredType == entry.className) {
                 continue;
             }
-            if (std::find(project.names.begin(), project.names.end(), var.requiredType) !=
-                    project.names.end() &&
-                eng::ReachesThroughReference(entry.code, var.name)) {
+            if (std::find(project.names.begin(), project.names.end(), var.requiredType) ==
+                project.names.end()) {
+                continue;
+            }
+            if (eng::ReachesThroughReference(entry.code, var.name)) {
                 entry.deps.push_back(var.requiredType);
             }
+
+            // ---- and the one mistake nothing used to mention -----------
+            //
+            // A reference assigned from Find<...>(). See AssignedFromFind:
+            // the compiler's answer is a C2679 naming an internal generated
+            // namespace, and this is the sentence it cannot produce.
+            if (eng::AssignedFromFind(entry.code, var.name)) {
+                project.notes.push_back(
+                    entry.virtualPath + ": '" + var.name + "' is declared `" +
+                    var.type + " " + var.name + "`, and a bare script name is a "
+                    "REFERENCE to that script rather than the script itself - "
+                    "which is what makes it a slot you can drag an entity onto. "
+                    "So it cannot be assigned from Find<...>(): Find hands back a "
+                    "pointer, and it cannot look up a script in any case. Fill it "
+                    "in one of two ways, and not both - either drag an entity onto "
+                    "'" + var.name + "' in the Inspector and delete the "
+                    "assignment, or point it at this entity in code with `" +
+                    var.name + ".Set(*Owner());`, in which case make the member "
+                    "private, because Set overwrites whatever was dragged in. "
+                    "Then reach it with `" + var.name + "->Method()`.");
+            }
         }
+
+        // ---- a bare component name with a star, which changed meaning -----
+        //
+        // See ComponentPointerDeclarations. The compiler's answer is C2440 at
+        // the assignment and a C2039 at every call site, none of them on the
+        // declaration, and the member is usually private so nothing else in
+        // this pass would mention it.
+        for (const eng::ComponentPointerDecl& decl :
+             eng::ComponentPointerDeclarations(entry.code)) {
+            project.notes.push_back(
+                entry.virtualPath + ": '" + decl.memberName + "' is declared `" +
+                decl.typeName + "* " + decl.memberName +
+                "`, and a bare component name is a REFERENCE to that component - "
+                "the same way a bare script name always was, which is what makes "
+                "`" + decl.typeName + " " + decl.memberName +
+                ";` a slot you can drag an entity onto. With the star it is a "
+                "pointer to a reference, which is why the errors land on the lines "
+                "that USE it rather than on this one. Drop the star: `" +
+                decl.typeName + " " + decl.memberName + ";` declares it, `" +
+                decl.memberName + " = Find<" + decl.typeName +
+                ">();` fills it in, and `" + decl.memberName +
+                "->Method()` reaches it unchanged. If you specifically want a raw "
+                "pointer, qualify the type instead - `eng::" + decl.typeName + "* " +
+                decl.memberName + ";` is still the component itself.");
+        }
+
         project.infoByPath[entry.virtualPath] = std::move(info);
     }
 

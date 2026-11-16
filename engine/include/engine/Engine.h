@@ -52,6 +52,7 @@
 #include <engine/resource/ResourceManager.h>
 #include <engine/scene/BuildScenes.h>
 #include <engine/scene/CameraComponent.h>
+#include <engine/scene/ComponentAliases.h>
 #include <engine/scene/Component.h>
 #include <engine/scene/DeferredOps.h>
 #include <engine/scene/Entity.h>
@@ -211,6 +212,66 @@ typedef eng::ComponentRef<eng::TransformComponent> TransformRef;
 // opens the editor. Grep assets/scripts first.
 
 typedef eng::ComponentRef<eng::SpriteComponent> SpriteRenderer;
+
+// ============================================================================
+//  THE REST OF THEM, because three out of nineteen was not a scheme.
+//
+//  Rigidbody2D, SpriteRenderer and TransformRef were the only components with
+//  a friendly name, and the gap was not benign: somebody who learns
+//  `SpriteRenderer renderer;` reasonably writes `SpriteAnimator anim;` next,
+//  and got `error C3646: unknown override specifier` with no suggestion. The
+//  component they most often wanted - SpriteAnimationComponent - was among
+//  the missing sixteen.
+//
+//  THE RULE, and it is worth stating because the names are not uniform:
+//
+//    Unity's own spelling where Unity has one and it is safe - every
+//    concrete collider, and Tilemap.
+//
+//    The house `...Ref` spelling where Unity's name cannot be used. That is
+//    EntityRef, PrefabRef, ImageRef, AnimationRef, TransformRef and now
+//    CameraRef and the UI ones.
+//
+//  WHY CameraRef AND NOT Camera: eng::Camera is a real class - the view
+//  transform the renderer takes - and scripts say `using namespace eng;`, so a
+//  global `Camera` would make the name ambiguous in every script. Same family
+//  of problem as Transform, different cause: that one is hidden by an
+//  inherited member function, this one collides with a type.
+//
+//  WHY THE UI ONES KEEP THE UI PREFIX: Unity calls them Button, Image, Slider
+//  and Text. Those are far too general to put at global scope in a header
+//  every script includes - somebody's own `class Text` would stop compiling -
+//  and `Image` would sit confusingly beside ImageRef, which is an image ASSET
+//  rather than a component. UIButtonRef and friends match the component names
+//  they wrap.
+//
+//  AND WHY THERE IS NO ScriptComponent ONE: a reference to "whichever script
+//  happens to be on that entity" is not a useful question, and asking it finds
+//  an arbitrary one of them. A reference to a PARTICULAR script is that
+//  script's own bare name - see scene/ScriptRef.h - which is the spelling this
+//  whole block is modelled on.
+// ============================================================================
+
+typedef eng::ComponentRef<eng::SpriteAnimationComponent> SpriteAnimator;
+typedef eng::ComponentRef<eng::CameraComponent>          CameraRef;
+typedef eng::ComponentRef<eng::TilemapComponent>         Tilemap;
+typedef eng::ComponentRef<eng::SpinComponent>            SpinRef;
+
+// The concrete colliders. Unity's names exactly, and the abstract base is
+// deliberately absent - see the note below on why Collider2D is a pointer.
+typedef eng::ComponentRef<eng::BoxColliderComponent>     BoxCollider2D;
+typedef eng::ComponentRef<eng::CircleColliderComponent>  CircleCollider2D;
+typedef eng::ComponentRef<eng::CapsuleColliderComponent> CapsuleCollider2D;
+typedef eng::ComponentRef<eng::EdgeColliderComponent>    EdgeCollider2D;
+typedef eng::ComponentRef<eng::PolygonColliderComponent> PolygonCollider2D;
+typedef eng::ComponentRef<eng::TilemapColliderComponent> TilemapCollider2D;
+
+// The UI components.
+typedef eng::ComponentRef<eng::UIRectComponent>   UIRectRef;
+typedef eng::ComponentRef<eng::UIImageComponent>  UIImageRef;
+typedef eng::ComponentRef<eng::UITextComponent>   UITextRef;
+typedef eng::ComponentRef<eng::UIButtonComponent> UIButtonRef;
+typedef eng::ComponentRef<eng::UISliderComponent> UISliderRef;
 
 // ============================================================================
 //  COLLIDER STAYS A POINTER, and it is the engine that decides that, not a

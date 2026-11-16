@@ -823,10 +823,18 @@ destroy queue.
 **The script object itself**, when you need to call its own methods:
 
 ```cpp
-FindScriptOn<Chaser>(entity)        // a script on a particular entity
-FindScriptIn<Chaser>(*GetScene())   // the one in the scene
-FindScriptNamedIn(*GetScene(), "ScoreKeeper")   // by name, no headers needed
+FindScriptOn<Chaser::ScriptType>(entity)       // a script on a particular entity
+FindScriptIn<Chaser::ScriptType>(*GetScene())  // the one in the scene
+FindScriptNamedIn(*GetScene(), "ScoreKeeper")  // by name, no headers needed
 ```
+
+**The `::ScriptType` is not optional.** A bare `Chaser` is a *reference* to the
+script — that is exactly what makes `Chaser chaser;` a slot you drag an entity
+onto — so `FindScriptOn<Chaser>` asks for something no entity carries. It used
+to compile, exit 0 and return null for ever; it is now refused by a
+`static_assert` that names the fix. Holding `Chaser chaser;` and calling
+`chaser->Method()` is usually better still: no lookup, and the Inspector can
+re-point it.
 
 The typed forms need the class to be **nameable** from your file. Scripts share
 the global namespace - they used to each sit in an anonymous `namespace { }`,
@@ -1193,13 +1201,69 @@ public:
 };
 ```
 
-`TransformRef`, `SpriteRenderer` and `Rigidbody2D` are the short spellings.
-For anything else, name the component:
+**A component's own name IS a reference, exactly like a script's.** That is the
+whole rule, and there is only one of it:
 
 ```cpp
-eng::ComponentRef<eng::TilemapComponent> ground;
-eng::ComponentRef<eng::BoxColliderComponent> area;
+SpriteComponent      renderer;   // a slot you drag an entity onto
+Rigidbody2DComponent body;       // the same
+Invisibility         invis;      // a script you wrote - no different
 ```
+
+All three are filled in the same two ways — by dragging an entity onto the slot
+in the Inspector, or in code from the lookup:
+
+```cpp
+renderer = Find<SpriteComponent>();
+body     = Find<Rigidbody2DComponent>();
+invis    = Find<Invisibility>();
+```
+
+and all three are reached with `->`. There is nothing an engine component does
+here that a component you write does not, which is the point of it.
+
+**The QUALIFIED name is the class.** `eng::SpriteComponent` is the component
+itself, so `eng::SpriteComponent* p` is a raw pointer to one and
+`eng::SpriteComponent x;` holds one by value — still a mistake, and still
+reported as one. The bare name and the qualified name are deliberately
+different things, exactly as `Invisibility` and the class behind it are.
+
+> **Coming from an older project?** `SpriteComponent* p;` — the bare name with
+> a star — now means a pointer to a *reference*, so it stops compiling at the
+> lines that use it. Drop the star, or write `eng::SpriteComponent*` if you
+> really did want a raw pointer. The build names the declaration and tells you
+> which, before the compiler gets a turn.
+
+**The short spellings still work**, and read better where Unity's name is the
+one you already know. All of these name the same type:
+
+| Component | Write | | Component | Write |
+|---|---|---|---|---|
+| `TransformComponent` | `TransformRef` | | `BoxColliderComponent` | `BoxCollider2D` |
+| `SpriteComponent` | `SpriteRenderer` | | `CircleColliderComponent` | `CircleCollider2D` |
+| `SpriteAnimationComponent` | `SpriteAnimator` | | `CapsuleColliderComponent` | `CapsuleCollider2D` |
+| `Rigidbody2DComponent` | `Rigidbody2D` | | `EdgeColliderComponent` | `EdgeCollider2D` |
+| `CameraComponent` | `CameraRef` | | `PolygonColliderComponent` | `PolygonCollider2D` |
+| `TilemapComponent` | `Tilemap` | | `TilemapColliderComponent` | `TilemapCollider2D` |
+| `SpinComponent` | `SpinRef` | | `UIRectComponent` | `UIRectRef` |
+| `UIImageComponent` | `UIImageRef` | | `UITextComponent` | `UITextRef` |
+| `UIButtonComponent` | `UIButtonRef` | | `UISliderComponent` | `UISliderRef` |
+
+`eng::ComponentRef<eng::TheComponent>` is accepted as well, so a tilemap slot
+can be spelled any of three ways and they are one type:
+
+```cpp
+TilemapComponent                         ground;   // its own name
+Tilemap                                  ground;   // the short spelling
+eng::ComponentRef<eng::TilemapComponent> ground;   // written out in full
+```
+
+**Two names are missing on purpose.** `Camera` is spelled **`CameraRef`**,
+because `eng::Camera` is a real class and scripts say `using namespace eng;` —
+a bare `Camera` would be ambiguous in every script. And `Collider2D` is a
+*pointer* to the abstract collider base rather than a reference: `Entity::Find`
+looks a component up by name and an abstract base has none, so name the
+concrete collider you mean, or call `eng::FindCollider(Entity&)`.
 
 **The slot only accepts an entity that has that component.** The picker lists
 only those, a drag from the Hierarchy that does not have one is not taken - the

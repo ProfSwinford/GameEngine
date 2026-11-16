@@ -1565,6 +1565,38 @@ the Console says why.
 A `static constexpr` constant is **not** exposed, and the Console says which
 one and why. Make it an ordinary member to tune it.
 
+##### And some names a SCRIPT cannot have
+
+Those five are about variables. A **script's own name** has one rule beyond
+being a legal C++ class name: it cannot be the name of a type scripts declare
+variables of. That is `Color`, `Vec2`, `Vector2`, `EntityRef`, `PrefabRef`,
+`AnimationRef`, `ImageRef`, every component's short spelling —
+`TransformRef`, `SpriteRenderer`, `SpriteAnimator`, `Rigidbody2D`, `CameraRef`,
+`Tilemap`, `SpinRef`, `BoxCollider2D`, `CircleCollider2D`, `CapsuleCollider2D`,
+`EdgeCollider2D`, `PolygonCollider2D`, `TilemapCollider2D`, `UIRectRef`,
+`UIImageRef`, `UITextRef`, `UIButtonRef`, `UISliderRef` — and every
+component's **own** name, because that is a reference too: `TransformComponent`,
+`SpriteComponent`, `SpriteAnimationComponent`, `Rigidbody2DComponent`,
+`CameraComponent`, `TilemapComponent`, `TilemapColliderComponent`,
+`SpinComponent`, `ScriptComponent`, `BoxColliderComponent`,
+`CircleColliderComponent`, `CapsuleColliderComponent`, `EdgeColliderComponent`,
+`PolygonColliderComponent`, `UIRectComponent`, `UIImageComponent`,
+`UITextComponent`, `UIButtonComponent` and `UISliderComponent`.
+
+The reason is that a script's name becomes available to every other script
+without an include — that is what lets you write `Door door;`. So a script
+called `Color` would make `Color tint;` in *every other script* stop meaning a
+colour and start meaning a reference to that script: the Inspector would draw
+a drag-an-entity slot where a colour picker was, and nothing would say why.
+
+**New Script and Rename refuse the name** with that explanation while you can
+still pick another, and the build warns by name for a file that arrived some
+other way — copied in, cloned with the project, or renamed on disk.
+
+Names like `Entity` or `Scene` are *not* on the list, deliberately. Nothing can
+be declared as a variable of those, so a script by that name is a compile error
+in a file you can open and rename. The list is the set that fails quietly.
+
 #### How it works, and what it misses
 
 C++ has no reflection — `requires` can ask whether a *named* member exists, but
@@ -1578,7 +1610,13 @@ unusual ones. Three things make missing them cheap:
 - anything unrecognised is simply not exposed — the same as before;
 - the generated code wraps every variable in `if constexpr (requires ...)`, so
   a variable it got wrong **compiles away** rather than breaking your build;
-- the Console lists what it exposed and what it skipped, with the reason.
+- the Console lists what it exposed and what it skipped, with the reason;
+- and if the compiler disagrees — a variable the parser accepted that then
+  compiles away — **the script says so the first time it runs**, naming the
+  variable. That third case used to be the silent one: the Console announced
+  the variable as exposed, the guard above removed it, and it appeared in
+  neither list. Only the generated code can see it, because the guard is
+  resolved by the compiler long after the source was read.
 
 #### When to write it yourself
 

@@ -174,12 +174,68 @@ public:
     // two are the same call.
     T* GetComponent() const { return EntityRef::Find<T>(); }
 
+    // ---- pointing it at something ---------------------------------------
+    //
+    //  ASSIGNED FROM WHAT A LOOKUP HANDS BACK, which is what makes
+    //
+    //      renderer = Find<SpriteComponent>();
+    //
+    //  mean the obvious thing, and is the other half of letting an engine
+    //  component be written exactly like a script. Find returns the
+    //  component; a component knows its entity; a reference travels as that
+    //  entity's NAME. So this reads "point at whoever owns this", and what
+    //  is stored afterwards re-resolves on every use like any other
+    //  reference rather than being a pointer that can go stale.
+    //
+    //  A NULL POINTER CLEARS IT rather than being kept. There is no name to
+    //  store, and a reference that silently held its previous target after
+    //  being assigned a failed lookup would be worse than one that is empty:
+    //  the next `if (ref)` would say yes and hand back the wrong component.
+    ComponentRef& operator=(T* component) {
+        if (component != nullptr && component->Owner() != nullptr) {
+            EntityRef::Set(*component->Owner());
+        } else {
+            EntityRef::Clear();
+        }
+        return *this;
+    }
+
     Pointee* operator->() const { return Get(); }
 
     // `if (anchor)` - true only when it resolves right now, so it answers the
     // question callers actually have rather than "was something dropped on
     // it". Hides EntityRef's, which answers about the entity alone.
     explicit operator bool() const { return Get() != nullptr; }
+};
+
+// ===========================================================================
+//  A LOOKUP HANDED THIS REFERENCE IS ASKING FOR THE COMPONENT IT REFERS TO.
+//  See FindTargetOf in scene/Entity.h for why this lives here.
+// ===========================================================================
+template <class T>
+struct FindTargetOf<ComponentRef<T>> {
+    using type = T;
+};
+
+// ===========================================================================
+//  ComponentRef<ComponentRef<T>> IS ComponentRef<T>, exactly as the matching
+//  specialization in ScriptRef.h keeps the explicit script spelling working.
+//
+//  A bare component name is an alias for a reference to it now, so writing
+//  the explicit form with the UNQUALIFIED name - ComponentRef<SpriteComponent>
+//  - asks for ComponentRef<ComponentRef<...>>. Without this that is a hard
+//  error from the static_asserts above, on a line that was correct before and
+//  still reads correctly. The qualified eng::SpriteComponent is the class and
+//  needs none of this.
+//
+//  DERIVED RATHER THAN ALIASED, because a partial specialization cannot be an
+//  alias template. `using` re-exposes the pointer assignment, which the
+//  derived class's own implicit copy-assignment would otherwise hide.
+// ===========================================================================
+template <class T>
+class ComponentRef<ComponentRef<T>> : public ComponentRef<T> {
+public:
+    using ComponentRef<T>::operator=;
 };
 
 } // namespace eng

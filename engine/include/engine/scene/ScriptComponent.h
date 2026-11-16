@@ -118,6 +118,8 @@
 // ============================================================================
 
 #include <engine/scene/Component.h>
+#include <engine/scene/ComponentAliases.h>
+#include <engine/scene/ComponentRef.h>
 #include <engine/scene/Coroutine.h>
 // Scene.h, because the templates on ScriptBehaviour below walk the scene and
 // the hierarchy, so Scene and Entity both have to be complete here rather
@@ -133,6 +135,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 namespace eng {
 
@@ -337,8 +340,51 @@ public:
 //  What it does give you is the handful of accessors a script needs, all valid
 //  from OnStart onwards.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  DECLARED, NOT INCLUDED. The aliases below name these types but never need
+//  them COMPLETE: `using X = ComponentRef<Y>;` does not instantiate
+//  ComponentRef, so a declaration is enough and this header does not have to
+//  drag in the tilemap, the UI and every collider. A script that actually
+//  DECLARES one gets the complete type from <engine/Engine.h>, which it has
+//  included long before its own first line.
+// ---------------------------------------------------------------------------
+class SpriteAnimationComponent;
+class Rigidbody2DComponent;
+class CameraComponent;
+class TilemapComponent;
+class TilemapColliderComponent;
+class SpinComponent;
+class BoxColliderComponent;
+class CircleColliderComponent;
+class CapsuleColliderComponent;
+class EdgeColliderComponent;
+class PolygonColliderComponent;
+class UIRectComponent;
+class UIImageComponent;
+class UITextComponent;
+class UIButtonComponent;
+class UISliderComponent;
+
 class ScriptBehaviour {
 public:
+    // ======================================================================
+    //  THE ENGINE'S COMPONENTS, UNDER THEIR OWN NAMES, AS REFERENCES.
+    //
+    //  `SpriteComponent renderer;` is a slot you drag an entity onto - the
+    //  same thing `Invisibility invis;` is for a script the game wrote. That
+    //  is the whole of what makes an engine component and a script the same
+    //  thing to write, and scene/ComponentAliases.h argues it at length.
+    //
+    //  THEY ARE MEMBERS BECAUSE THEY HAVE TO BE. A script says
+    //  `using namespace eng;`, so an alias anywhere at namespace scope would
+    //  be a second SpriteComponent in the global namespace and every use of
+    //  the name would be C2872. A member inherited from here hides the
+    //  namespace-scope name outright, and - the part that matters most - it
+    //  does so in the file you are EDITING as well as in the unit the editor
+    //  generates, so your IDE and the compiler agree about what the name is.
+    // ======================================================================
+    ENGINE_SCRIPT_COMPONENT_REFERENCES
+
     // Virtual so a script can be deleted through this base pointer. It is the
     // only virtual function left, and the only one that needs to be.
     virtual ~ScriptBehaviour() = default;
@@ -463,39 +509,46 @@ public:
     //     if (self == nullptr) { return; }
     //     auto* body = self->Find<eng::Rigidbody2DComponent>();
     template <class T>
-    T* Find() const {
+    typename FindTargetOf<T>::type* Find() const {
+        using Target = typename FindTargetOf<T>::type;
         Entity* self = Owner();
-        return self != nullptr ? self->Find<T>() : nullptr;
+        return self != nullptr ? self->Find<Target>() : static_cast<Target*>(nullptr);
     }
 
     // Unity's GetComponentInChildren / GetComponentInParent. Both include this
     // entity itself, as Unity's do.
     template <class T>
-    T* FindInChildren() const {
+    typename FindTargetOf<T>::type* FindInChildren() const {
+        using Target = typename FindTargetOf<T>::type;
         Entity* self = Owner();
-        return self != nullptr ? self->FindInChildren<T>() : nullptr;
+        return self != nullptr ? self->FindInChildren<Target>()
+                               : static_cast<Target*>(nullptr);
     }
     template <class T>
-    T* FindInParents() const {
+    typename FindTargetOf<T>::type* FindInParents() const {
+        using Target = typename FindTargetOf<T>::type;
         Entity* self = Owner();
-        return self != nullptr ? self->FindInParents<T>() : nullptr;
+        return self != nullptr ? self->FindInParents<Target>()
+                               : static_cast<Target*>(nullptr);
     }
 
     // Unity's AddComponent<T>(). Add always adds another; Require adds one
     // only if there is not one already, which is what the comment "this script
     // needs a rigidbody" usually means.
     template <class T>
-    T* Add() const {
+    typename FindTargetOf<T>::type* Add() const {
+        using Target = typename FindTargetOf<T>::type;
         Entity* self = Owner();
-        return self != nullptr ? self->Add<T>() : nullptr;
+        return self != nullptr ? self->Add<Target>() : static_cast<Target*>(nullptr);
     }
     template <class T>
-    T* Require() const {
+    typename FindTargetOf<T>::type* Require() const {
+        using Target = typename FindTargetOf<T>::type;
         Entity* self = Owner();
         if (self == nullptr) {
             return nullptr;
         }
-        if (T* existing = self->Find<T>(); existing != nullptr) {
+        if (Target* existing = self->Find<Target>(); existing != nullptr) {
             return existing;
         }
         return self->Add<T>();
@@ -515,31 +568,34 @@ public:
     // empty vector and 0 rather than an untouched one, because "cleared first"
     // has to be true however the call turns out.
     template <class T>
-    std::size_t FindAll(std::vector<T*>& into) const {
+    std::size_t FindAll(
+        std::vector<typename FindTargetOf<T>::type*>& into) const {
         Entity* self = Owner();
         if (self == nullptr) {
             into.clear();
             return 0;
         }
-        return self->FindAll<T>(into);
+        return self->FindAll<typename FindTargetOf<T>::type>(into);
     }
     template <class T>
-    std::size_t FindAllInChildren(std::vector<T*>& into) const {
+    std::size_t FindAllInChildren(
+        std::vector<typename FindTargetOf<T>::type*>& into) const {
         Entity* self = Owner();
         if (self == nullptr) {
             into.clear();
             return 0;
         }
-        return self->FindAllInChildren<T>(into);
+        return self->FindAllInChildren<typename FindTargetOf<T>::type>(into);
     }
     template <class T>
-    std::size_t FindAllInParents(std::vector<T*>& into) const {
+    std::size_t FindAllInParents(
+        std::vector<typename FindTargetOf<T>::type*>& into) const {
         Entity* self = Owner();
         if (self == nullptr) {
             into.clear();
             return 0;
         }
-        return self->FindAllInParents<T>(into);
+        return self->FindAllInParents<typename FindTargetOf<T>::type>(into);
     }
 
     // ---- another entity --------------------------------------------------
@@ -1251,30 +1307,81 @@ private:
 // Any script on `entity` that is really a T, or null.
 template <class T>
 T* FindScriptOn(Entity& entity) {
-    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
-        Component* component = entity.ComponentAt(i);
-        if (component == nullptr) {
-            continue;
-        }
-        // As TEXT, because the two literals live in engine.dll and in the
-        // compiled scripts and nothing folded them to one address.
-        if (std::string_view(component->TypeName()) != ScriptComponent::kTypeName) {
-            continue;
-        }
-        if (T* found = dynamic_cast<T*>(
-                static_cast<ScriptComponent*>(component)->Behaviour())) {
-            return found;
+    // ======================================================================
+    //  A BARE SCRIPT NAME IS NOT THE CLASS, and until this check existed
+    //  that mistake COMPILED CLEANLY AND RETURNED NULL FOR EVER.
+    //
+    //  `Door` is an alias for eng::ScriptRef<the class> - that is the whole
+    //  point of it, and what makes `Door door;` a slot you drag an entity
+    //  onto. So FindScriptOn<Door> asked to dynamic_cast a ScriptBehaviour*
+    //  to a ScriptRef, which is a cast between unrelated types: well formed,
+    //  never successful. The build exited 0, nothing warned, and the call
+    //  site simply never did anything.
+    //
+    //  IT WAS THE SPELLING THIS ENGINE RECOMMENDED. ScriptRef.h said to
+    //  write it for a script on the same entity, the scripting reference
+    //  said it twice, and the editor's own warning about a pointer member
+    //  said it as well - so reading the documentation and following it got
+    //  you a permanent silent no-op. All four now say ::ScriptType.
+    //
+    //  WHY if constexpr AS WELL: without it the dynamic_cast below is still
+    //  instantiated and adds a second error - C2680, inside this header,
+    //  naming no user file. Discarding the body leaves the message below as
+    //  the only thing the author is told.
+    // ======================================================================
+    static_assert(
+        std::is_base_of_v<ScriptBehaviour, T>,
+        "FindScriptOn<T> and FindScriptIn<T> need the SCRIPT CLASS, and a bare "
+        "script name is not it: `Door` means eng::ScriptRef<Door>, a REFERENCE to "
+        "the script, which is what makes `Door door;` a slot you drag an entity "
+        "onto. Asking for a reference finds nothing and always will. Two ways to "
+        "fix it, and the second is usually better: write "
+        "eng::FindScriptOn<Door::ScriptType>(...) - ScriptRef declares ScriptType "
+        "for exactly this - or declare `Door door;` and call door->Method(), which "
+        "needs no lookup at all and can be re-pointed in the Inspector. For a "
+        "COMPONENT the engine defines, the spelling is Find<eng::TheComponent>() "
+        "instead.");
+
+    if constexpr (std::is_base_of_v<ScriptBehaviour, T>) {
+        for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+            Component* component = entity.ComponentAt(i);
+            if (component == nullptr) {
+                continue;
+            }
+            // As TEXT, because the two literals live in engine.dll and in the
+            // compiled scripts and nothing folded them to one address.
+            if (std::string_view(component->TypeName()) != ScriptComponent::kTypeName) {
+                continue;
+            }
+            if (T* found = dynamic_cast<T*>(
+                    static_cast<ScriptComponent*>(component)->Behaviour())) {
+                return found;
+            }
         }
     }
     return nullptr;
 }
 
-// The same, through a reference - which is the spelling a script actually
-// writes: FindScriptOn<Chaser>(ref).
+// The same, through a reference. NOTE THE ::ScriptType - a bare `Chaser` is
+// a reference to the script, not the class, and the static_assert above
+// explains what that used to do silently:
+//
+//     eng::FindScriptOn<Chaser::ScriptType>(ref)
 template <class T>
 T* FindScriptOn(const EntityRef& ref) {
     Entity* entity = ref.Target();
     return entity != nullptr ? FindScriptOn<T>(*entity) : nullptr;
+}
+
+// ---------------------------------------------------------------------------
+//  THE DEFINITION Entity.h DECLARED, which is what lets entity.Find<Chaser>()
+//  work at all. The split is forced: dynamic_cast needs the complete
+//  ScriptBehaviour and Entity.h is included by the header that declares it.
+//  See FindTargetOf in scene/Entity.h for the whole arrangement.
+// ---------------------------------------------------------------------------
+template <class T>
+T* FindScriptOnEntity(Entity& entity) {
+    return FindScriptOn<T>(entity);
 }
 
 // Untyped, by the name the registry knows it under. This is what the editor

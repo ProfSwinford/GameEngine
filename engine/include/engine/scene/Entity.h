@@ -47,8 +47,52 @@
 namespace eng {
 
 class Component;
+class Entity;
 class Scene;
 class Transform2D;
+
+// ===========================================================================
+//  WHAT A LOOKUP IS ACTUALLY BEING ASKED FOR, when the name it was handed is
+//  a REFERENCE rather than the thing itself.
+//
+//  Inside a script a bare component name means a reference to one, so
+//  `SpriteComponent renderer;` is a slot you drag an entity onto - exactly as
+//  `Invisibility invis;` is for a script the game defines. That is the whole
+//  point: an engine component and a script are the same thing to write.
+//
+//  But it also means `Find<SpriteComponent>()` arrives here asking for a
+//  ComponentRef, which is not a component, has no kTypeName, and would fail
+//  with an error naming a type the author never typed.
+//
+//  SO A LOOKUP UNWRAPS FIRST. The primary template says "not a reference, use
+//  it as it stands"; ComponentRef.h and ScriptRef.h each specialise it for
+//  their own type. Those two include this header rather than the other way
+//  round, which is why the specialisations cannot live here - and they do not
+//  need to, because a specialisation only has to be visible where the
+//  template is INSTANTIATED, and every script sees the whole of
+//  <engine/Engine.h> before its own first line.
+// ===========================================================================
+template <class T>
+struct FindTargetOf {
+    using type = T;
+};
+
+// ---------------------------------------------------------------------------
+//  DECLARED HERE, DEFINED IN ScriptComponent.h, and the split is forced.
+//
+//  Finding a script means dynamic_cast-ing to it, which needs the complete
+//  ScriptBehaviour - and ScriptBehaviour's own header includes this one. A
+//  template may be declared now and defined later in the same translation
+//  unit, so Entity::Find can route a script lookup through this name and the
+//  definition is in scope by the time anything instantiates it.
+//
+//  A translation unit that includes Entity.h WITHOUT ScriptComponent.h and
+//  asks for a script would fail to link rather than to compile. Nothing in
+//  the engine does, and a script cannot: <engine/Engine.h> brings in both.
+// ---------------------------------------------------------------------------
+template <class T>
+T* FindScriptOnEntity(Entity& entity);
+
 
 class Entity {
 public:
@@ -121,13 +165,45 @@ public:
     //
     // It still looks the component up by its type name underneath, so it finds
     // exactly the same thing the scene file would.
+    //
+    // IT UNWRAPS A REFERENCE FIRST - see FindTargetOf above. Inside a script
+    // `SpriteComponent` names a ComponentRef and `Invisibility` names a
+    // ScriptRef, so without this the commonest spelling of the commonest
+    // lookup would fail on a type the author never wrote. A script goes to
+    // FindScriptOnEntity, a component to the name lookup below, and the two
+    // read identically at the call site, which is the entire point.
     template <typename T>
-    T* Find() {
-        return static_cast<T*>(FindComponent(T::kTypeName));
+    auto* Find() {
+        using Target = typename FindTargetOf<T>::type;
+        if constexpr (requires { Target::kTypeName; }) {
+            return static_cast<Target*>(FindComponent(Target::kTypeName));
+        } else {
+            // No kTypeName: a script, or an abstract component base. The
+            // static_assert inside FindScriptOn tells the two apart and says
+            // what to write for each.
+            return FindScriptOnEntity<Target>(*this);
+        }
     }
+
+    // The const one answers about COMPONENTS only. A script found through it
+    // would be handed out const, and every hook on it is non-const, so the
+    // call could not do anything with what it got.
+    //
+    // The message is spelled out rather than hoisted into a constant, because
+    // a static_assert message has to be a string LITERAL until C++26 and a
+    // project's scripts compile as C++20 against this header.
     template <typename T>
-    const T* Find() const {
-        return static_cast<const T*>(FindComponent(T::kTypeName));
+    const auto* Find() const {
+        using Target = typename FindTargetOf<T>::type;
+        static_assert(
+            requires { Target::kTypeName; },
+            "A const Find<T>() looks a COMPONENT up by its kTypeName, and T has "
+            "none. For a SCRIPT, ask through a non-const entity - or hold "
+            "`TheScript member;` and call member->Method(), which is the spelling "
+            "this engine prefers. If T is an abstract component base such as "
+            "eng::ColliderComponent, it has no kTypeName of its own: name the "
+            "concrete one you mean, or call eng::FindCollider(Entity&).");
+        return static_cast<const Target*>(FindComponent(Target::kTypeName));
     }
 
     // Adds a component by its C++ TYPE, which is what code wants:
@@ -141,8 +217,13 @@ public:
     // as a loaded one is - and a type somebody forgot to register fails here
     // rather than producing an entity that cannot be saved.
     template <typename T>
-    T* Add() {
-        return static_cast<T*>(AddComponent(T::kTypeName));
+    typename FindTargetOf<T>::type* Add() {
+        using Target = typename FindTargetOf<T>::type;
+        static_assert(requires { Target::kTypeName; },
+                      "Add<T>() creates a COMPONENT, and T is not one. A script is "
+                      "attached by name rather than by type - see ScriptComponent - "
+                      "and an abstract component base cannot be created at all.");
+        return static_cast<Target*>(AddComponent(Target::kTypeName));
     }
 
     // Every component of this type, not just the first. Several scripts, or
@@ -203,8 +284,10 @@ public:
     // and because the difference is a silent one - a component found on the
     // entity itself when you meant only its children is not an error anywhere,
     // it is just the wrong answer.
-    template <typename T> T* FindInChildren(bool includeSelf = true);
-    template <typename T> T* FindInParents(bool includeSelf = true);
+    template <typename T>
+    typename FindTargetOf<T>::type* FindInChildren(bool includeSelf = true);
+    template <typename T>
+    typename FindTargetOf<T>::type* FindInParents(bool includeSelf = true);
 
     // Every match in the subtree, in depth-first order. Same `into` contract
     // as FindAll above: cleared first, caller owns it, count returned.

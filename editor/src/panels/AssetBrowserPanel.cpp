@@ -1622,8 +1622,11 @@ void AssetBrowserPanel::DrawRenamePopup() {
                             "them could ever run";
         }
         if (!scriptRefusal.empty()) {
-            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s",
-                               scriptRefusal.c_str());
+            // Wrapped for the reason the New Script dialog's is; this one
+            // carries the same sentences.
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+            ImGui::TextWrapped("%s", scriptRefusal.c_str());
+            ImGui::PopStyleColor();
         }
     }
 
@@ -2159,7 +2162,16 @@ void AssetBrowserPanel::DrawNewScriptPopup() {
     const std::string* taken = ScriptNameTaken(m_newScriptName, std::string());
 
     if (!nameOk) {
-        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", error.c_str());
+        // WRAPPED, AND NOT TextColored, because these refusals are sentences
+        // rather than labels. This dialog is AlwaysAutoResize, so one
+        // unwrapped line sets the window's whole width - and the one about a
+        // name that shadows an engine type is a paragraph, which stretched
+        // this popup off the side of the screen with the end of it still cut
+        // off. TextWrapped is what the template explanation below already
+        // uses, so this now matches it.
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+        ImGui::TextWrapped("%s", error.c_str());
+        ImGui::PopStyleColor();
     } else if (taken != nullptr) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
                            "'%s' is already the script in '%s'", m_newScriptName,

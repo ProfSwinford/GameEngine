@@ -134,6 +134,14 @@
           "vars": {
             "bullet": "prefabs/bullet.oprefab"
           }
+        },
+        {
+          "script": "PlayerMovement",
+          "type": "ScriptComponent"
+        },
+        {
+          "script": "TestScript",
+          "type": "ScriptComponent"
         }
       ],
       "name": "Player"

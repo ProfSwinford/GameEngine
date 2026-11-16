@@ -723,7 +723,7 @@ TEST_CASE("components can be found down the tree and up the chain") {
     // Every match, in the subtree.
     REQUIRE(middle != EntityId{});
     REQUIRE(world.scene.Get(middle)->Add<SpinComponent>() != nullptr);
-    std::vector<SpinComponent*> spins;
+    std::vector<eng::SpinComponent*> spins;
     CHECK(ship.FindAllInChildren<SpinComponent>(spins) == 2);
     CHECK(spins.size() == 2);
 
@@ -750,7 +750,7 @@ TEST_CASE("several components of one type come back together") {
     REQUIRE(entity->Add<BoxColliderComponent>() != nullptr);
     REQUIRE(entity->Add<SpinComponent>() != nullptr);
 
-    std::vector<BoxColliderComponent*> boxes;
+    std::vector<eng::BoxColliderComponent*> boxes;
     CHECK(entity->FindAll<BoxColliderComponent>(boxes) == 2);
 
     // CLEARED FIRST, not appended to. A function that added to whatever was
@@ -758,7 +758,7 @@ TEST_CASE("several components of one type come back together") {
     // call, which in a per-frame walk is a leak that looks like a logic bug.
     CHECK(entity->FindAll<BoxColliderComponent>(boxes) == 2);
 
-    std::vector<SpinComponent*> spins;
+    std::vector<eng::SpinComponent*> spins;
     CHECK(entity->FindAll<SpinComponent>(spins) == 1);
 }
 
@@ -2047,15 +2047,15 @@ public:
 
     // The FindAll family, which had no spelling on this class before.
     std::size_t CountHere() const {
-        std::vector<BoxColliderComponent*> found;
+        std::vector<eng::BoxColliderComponent*> found;
         return FindAll<BoxColliderComponent>(found);
     }
     std::size_t CountBelow() const {
-        std::vector<SpinComponent*> found;
+        std::vector<eng::SpinComponent*> found;
         return FindAllInChildren<SpinComponent>(found);
     }
-    std::vector<SpinComponent*> SpinsAbove() const {
-        std::vector<SpinComponent*> found;
+    std::vector<eng::SpinComponent*> SpinsAbove() const {
+        std::vector<eng::SpinComponent*> found;
         FindAllInParents<SpinComponent>(found);
         return found;
     }
@@ -2356,7 +2356,7 @@ TEST_CASE("a script can ask for every component, not just the first") {
     CHECK(script->CountBelow() == 1);
 
     // ---- UP THE CHAIN, NEAREST FIRST ------------------------------------
-    const std::vector<SpinComponent*> above = script->SpinsAbove();
+    const std::vector<eng::SpinComponent*> above = script->SpinsAbove();
     REQUIRE(above.size() == 3);
     CHECK(above[0] == world.scene.Get(leaf)->Find<SpinComponent>());
     CHECK(above[1] == world.scene.Get(middle)->Find<SpinComponent>());
@@ -2373,7 +2373,7 @@ TEST_CASE("FindAllInParents can leave this entity out, and clears what it is giv
     REQUIRE(world.scene.Get(root)->Add<SpinComponent>() != nullptr);
     REQUIRE(world.scene.Get(leaf)->Add<SpinComponent>() != nullptr);
 
-    std::vector<SpinComponent*> found;
+    std::vector<eng::SpinComponent*> found;
     CHECK(world.scene.Get(leaf)->FindAllInParents<SpinComponent>(found) == 2);
     CHECK(world.scene.Get(leaf)->FindAllInParents<SpinComponent>(found, false) == 1);
     CHECK(found[0] == world.scene.Get(root)->Find<SpinComponent>());

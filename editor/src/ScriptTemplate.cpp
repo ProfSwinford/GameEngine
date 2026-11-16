@@ -4,6 +4,8 @@
 
 #include "ScriptTemplate.h"
 
+#include <engine/tools/ScriptVars.h>   // ScriptNameShadowsFieldType
+
 #include <cctype>
 #include <format>
 #include <set>
@@ -55,6 +57,35 @@ bool IsValidScriptName(std::string_view name, std::string& outError) {
         outError = std::format("'{}' is a C++ keyword and cannot be a class name", name);
         return false;
     }
+
+    // ======================================================================
+    //  A NAME THAT WOULD SHADOW A TYPE OTHER SCRIPTS DECLARE VARIABLES OF.
+    //
+    //  REFUSED HERE BECAUSE THIS IS THE LAST MOMENT IT IS FREE. A script
+    //  called `Color` compiles, loads and runs - what breaks is every OTHER
+    //  script in the project, quietly: `Color tint;` in one of them stops
+    //  meaning a colour and starts meaning a reference to this script, the
+    //  Inspector draws an entity slot where a colour picker was, and nothing
+    //  reports it. Renaming afterwards means renaming the class, the file and
+    //  whatever a scene file already saved under the old name.
+    //
+    //  THE ENGINE ANSWERS, not a list kept here. See
+    //  ScriptNameShadowsFieldType in tools/ScriptVars.h, which reads the same
+    //  table the script parser matches declarations against - so a type
+    //  spelling added to the engine is covered by this refusal without
+    //  anybody remembering to come back here.
+    // ======================================================================
+    if (const std::string_view shadowed = eng::ScriptNameShadowsFieldType(name);
+        !shadowed.empty()) {
+        outError = std::format(
+            "'{}' is the name of a type scripts declare variables of, so a script "
+            "called that would quietly change what '{} something;' means in every "
+            "other script - from a value into a reference to this one. Pick another "
+            "name.",
+            name, shadowed);
+        return false;
+    }
+
     outError.clear();
     return true;
 }

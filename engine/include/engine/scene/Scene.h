@@ -723,9 +723,9 @@ std::size_t Entity::FindAll(std::vector<T*>& into) {
 
 
 template <typename T>
-T* Entity::FindInChildren(bool includeSelf) {
+typename FindTargetOf<T>::type* Entity::FindInChildren(bool includeSelf) {
     if (includeSelf) {
-        if (T* mine = Find<T>(); mine != nullptr) {
+        if (auto* mine = Find<T>(); mine != nullptr) {
             return mine;
         }
     }
@@ -755,7 +755,7 @@ T* Entity::FindInChildren(bool includeSelf) {
             continue;
         }
         if (Entity* owner = scene->EntityOf(*node); owner != nullptr) {
-            if (T* found = owner->Find<T>(); found != nullptr) {
+            if (auto* found = owner->Find<T>(); found != nullptr) {
                 return found;
             }
         }
@@ -765,9 +765,9 @@ T* Entity::FindInChildren(bool includeSelf) {
 }
 
 template <typename T>
-T* Entity::FindInParents(bool includeSelf) {
+typename FindTargetOf<T>::type* Entity::FindInParents(bool includeSelf) {
     if (includeSelf) {
-        if (T* mine = Find<T>(); mine != nullptr) {
+        if (auto* mine = Find<T>(); mine != nullptr) {
             return mine;
         }
     }
@@ -780,7 +780,7 @@ T* Entity::FindInParents(bool includeSelf) {
     for (const Transform2D* node = Transform().Parent(); node != nullptr;
          node                    = node->Parent()) {
         if (Entity* owner = scene->EntityOf(*node); owner != nullptr) {
-            if (T* found = owner->Find<T>(); found != nullptr) {
+            if (auto* found = owner->Find<T>(); found != nullptr) {
                 return found;
             }
         }

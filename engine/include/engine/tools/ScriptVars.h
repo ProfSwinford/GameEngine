@@ -228,6 +228,51 @@ ScriptSourceInfo ScanScriptSource(std::string_view               source,
 // not use it - tooltips and markers are read from the comments.
 std::string StripComments(std::string_view source);
 
+// ===========================================================================
+//  A SCRIPT NAME THAT WOULD SHADOW A TYPE SCRIPTS DECLARE VARIABLES OF.
+//
+//  Returns the spelling it collides with, or empty when there is none.
+//
+//  ==========================================================================
+//  WHAT GOES WRONG, measured rather than feared. A script called `Color`
+//  makes the generated unit emit
+//
+//      using Color = ::eng::ScriptRef<s_Color::Color>;
+//
+//  at global scope AND inside every script's namespace - which is what lets
+//  one script name another without a header. So in some other script,
+//
+//      Color tint;
+//
+//  no longer means eng::Color. It means a reference to that script. And every
+//  net this build has lets it through: the parser matched `Color` against the
+//  table below before it ever consulted the project's script names, so it
+//  recorded a COLOUR and the Console announced "exposing tint"; the generated
+//  exposer's `requires` guard asked whether the field type is one the engine
+//  knows and a ScriptRef IS one, so the guard passed; and the Inspector drew
+//  the drag-an-entity slot that the declaration now genuinely asks for.
+//
+//  A colour picker became an entity reference, the Console said it was fine,
+//  and nothing anywhere named the cause.
+//
+//  ==========================================================================
+//  WHY THIS LIST AND NOT EVERY ENGINE TYPE, which is the question to ask of
+//  any reserved-name check.
+//
+//  Because this is exactly the set that fails QUIETLY. A script called
+//  `Entity` or `Scene` shadows those names too - but nothing can be declared
+//  as a field of them, so the parser never matches one, the alias is only
+//  reached by code that USES the name, and a ScriptRef has none of Entity's
+//  members. That is a compile error in a file somebody can open and rename,
+//  which is recoverable. The spellings below are the ones where the mistake
+//  compiles, runs, and shows the wrong widget.
+//
+//  DERIVED FROM THE PARSER'S OWN TABLE rather than written out again here, so
+//  a type spelling added to this engine is covered by this check on the same
+//  commit. A second list is how a guard comes to be one name short.
+// ===========================================================================
+std::string_view ScriptNameShadowsFieldType(std::string_view scriptName);
+
 // `class` or `struct`, whichever the author used to define that class, and
 // "class" when the definition cannot be found. Needed because every script is
 // forward-declared before any of them is defined, and a declaration that
@@ -246,6 +291,97 @@ std::string ClassKeyOf(std::string_view code, std::string_view className);
 //
 // `ref . Member` is deliberately NOT this: that reaches ScriptRef itself.
 bool ReachesThroughReference(std::string_view code, std::string_view member);
+
+// ===========================================================================
+//  DOES THIS SCRIPT RESOLVE THAT REFERENCE - turn it into a pointer - as
+//  opposed to merely holding, setting or testing whether it was filled in?
+//
+//  THE LARGER QUESTION ReachesThroughReference DOES NOT ANSWER, and the two
+//  are not interchangeable. That one asks what forces an ORDER inside one
+//  translation unit, and `->` is the whole of it because member lookup is
+//  resolved where it is written. This one asks which DEFINITIONS a script
+//  needs in its unit at all, which is what decides whether units can be split
+//  so that editing one script does not rebuild every other.
+//
+//  THE SET IS BIGGER BY TWO SPELLINGS, measured against this toolchain with
+//  the class merely declared:
+//
+//      compiles      the member itself, arrays of them, IsSet, Clear, Set,
+//                    TargetName, and being exposed through f.Ref
+//      needs it      ->            error C2027
+//                    .Get()        error C2139
+//                    if (ref)      error C2139, through operator bool, which
+//                                  calls Get(), whose static_assert asks
+//                                  __is_base_of of an incomplete type
+//
+//  The boolean test is the one that surprises, and it is why ScriptVars.cpp's
+//  note beside ReachesThroughReference had to be corrected: `if (door)` is
+//  accepted today because every unit holds every definition and a class
+//  template's members are instantiated at the END of the unit, by which time
+//  the class is whole. It is a property of the arrangement, not of ScriptRef.
+//
+//  DELIBERATELY OVER-APPROXIMATING. Anything naming the member that is not
+//  `member.` or `member[...].` is counted, which sweeps up assignments and
+//  anything this scan does not understand. Being wrong that way costs a unit
+//  that did not have to be rebuilt; being wrong the other way costs a missing
+//  definition, which is a compile error in a generated file.
+//
+//  `typeName` is the script the member is declared as, so the DECLARATION
+//  itself - `DoorSwitch doorSwitch;` - is not mistaken for a use of it.
+// ===========================================================================
+bool ResolvesReference(std::string_view code, std::string_view typeName,
+                       std::string_view member);
+
+// ===========================================================================
+//  THE DECLARATIONS THE SCAN ABOVE NEVER OFFERS, because they are not the
+//  Inspector's business.
+//
+//  ScanScriptSource returns the variables the INSPECTOR will draw. A private
+//  member is not among them, and the two predicates above can only be asked
+//  about a member somebody hands them - so a unit that reaches another script
+//  ONLY through a private member reported needing nothing, and the generated
+//  unit carried a forward declaration where the body had to be:
+//
+//      error C2027: use of undefined type 's_Other::Other'
+//
+//  A MEMBER'S ACCESS LEVEL DECIDED WHETHER THE PROJECT COMPILED. Worse, the
+//  failing spelling is the one the script template recommends ("make it
+//  private, or rename it m_speed"). Note that `m_` alone was never affected:
+//  the scan does not consult the name, so a public `m_invis` is still drawn
+//  and was still seen.
+//
+//  MembersOfScriptType reads them out of the text at any access level, so
+//  ScriptBuild can ask the same two questions about all of them. It does not
+//  judge what a use means; that stays in ResolvesReference.
+// ===========================================================================
+std::vector<std::string> MembersOfScriptType(std::string_view code,
+                                             std::string_view typeName);
+
+// A declaration of the form `SpriteComponent* name` - a BARE component name
+// with a star. That used to be a pointer to the component and is now a pointer
+// to a reference, because the bare name is an alias for eng::ComponentRef; see
+// scene/ComponentAliases.h. It is the one spelling the change breaks, it
+// usually sits in a private section where the Inspector scan never looks, and
+// the compiler reports it at every USE rather than at the declaration - so
+// this is what lets the build name the line itself.
+struct ComponentPointerDecl {
+    std::string typeName;     // as written, e.g. "Rigidbody2DComponent"
+    std::string memberName;   // e.g. "rb"
+};
+std::vector<ComponentPointerDecl> ComponentPointerDeclarations(std::string_view code);
+
+// Is `member` assigned from a Find<...>() call? A reference member cannot be -
+// Find returns a pointer and EntityRef has no assignment from one - so this
+// answering true means the line cannot compile, and the scan can say so in
+// words before the compiler says it in overload-resolution notes.
+bool AssignedFromFind(std::string_view code, std::string_view member);
+
+// `Other::ScriptType` - the spelling that names the CLASS instead of a
+// reference to it, which eng::FindScriptOn<T> and a base clause both need.
+// It wants the definition present AND earlier, and it can appear with no
+// member of that type anywhere in the file, which is why it is asked
+// separately rather than folded into the function above.
+bool NamesScriptTypeQualified(std::string_view code, std::string_view typeName);
 
 // One script named in another's base-clause.
 struct ScriptBaseUse {
@@ -279,6 +415,30 @@ struct ScriptUnitSource {
     // ScriptBuild.cpp; "class" is the right default for anything unreadable,
     // because that is what a script written from the templates says.
     std::string classKey = "class";
+
+    // ======================================================================
+    //  SHOULD THIS SCRIPT'S BODY GO IN THIS UNIT, or only its declaration
+    //  and its alias?
+    //
+    //  EVERY SCRIPT IS ALWAYS DECLARED AND ALWAYS ALIASED - that is one line
+    //  each and it is what makes `Door door;` legal in any script without
+    //  anybody declaring an intention. This says whether the CLASS ITSELF is
+    //  wrapped in here too, which is the expensive part and the part that
+    //  decides what a change to one script rebuilds.
+    //
+    //  TRUE FOR EVERY SOURCE MEANS THE OLD BEHAVIOUR: one unit carrying the
+    //  whole project, where editing any script invalidates all of them. The
+    //  editor sets it per unit from ProjectScripts::definitionsFor, which is
+    //  the closure of "whose definition does this script actually need" - see
+    //  ScriptBuild.cpp, and ResolvesReference above for what puts a script in
+    //  that set.
+    //
+    //  A UNIT MUST HOLD ITS OWN SCRIPT. Nothing here enforces that, because
+    //  the generator has no opinion about which unit it is writing; the
+    //  caller that leaves a script out of its own unit gets a library with
+    //  nothing in it.
+    // ======================================================================
+    bool defineHere = true;
 };
 
 // ===========================================================================

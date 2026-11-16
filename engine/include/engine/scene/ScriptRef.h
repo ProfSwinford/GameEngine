@@ -152,8 +152,19 @@
 //  ACROSS A SCENE. A reference resolves against the scene that is running, so
 //  one pointed into a level that is not loaded is simply null.
 //
-//  A SCRIPT ON THE SAME ENTITY. Ask for it where you use it, with
-//  eng::FindScriptOn<T>(*Owner()).
+//  A SCRIPT ON THE SAME ENTITY. Ask for it where you use it - and mind the
+//  ::ScriptType, which is not decoration:
+//
+//      eng::FindScriptOn<Chaser::ScriptType>(*Owner())
+//
+//  A bare `Chaser` is a REFERENCE to the script rather than the class, so
+//  FindScriptOn<Chaser> asked for something no entity can carry. That used to
+//  compile and return null for ever - this very line is where people read it -
+//  and is now refused by a static_assert in FindScriptOn that explains it.
+//
+//  HOLDING ONE IS USUALLY BETTER ANYWAY: `Chaser chaser;` plus
+//  chaser->Method() needs no lookup, and the Inspector can re-point it
+//  without touching the code.
 // ============================================================================
 
 #include <engine/scene/EntityRef.h>
@@ -241,6 +252,28 @@ public:
 
     T* operator->() const { return Get(); }
 
+    // ---- pointing it at something ---------------------------------------
+    //
+    //  The script half of ComponentRef's pointer assignment, so that
+    //
+    //      invis = Find<Invisibility>();
+    //
+    //  means what it reads as. A script knows its entity through Owner(), and
+    //  what gets stored is that entity's NAME, so the reference re-resolves
+    //  afterwards instead of holding a pointer that a rebuild would dangle -
+    //  which matters more here than for a component, because every script
+    //  object is replaced wholesale whenever the scripts are recompiled.
+    //
+    //  A null pointer clears it, for the reason given in ComponentRef.
+    ScriptRef& operator=(T* script) {
+        if (script != nullptr && script->Owner() != nullptr) {
+            EntityRef::Set(*script->Owner());
+        } else {
+            EntityRef::Clear();
+        }
+        return *this;
+    }
+
     // `if (target)` - true only when it resolves RIGHT NOW, so it answers the
     // question callers actually have rather than "was something dropped on
     // it". Hides EntityRef's, which answers about the entity alone.
@@ -266,6 +299,21 @@ public:
 //  Inspector sees no difference.
 // ===========================================================================
 template <class T>
-class ScriptRef<ScriptRef<T>> : public ScriptRef<T> {};
+class ScriptRef<ScriptRef<T>> : public ScriptRef<T> {
+public:
+    // Re-exposed, because the derived class's own implicit copy-assignment
+    // would otherwise hide the pointer assignment added above.
+    using ScriptRef<T>::operator=;
+};
+
+// ===========================================================================
+//  A LOOKUP HANDED THIS REFERENCE IS ASKING FOR THE SCRIPT IT REFERS TO, so
+//  Find<Invisibility>() finds the Invisibility rather than failing on a type
+//  the author never wrote. See FindTargetOf in scene/Entity.h.
+// ===========================================================================
+template <class T>
+struct FindTargetOf<ScriptRef<T>> {
+    using type = T;
+};
 
 } // namespace eng
