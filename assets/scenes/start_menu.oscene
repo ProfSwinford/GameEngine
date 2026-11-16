@@ -1,0 +1,233 @@
+{
+  "_comment": "The start menu, and the first half of the scene-change demo. Three entities: the GameController that owns the fade and survives the load as static state, a title, and a button. The button's StartMenu script asks the controller to open scenes/collector.oscene; it never calls RequestScene itself, which is the whole point of routing every scene change through one object.",
+  "_fade": "There is no fade overlay entity in this file on purpose. GameController builds its own in OnStart, so adding the controller to a level is one entity rather than two - and so nobody can save a level with the overlay left opaque.",
+  "camera": {
+    "position": [
+      512.0,
+      384.0
+    ],
+    "zoom": 1.0
+  },
+  "entities": [
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "script": "GameController",
+          "type": "ScriptComponent"
+        }
+      ],
+      "name": "GameController"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "anchor": "Center",
+          "offset": [
+            0.0,
+            -90.0
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "size": [
+            560.0,
+            64.0
+          ],
+          "sortOrder": 10,
+          "space": "Screen",
+          "type": "UIRectComponent",
+          "visible": true
+        },
+        {
+          "align": "Center",
+          "color": [
+            235,
+            238,
+            245,
+            255
+          ],
+          "font": "",
+          "fontSize": 30,
+          "middle": true,
+          "text": "TILEMAP DEMO",
+          "type": "UITextComponent"
+        }
+      ],
+      "name": "Title"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "anchor": "Center",
+          "offset": [
+            0.0,
+            -10.0
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "size": [
+            520.0,
+            28.0
+          ],
+          "sortOrder": 10,
+          "space": "Screen",
+          "type": "UIRectComponent",
+          "visible": true
+        },
+        {
+          "align": "Center",
+          "color": [
+            150,
+            158,
+            176,
+            255
+          ],
+          "font": "",
+          "fontSize": 16,
+          "middle": true,
+          "text": "walk the autotiled level - the floor solidifies as you paint it",
+          "type": "UITextComponent"
+        }
+      ],
+      "name": "Subtitle"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "anchor": "Center",
+          "offset": [
+            0.0,
+            70.0
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "size": [
+            240.0,
+            56.0
+          ],
+          "sortOrder": 10,
+          "space": "Screen",
+          "type": "UIRectComponent",
+          "visible": true
+        },
+        {
+          "outline": 0.0,
+          "texture": "",
+          "tint": [
+            60,
+            64,
+            78,
+            230
+          ],
+          "type": "UIImageComponent"
+        },
+        {
+          "disabled": [
+            45,
+            46,
+            52,
+            150
+          ],
+          "hover": [
+            80,
+            88,
+            106,
+            240
+          ],
+          "interactable": true,
+          "normal": [
+            60,
+            64,
+            78,
+            230
+          ],
+          "pressed": [
+            40,
+            44,
+            54,
+            255
+          ],
+          "type": "UIButtonComponent"
+        },
+        {
+          "align": "Center",
+          "color": [
+            235,
+            238,
+            245,
+            255
+          ],
+          "font": "",
+          "fontSize": 22,
+          "middle": true,
+          "text": "START",
+          "type": "UITextComponent"
+        },
+        {
+          "script": "StartMenu",
+          "type": "ScriptComponent",
+          "vars": {
+            "controller": "GameController",
+            "targetScene": "scenes/tilemap.oscene"
+          }
+        }
+      ],
+      "name": "StartButton"
+    }
+  ],
+  "name": "<unnamed>",
+  "prefabInstances": []
+}

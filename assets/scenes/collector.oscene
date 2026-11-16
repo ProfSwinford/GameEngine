@@ -10,6 +10,28 @@
   },
   "entities": [
     {
+      "_comment": "The other half of the pair in start_menu.oscene. The controller does not survive the load - no entity does - so each scene carries one, and the three statics inside the script are what actually cross over. This one finds the transition mid-flight and fades the screen back up.",
+      "components": [
+        {
+          "position": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "script": "GameController",
+          "type": "ScriptComponent"
+        }
+      ],
+      "name": "GameController"
+    },
+    {
       "components": [
         {
           "position": [
