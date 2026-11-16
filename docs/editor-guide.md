@@ -837,6 +837,22 @@ To use the file, put a **Player Input** component on an entity, point its
 answer actions by declaring public methods - see **Being told instead of
 asking** in [scripting-reference.md](scripting-reference.md).
 
+Its **Behaviour** dropdown decides *who* those methods are looked for on. The
+three are **exclusive** - exactly one is in force, and the other two are not
+running alongside it:
+
+| Behaviour | Who hears an action |
+| --- | --- |
+| `SendMessages` | the scripts on **that entity**. The default, and Unity's. |
+| `BroadcastMessages` | that entity **and everything under it** - for a rig whose legs and gun are separate objects. |
+| `Callbacks` | **nothing automatic**; only code that asked for events with `Subscribe()`. |
+
+This is Unity's *Behavior* dropdown less its fourth option. *Invoke Unity
+Events* picks a method per action from a dropdown in the Inspector, which needs
+run-time reflection over method names that this engine has nowhere to get - so
+it is absent rather than present and quietly doing nothing.
+
+
 It edits a copy and saves through the file, so a half-typed rename cannot
 reach a running scene. **Save** is greyed out until something changes, and
 **Revert** throws the changes away.

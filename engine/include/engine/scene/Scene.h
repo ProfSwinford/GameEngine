@@ -387,11 +387,14 @@ public:
     // FindScriptIn<T> / FindScriptNamedIn from scene/ScriptComponent.h, which
     // ask each behaviour what it really is.
     template <class T> Entity* FindFirstWith(bool skipPendingDestroy = true);
-    template <class T> T*      FindFirstComponent(bool skipPendingDestroy = true);
+    template <class T>
+    typename FindTargetOf<T>::type* FindFirstComponent(
+        bool skipPendingDestroy = true);
 
     template <class T>
-    std::size_t ForEachWith(const std::function<void(Entity&, T&)>& fn,
-                            bool skipPendingDestroy = true);
+    std::size_t ForEachWith(
+        const std::function<void(Entity&, typename FindTargetOf<T>::type&)>& fn,
+        bool skipPendingDestroy = true);
     template <class T>
     std::size_t CountWith(bool skipPendingDestroy = true);
 
@@ -661,20 +664,22 @@ Entity* Scene::FindFirstWith(bool skipPendingDestroy) {
 }
 
 template <class T>
-T* Scene::FindFirstComponent(bool skipPendingDestroy) {
+typename FindTargetOf<T>::type* Scene::FindFirstComponent(
+    bool skipPendingDestroy) {
     Entity* owner = FindFirstWith<T>(skipPendingDestroy);
     return owner != nullptr ? owner->Find<T>() : nullptr;
 }
 
 template <class T>
-std::size_t Scene::ForEachWith(const std::function<void(Entity&, T&)>& fn,
-                               bool skipPendingDestroy) {
+std::size_t Scene::ForEachWith(
+    const std::function<void(Entity&, typename FindTargetOf<T>::type&)>& fn,
+    bool skipPendingDestroy) {
     std::size_t seen = 0;
     ForEach([&](Entity& entity) {
         if (skipPendingDestroy && DeferredOps::IsPendingDestroy(entity.Id())) {
             return;
         }
-        if (T* component = entity.Find<T>(); component != nullptr) {
+        if (auto* component = entity.Find<T>(); component != nullptr) {
             ++seen;
             fn(entity, *component);
         }
@@ -706,16 +711,21 @@ std::size_t Scene::CountWith(bool skipPendingDestroy) {
 // ---------------------------------------------------------------------------
 
 template <typename T>
-std::size_t Entity::FindAll(std::vector<T*>& into) {
+std::size_t Entity::FindAll(std::vector<typename FindTargetOf<T>::type*>& into) {
+    // UNWRAPPED ONCE, HERE. Inside a script a bare component name is a
+    // ComponentRef, and the vector a caller can actually declare holds the
+    // COMPONENT - a std::vector<ComponentRef<SpriteComponent>*> is not
+    // something anybody would write. See FindTargetOf in this header.
+    using Target = typename FindTargetOf<T>::type;
     into.clear();
-    const std::string_view wanted = T::kTypeName;
+    const std::string_view wanted = Target::kTypeName;
     for (std::size_t i = 0; i < ComponentCount(); ++i) {
         Component* component = ComponentAt(i);
         // Compared as TEXT rather than by pointer. The two string literals
         // live in engine.dll and in the compiled script that is asking, and
         // nothing promises the linker folded them to one address.
         if (component != nullptr && std::string_view(component->TypeName()) == wanted) {
-            into.push_back(static_cast<T*>(component));
+            into.push_back(static_cast<Target*>(component));
         }
     }
     return into.size();
@@ -789,12 +799,14 @@ typename FindTargetOf<T>::type* Entity::FindInParents(bool includeSelf) {
 }
 
 template <typename T>
-std::size_t Entity::FindAllInChildren(std::vector<T*>& into, bool includeSelf) {
+std::size_t Entity::FindAllInChildren(
+    std::vector<typename FindTargetOf<T>::type*>& into, bool includeSelf) {
+    using Target = typename FindTargetOf<T>::type;
     into.clear();
 
-    std::vector<T*> onThisEntity;
+    std::vector<Target*> onThisEntity;
     if (includeSelf) {
-        FindAll<T>(onThisEntity);
+        FindAll<Target>(onThisEntity);
         into.insert(into.end(), onThisEntity.begin(), onThisEntity.end());
     }
 
@@ -815,7 +827,7 @@ std::size_t Entity::FindAllInChildren(std::vector<T*>& into, bool includeSelf) {
             continue;
         }
         if (Entity* owner = scene->EntityOf(*node); owner != nullptr) {
-            owner->FindAll<T>(onThisEntity);
+            owner->FindAll<Target>(onThisEntity);
             into.insert(into.end(), onThisEntity.begin(), onThisEntity.end());
         }
         pending.insert(pending.end(), node->Children().begin(), node->Children().end());
@@ -824,12 +836,14 @@ std::size_t Entity::FindAllInChildren(std::vector<T*>& into, bool includeSelf) {
 }
 
 template <typename T>
-std::size_t Entity::FindAllInParents(std::vector<T*>& into, bool includeSelf) {
+std::size_t Entity::FindAllInParents(
+    std::vector<typename FindTargetOf<T>::type*>& into, bool includeSelf) {
+    using Target = typename FindTargetOf<T>::type;
     into.clear();
 
-    std::vector<T*> onThisEntity;
+    std::vector<Target*> onThisEntity;
     if (includeSelf) {
-        FindAll<T>(onThisEntity);
+        FindAll<Target>(onThisEntity);
         into.insert(into.end(), onThisEntity.begin(), onThisEntity.end());
     }
 
@@ -845,7 +859,7 @@ std::size_t Entity::FindAllInParents(std::vector<T*>& into, bool includeSelf) {
     for (const Transform2D* node = Transform().Parent(); node != nullptr;
          node                    = node->Parent()) {
         if (Entity* owner = scene->EntityOf(*node); owner != nullptr) {
-            owner->FindAll<T>(onThisEntity);
+            owner->FindAll<Target>(onThisEntity);
             into.insert(into.end(), onThisEntity.begin(), onThisEntity.end());
         }
     }

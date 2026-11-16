@@ -1154,3 +1154,90 @@ TEST_CASE("Callbacks sends no messages at all, and subscribers still hear") {
 
     eng::InputActions::ReleaseAll();
 }
+
+TEST_CASE("the behaviour the Inspector sets is the behaviour that comes back") {
+    // THE FIELD IS OLD AND THE WAY TO SET IT IS NEW, which is exactly the
+    // shape that goes untested: Deserialize has read "behaviour" and
+    // Serialize has written it since this system landed, but nothing in the
+    // editor could produce a non-default value, so no round trip ever
+    // carried one. The Inspector's Behaviour row is that producer, and this
+    // is the case it makes reachable - see the note in InspectorPanel's
+    // DrawPlayerInput.
+    PlayerSandbox box("behaviourroundtrip");
+
+    eng::InputNotification mode     = eng::InputNotification::SendMessages;
+    const char*            expected = nullptr;   // nullptr = no key is written
+
+    SUBCASE("the default writes no key at all") {
+        mode     = eng::InputNotification::SendMessages;
+        expected = nullptr;
+    }
+    SUBCASE("BroadcastMessages survives the trip") {
+        mode     = eng::InputNotification::BroadcastMessages;
+        expected = "BroadcastMessages";
+    }
+    SUBCASE("Callbacks survives the trip") {
+        mode     = eng::InputNotification::Callbacks;
+        expected = "Callbacks";
+    }
+
+    CAPTURE(eng::ToString(mode));
+
+    eng::PlayerInputComponent* input = box.MakePlayer("Gameplay");
+    REQUIRE(input != nullptr);
+    input->SetNotifications(mode);
+    CHECK(input->Notifications() == mode);
+
+    // THE DEFAULT MUST STAY SILENT. Every scene file in the project would
+    // otherwise grow a key the first time it was saved after this field
+    // existed, which is a diff nobody asked for.
+    eng::Json written;
+    REQUIRE(input->Serialize(written));
+    if (expected == nullptr) {
+        CHECK_FALSE(written.contains("behaviour"));
+    } else {
+        CHECK(written["behaviour"] == expected);
+    }
+
+    // WHAT UNDO, PLAY-MODE RESTORE AND DUPLICATE ALL DO.
+    std::string text, error;
+    REQUIRE(box.scene.SaveToString(text, error));
+    REQUIRE(box.scene.LoadFromString(text, error));
+
+    eng::Entity* entity = box.scene.FindEntity("Player");
+    REQUIRE(entity != nullptr);
+    eng::PlayerInputComponent* restored = entity->Find<eng::PlayerInputComponent>();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->Notifications() == mode);
+}
+
+TEST_CASE("an unknown behaviour is reported rather than refused") {
+    PlayerSandbox box("behaviourunknown");
+
+    auto component =
+        eng::ComponentFactory::Create(eng::PlayerInputComponent::kTypeName);
+    REQUIRE(component != nullptr);
+
+    eng::Json node;
+    node["actions"]   = "input/player.oinput";
+    // UNITY'S FOURTH OPTION, which this engine deliberately has not got -
+    // "Invoke Unity Events" is a per-action method picked from a dropdown,
+    // and reproducing it needs run-time reflection over method names. It is
+    // therefore the likeliest thing somebody types into this key by hand.
+    node["behaviour"] = "InvokeUnityEvents";
+
+    std::string error;
+    CHECK_FALSE(component->Deserialize(node, error));
+
+    // THE MESSAGE NAMES BOTH HALVES: what was written, and what would have
+    // worked. Either one on its own sends somebody to the source.
+    CHECK(error.find("InvokeUnityEvents") != std::string::npos);
+    CHECK(error.find("SendMessages") != std::string::npos);
+    CHECK(error.find("BroadcastMessages") != std::string::npos);
+    CHECK(error.find("Callbacks") != std::string::npos);
+
+    // AND IT FELL BACK TO THE DEFAULT rather than being left in some fourth
+    // state the switch in Route has no case for.
+    auto* input = static_cast<eng::PlayerInputComponent*>(component.get());
+    CHECK(input->Notifications() == eng::InputNotification::SendMessages);
+}

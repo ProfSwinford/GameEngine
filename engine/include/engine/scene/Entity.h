@@ -244,7 +244,7 @@ public:
     // Component is a static_cast to T, which IS dependent on T and is
     // therefore deferred to the point of use.
     template <typename T>
-    std::size_t FindAll(std::vector<T*>& into);
+    std::size_t FindAll(std::vector<typename FindTargetOf<T>::type*>& into);
 
     // ---- the hierarchy, by ENTITY rather than by transform ----------------
     //
@@ -292,7 +292,9 @@ public:
     // Every match in the subtree, in depth-first order. Same `into` contract
     // as FindAll above: cleared first, caller owns it, count returned.
     template <typename T>
-    std::size_t FindAllInChildren(std::vector<T*>& into, bool includeSelf = true);
+    std::size_t FindAllInChildren(
+        std::vector<typename FindTargetOf<T>::type*>& into,
+        bool includeSelf = true);
 
     // The same up the parent chain - Unity's GetComponentsInParent. NEAREST
     // FIRST, so index 0 is this entity when includeSelf is true and otherwise
@@ -302,7 +304,9 @@ public:
     // did not, so "every Health above me" was the one lookup of the four with
     // no spelling at all. It was not a decision - the other three are here.
     template <typename T>
-    std::size_t FindAllInParents(std::vector<T*>& into, bool includeSelf = true);
+    std::size_t FindAllInParents(
+        std::vector<typename FindTargetOf<T>::type*>& into,
+        bool includeSelf = true);
 
     // Removes the FIRST component with this type name. Fine when a type can
     // only sensibly appear once; see RemoveComponentAt when it cannot.

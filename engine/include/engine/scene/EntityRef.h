@@ -112,11 +112,24 @@ public:
     //
     //     if (auto* body = target.Find<eng::Rigidbody2DComponent>()) { ... }
     //
-    // This works for every component the ENGINE defines. For a reference to
-    // another SCRIPT, see FindScriptOn in ScriptComponent.h - it cannot live
-    // here, and the note there says why.
+    // This works for every component the ENGINE defines, and - since the
+    // unwrapping described below - for a SCRIPT as well: FindTargetOf takes
+    // a bare script name back to its class, a class carries no kTypeName,
+    // and Entity::Find routes that to FindScriptOnEntity. FindScriptOn in
+    // ScriptComponent.h is the free-function spelling of the same question;
+    // the note there says why it cannot live in this header.
+    //
+    // IT UNWRAPS A REFERENCE FIRST, exactly as Entity::Find does - and the
+    // RETURN TYPE is where that has to be said. Inside a script a bare
+    // `SpriteComponent` IS a ComponentRef and a bare script name IS a
+    // ScriptRef, so the commonest spelling of this lookup arrives here
+    // already wrapped. The body always handed back FindTargetOf<T>::type*,
+    // because Entity::Find below does; declaring plain T* made the two
+    // disagree, so this compiled for every spelling the engine uses itself
+    // and was a HARD ERROR for the one a script author writes - with a
+    // message naming a type nobody had typed.
     template <class T>
-    T* Find() const {
+    typename FindTargetOf<T>::type* Find() const {
         Entity* entity = Target();
         return entity != nullptr ? entity->Find<T>() : nullptr;
     }

@@ -791,6 +791,21 @@ That final zero is the point of a `Value` action: a script that started moving
 when `OnMove` handed it a direction is told when the direction becomes nothing,
 so it cannot walk into a wall forever.
 
+**Who hears it** is the *Behaviour* field on the Player Input component, and
+the three choices are exclusive - one is in force and the others are not also
+running:
+
+| Behaviour | Who hears an action |
+|---|---|
+| `SendMessages` | scripts on **that entity**. The default. |
+| `BroadcastMessages` | that entity **and everything under it** - use this when the script handling `OnFire` lives on a child. |
+| `Callbacks` | **nothing automatic**; only `Subscribe()`. |
+
+Set it in the Inspector, on the Player Input component. It is Unity's
+*Behavior* dropdown less *Invoke Unity Events*, which picks a method per action
+from a dropdown and needs run-time reflection this engine has nowhere to get.
+
+
 From another script, hold a reference and change what the controls mean:
 
 ```cpp
@@ -880,6 +895,11 @@ if (auto* label = scoreLabel.Find<eng::UITextComponent>()) {
     label->text = "Score: " + std::to_string(score);
 }
 ```
+
+`Find<T>` through a reference takes the same spellings as `Find<T>` on the
+script itself, so the bare `scoreLabel.Find<UITextComponent>()` means exactly
+what the qualified line above does. A bare component name *is* a reference
+type inside a script, and every lookup unwraps it before asking.
 
 **A message.** No headers at all, and the payload is deliberately small - two
 floats, an int and another entity covers how much damage, what was hit, which

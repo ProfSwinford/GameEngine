@@ -1566,6 +1566,60 @@ void DrawPlayerInput(eng::PlayerInputComponent& input) {
         EditorState::Get().MarkDirty();
     }
 
+    // ---- how the handlers get called -------------------------------------
+    //
+    // UNITY'S Behavior DROPDOWN. The enum, the routing and the "behaviour"
+    // key have all worked since the system landed - what was missing was
+    // this row, so the only way to reach any mode but the default was to
+    // hand-edit a scene file for a key no document mentions. A setting you
+    // cannot see is a setting nobody has.
+    //
+    // THE THREE ARE EXCLUSIVE, not switches. Exactly one is in force, and
+    // picking one picks which of the three ways an action reaches a script;
+    // nothing runs the other two alongside it.
+    int notify = 0;
+    switch (input.Notifications()) {
+        case eng::InputNotification::SendMessages:      notify = 0; break;
+        case eng::InputNotification::BroadcastMessages: notify = 1; break;
+        case eng::InputNotification::Callbacks:         notify = 2; break;
+    }
+
+    // THE LABELS ARE ToString'S OWN, not a second copy of the same three
+    // words. What the dropdown shows is then exactly what lands in the scene
+    // file and the two cannot drift - the same reason ActionSendsMessage is
+    // a function the test calls rather than three lines a test transcribes.
+    const char* const notifyNames[] = {
+        eng::ToString(eng::InputNotification::SendMessages),
+        eng::ToString(eng::InputNotification::BroadcastMessages),
+        eng::ToString(eng::InputNotification::Callbacks),
+    };
+    if (row::Combo("Behaviour", &notify, notifyNames, 3)) {
+        input.SetNotifications(notify == 0 ? eng::InputNotification::SendMessages
+                               : notify == 1
+                                   ? eng::InputNotification::BroadcastMessages
+                                   : eng::InputNotification::Callbacks);
+        EditorState::Get().MarkDirty();
+    }
+
+    // WHAT EACH ONE MEANS, on screen rather than in a manual - the same
+    // reason DrawRigidbody spells its body types out. Three words with no
+    // consequences attached is a guess, and this is the moment somebody is
+    // choosing.
+    switch (input.Notifications()) {
+        case eng::InputNotification::SendMessages:
+            ImGui::TextDisabled("calls OnJump() on the scripts of THIS entity");
+            break;
+        case eng::InputNotification::BroadcastMessages:
+            ImGui::TextDisabled("calls OnJump() on this entity AND every child "
+                                "under it - for a rig whose legs and gun are "
+                                "separate objects");
+            break;
+        case eng::InputNotification::Callbacks:
+            ImGui::TextDisabled("calls nothing by itself; only code that asked "
+                                "with Subscribe() hears anything");
+            break;
+    }
+
     // WHAT IT IS ACTUALLY ON RIGHT NOW, shown only when that differs from the
     // authored map - which is exactly when somebody is confused about why the
     // controls are not what the field above says. A script switched it.

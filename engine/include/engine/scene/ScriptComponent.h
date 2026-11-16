@@ -644,7 +644,7 @@ public:
         return world != nullptr ? world->FindFirstWith<T>() : nullptr;
     }
     template <class T>
-    T* FindFirstComponent() const {
+    typename FindTargetOf<T>::type* FindFirstComponent() const {
         Scene* world = GetScene();
         return world != nullptr ? world->FindFirstComponent<T>() : nullptr;
     }

@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <iterator>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace eng;
@@ -1437,6 +1439,163 @@ TEST_CASE("a reference finds a component on the far entity") {
 
     ref.Clear();
     CHECK(ref.Find<SpriteComponent>() == nullptr);
+}
+
+TEST_CASE("a reference finds a component written the way a script writes it") {
+    // ======================================================================
+    //  THE SPELLING THAT COMES OUT OF A SCRIPT, which is not the one above.
+    //
+    //  Inside a script a bare `SpriteComponent` is an ALIAS for
+    //  ComponentRef<eng::SpriteComponent> - see ComponentAliases.h - so the
+    //  lookup an author actually writes is
+    //  Find<ComponentRef<eng::SpriteComponent>>(). Every other entry point
+    //  unwraps that through eng::FindTargetOf before looking anything up:
+    //  Entity::Find, Entity::Add, FindInChildren, FindInParents, and the
+    //  whole ScriptBehaviour family.
+    //
+    //  EntityRef::Find did not. It declared its return type as T* while
+    //  handing back FindTargetOf<T>::type*, so the identical line compiled
+    //  through an entity and was a HARD ERROR through a reference to one -
+    //  naming, in the message, a type the author had never typed.
+    //
+    //  The macro is expanded at function scope, which is legal for
+    //  alias-declarations and is how test_scriptvars checks the same macro
+    //  without leaking nineteen names into the rest of the file.
+    // ======================================================================
+    ENGINE_SCRIPT_COMPONENT_REFERENCES
+
+    TestScene world;
+    Entity&   decorated = world.Add("Decorated");
+    REQUIRE(decorated.AddComponent("SpriteComponent") != nullptr);
+    world.Add("Bare");
+
+    EntityRef ref;
+    ref.Set("Decorated");
+
+    // THE SIGNATURE, which is the half that was wrong. A decltype catches it
+    // whatever the bodies do.
+    static_assert(std::is_same_v<decltype(ref.Find<SpriteComponent>()),
+                                 eng::SpriteComponent*>,
+                  "EntityRef::Find must unwrap a reference type, as "
+                  "Entity::Find does");
+    static_assert(std::is_same_v<decltype(ref.Find<eng::SpriteComponent>()),
+                                 eng::SpriteComponent*>,
+                  "and must leave a plain component type alone");
+
+    // AND THE BODY, which is what proves the unwrapped lookup runs rather
+    // than merely type-checking.
+    eng::SpriteComponent* found = ref.Find<SpriteComponent>();
+    CHECK(found != nullptr);
+    CHECK(found == decorated.Find<eng::SpriteComponent>());
+
+    // The two spellings are the same question asked twice.
+    CHECK(ref.Find<SpriteComponent>() == ref.Find<eng::SpriteComponent>());
+
+    // And the three ways of resolving to nothing still answer alike.
+    ref.Set("Bare");
+    CHECK(ref.Find<SpriteComponent>() == nullptr);
+    ref.Set("Gone");
+    CHECK(ref.Find<SpriteComponent>() == nullptr);
+    ref.Clear();
+    CHECK(ref.Find<SpriteComponent>() == nullptr);
+}
+
+TEST_CASE("every scene-wide and multi-result lookup unwraps a bare name too") {
+    // ======================================================================
+    //  THE SAME DEFECT AS EntityRef::Find, IN FIVE MORE PLACES.
+    //
+    //  Each of these declared a plain T while handing back
+    //  FindTargetOf<T>::type, so the bare spelling a script writes was a hard
+    //  error and only the qualified one worked. Which of a pair you got was
+    //  arbitrary from the outside: FindFirstWith and CountWith never NAME the
+    //  result type, so they always accepted the bare name, and they sit in the
+    //  documentation right beside the three here that did not.
+    // ======================================================================
+    ENGINE_SCRIPT_COMPONENT_REFERENCES
+
+    TestScene world;
+    Entity&   parent = world.Add("Parent");
+    REQUIRE(parent.AddComponent("SpriteComponent") != nullptr);
+    Entity&   child = world.Add("Child");
+    REQUIRE(child.AddComponent("SpriteComponent") != nullptr);
+    child.Transform().SetParent(&parent.Transform());
+
+    // ---- Scene::FindFirstComponent ---------------------------------------
+    static_assert(
+        std::is_same_v<decltype(world.scene.FindFirstComponent<SpriteComponent>()),
+                       eng::SpriteComponent*>,
+        "Scene::FindFirstComponent must unwrap");
+    CHECK(world.scene.FindFirstComponent<SpriteComponent>() != nullptr);
+    CHECK(world.scene.FindFirstComponent<SpriteComponent>() ==
+          world.scene.FindFirstComponent<eng::SpriteComponent>());
+
+    // ---- ScriptBehaviour::FindFirstComponent, which is the spelling the
+    //      scripting reference actually lists (no `scene->`) ---------------
+    static_assert(
+        std::is_same_v<decltype(std::declval<const eng::ScriptBehaviour&>()
+                                    .FindFirstComponent<SpriteComponent>()),
+                       eng::SpriteComponent*>,
+        "ScriptBehaviour::FindFirstComponent must unwrap");
+
+    // ---- Scene::ForEachWith, which breaks twice over: the std::function
+    //      element type AND the local inside the body ---------------------
+    std::size_t seen = 0;
+    world.scene.ForEachWith<SpriteComponent>(
+        [&seen](Entity&, eng::SpriteComponent&) { ++seen; });
+    CHECK(seen == 2);
+
+    // ---- the three FindAll members, whose vector parameter is the thing
+    //      that has to unwrap - a caller cannot be asked to declare a
+    //      std::vector<ComponentRef<SpriteComponent>*> ---------------------
+    std::vector<eng::SpriteComponent*> found;
+    CHECK(parent.FindAll<SpriteComponent>(found) == 1);
+    CHECK(parent.FindAllInChildren<SpriteComponent>(found) == 2);
+    CHECK(child.FindAllInParents<SpriteComponent>(found) == 2);
+
+    // The ScriptBehaviour FindAll family already spelled its parameter
+    // std::vector<typename FindTargetOf<T>::type*>, which is what made the
+    // Entity ones underneath it the odd three out.
+    static_assert(
+        std::is_same_v<decltype(std::declval<const eng::ScriptBehaviour&>()
+                                    .FindAll<SpriteComponent>(found)),
+                       std::size_t>,
+        "ScriptBehaviour::FindAll already took the unwrapped vector");
+}
+
+TEST_CASE("a reference finds a SCRIPT through the wrapped spelling too") {
+    // ======================================================================
+    //  THE OTHER HALF OF THE UNWRAPPING, and the half the header comment
+    //  used to deny outright ("use FindScriptOn for another script").
+    //
+    //  A bare SCRIPT name inside a script is an eng::ScriptRef, FindTargetOf
+    //  takes it back to the class, the class has no kTypeName, so Entity::Find
+    //  routes it to FindScriptOnEntity - and the reference finds the script.
+    //
+    //  Spelled out explicitly here because the per-script aliases are
+    //  GENERATED per project rather than living in a macro a test can expand,
+    //  unlike the component ones above.
+    // ======================================================================
+    TestScene world;
+    world.AddWithScript("Carrier", "TestRefs");
+    world.Add("Bare");
+
+    EntityRef ref;
+    ref.Set("Carrier");
+
+    static_assert(std::is_same_v<decltype(ref.Find<eng::ScriptRef<TestRefs>>()),
+                                 TestRefs*>,
+                  "a ScriptRef must unwrap to the script class it names");
+
+    TestRefs* found = ref.Find<eng::ScriptRef<TestRefs>>();
+    CHECK(found != nullptr);
+
+    // The explicit class spelling, which already worked, agrees with it.
+    CHECK(found == ref.Find<TestRefs>());
+
+    // And an entity carrying no such script is the same null as everything
+    // else that fails to resolve.
+    ref.Set("Bare");
+    CHECK(ref.Find<eng::ScriptRef<TestRefs>>() == nullptr);
 }
 
 TEST_CASE("a reference resolves against the ACTIVE scene, whichever that is") {
