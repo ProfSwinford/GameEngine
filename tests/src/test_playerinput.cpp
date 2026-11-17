@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <memory>
 #include <span>
 #include <string>
 #include <system_error>
@@ -836,6 +837,35 @@ public:
     }
     void OnJump() { ++jumps; }
 
+    // ---- the per-action Subscribe, which is NOT the On- spelling --------
+    //
+    //  The whole point of input->Subscribe("Jump", this, &Probe::Fire) is a
+    //  method that could never have been called OnJump - it already has a
+    //  name, or one method is to serve several actions. None of these four
+    //  is in the handler table above, so nothing but a subscription can
+    //  reach them, which is what makes the counts below mean something.
+    int              fires        = 0;
+    int              aims         = 0;
+    int              tilts        = 0;
+    int              raws         = 0;
+    eng::Vec2        lastAim{};
+    float            lastTilt     = 0.0f;
+    eng::ActionPhase lastRawPhase = eng::ActionPhase::Started;
+
+    void Fire() { ++fires; }
+    void Aim(eng::Vec2 direction) {
+        ++aims;
+        lastAim = direction;
+    }
+    void Tilt(float amount) {
+        ++tilts;
+        lastTilt = amount;
+    }
+    void Raw(const eng::ActionEvent& event) {
+        ++raws;
+        lastRawPhase = event.phase;
+    }
+
     int Quits() const { return m_quits; }
 
 private:
@@ -1240,4 +1270,485 @@ TEST_CASE("an unknown behaviour is reported rather than refused") {
     // state the switch in Route has no case for.
     auto* input = static_cast<eng::PlayerInputComponent*>(component.get());
     CHECK(input->Notifications() == eng::InputNotification::SendMessages);
+}
+
+TEST_CASE("a subscriber sees every phase, and ActionSendsMessage is the filter") {
+    // ======================================================================
+    //  THE SHAPE A SCRIPT USES WHEN THE METHOD CANNOT BE CALLED OnJump.
+    //
+    //  Unity's "Invoke C# Events": one callback sees everything and tells the
+    //  events apart itself. That is exactly where the double call waits -
+    //  Started and Performed arrive in the same breath, because this engine
+    //  has no interactions to put a delay between them, so a subscriber that
+    //  filters on the action NAME alone runs its body twice for one press.
+    //
+    //  eng::ActionSendsMessage is the engine's own answer to "does this one
+    //  count", and is the rule the generated OnJump() dispatch uses. A
+    //  subscriber that applies it fires exactly when a handler would.
+    // ======================================================================
+    PlayerSandbox box("subscribefilter");
+
+    eng::PlayerInputComponent* input = box.MakePlayer("Gameplay");
+    REQUIRE(input != nullptr);
+
+    int everyPhase = 0;
+    int filtered   = 0;
+
+    input->Subscribe([&everyPhase](const eng::ActionEvent& event) {
+        if (event.action == "Jump") {
+            ++everyPhase;
+        }
+    });
+    input->Subscribe([&filtered](const eng::ActionEvent& event) {
+        if (event.action == "Jump" && eng::ActionSendsMessage(event)) {
+            ++filtered;
+        }
+    });
+
+    eng::PlayerInputSystem::FrameDispatch();   // settle before the press
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    // THE TRAP: one press, more than one event through the raw subscription.
+    CHECK(everyPhase > 1);
+
+    // THE FIX: exactly one, which is what a Button means.
+    CHECK(filtered == 1);
+
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    // A BUTTON SENDS NOTHING ON THE RELEASE, so the filtered count holds
+    // while the raw one has seen the Canceled as well.
+    CHECK(filtered == 1);
+    CHECK(everyPhase > 2);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("unsubscribing stops the callback, which is what OnDestroy is for") {
+    // A SUBSCRIPTION OUTLIVES THE SCRIPT THAT MADE IT. The lambda captures
+    // the behaviour, and a script rebuild or a scene change destroys that
+    // object while the component can live on - so a script that subscribes
+    // has to take it back, or the next event calls into freed memory.
+    PlayerSandbox box("unsubscribe");
+
+    eng::PlayerInputComponent* input = box.MakePlayer("Gameplay");
+    REQUIRE(input != nullptr);
+
+    int calls = 0;
+    const eng::PlayerInputComponent::Token token =
+        input->Subscribe([&calls](const eng::ActionEvent& event) {
+            if (event.action == "Jump" && eng::ActionSendsMessage(event)) {
+                ++calls;
+            }
+        });
+    CHECK(token != 0);   // 0 is the "never subscribed" token
+
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(calls == 1);
+
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    input->Unsubscribe(token);
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(calls == 1);   // unchanged: the callback is gone
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("Subscribe names an action and a method - no lambda, no token") {
+    // ======================================================================
+    //  THE PER-ACTION SUBSCRIPTION, which is what people reach for when they
+    //  first meet the collective one above.
+    //
+    //      input->Subscribe("Fire", this, &Gun::FireGun);
+    //
+    //  THREE THINGS ARE BEING CHECKED AT ONCE and each one is a thing the
+    //  hand-written lambda above had to get right for itself:
+    //
+    //    THE NAME FILTERS. Pressing Jump does not reach the method that
+    //    asked for Move, which is the whole of what "subscribed to Fire"
+    //    means to the person writing it.
+    //
+    //    THE PHASE FILTERS. One press is ONE call. Started arrives in the
+    //    same breath as Performed, so the raw subscription sees both - this
+    //    one applies ActionSendsMessage, exactly as the OnJump() dispatch
+    //    does, so it cannot be got wrong per subscriber.
+    //
+    //    THE PARAMETER IS CHOSEN BY THE METHOD'S OWN SHAPE. Aim takes a
+    //    Vec2 and is handed the vector; Tilt takes a float and is handed the
+    //    value; Fire takes nothing and is simply called; Raw takes the whole
+    //    event. The same ladder, and the same mutual exclusivity, as the
+    //    generated handler dispatch.
+    // ======================================================================
+    PlayerSandbox box("submethod");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+    rig.input->Subscribe("Move", rig.probe, &ActionProbe::Aim);
+    rig.input->Subscribe("Lean", rig.probe, &ActionProbe::Tilt);
+    rig.input->Subscribe("Quit", rig.probe, &ActionProbe::Raw);
+    CHECK(rig.input->BindingCount() == 4);
+
+    eng::PlayerInputSystem::FrameDispatch();   // settle before the first press
+    CHECK(rig.probe->fires == 0);
+
+    // ---- a Button: once, on the press, and nothing on the release -------
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 1);
+    CHECK(rig.probe->aims == 0);     // the other three heard nothing
+    CHECK(rig.probe->tilts == 0);
+    CHECK(rig.probe->raws == 0);
+
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 1);
+
+    // ---- a Vector2: the vector, and the final zero ----------------------
+    Feed({Key("W", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->aims == 1);
+    CHECK(rig.probe->lastAim.y == doctest::Approx(1.0f));
+    CHECK(rig.probe->lastAim.x == doctest::Approx(0.0f));
+    CHECK(rig.probe->fires == 1);    // and Jump was not disturbed
+
+    Feed({Key("W", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->aims == 2);
+    CHECK(rig.probe->lastAim.y == doctest::Approx(0.0f));
+
+    // ---- an Axis: one number, never the vector --------------------------
+    Feed({Key("E", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->tilts == 1);
+    CHECK(rig.probe->lastTilt == doctest::Approx(1.0f));
+    CHECK(rig.probe->aims == 2);     // Move was not fed the Lean event
+
+    // ---- the whole event, for a method that wants the phase -------------
+    Feed({Key("E", false), Key("X", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->raws == 1);
+    CHECK(rig.probe->lastRawPhase == eng::ActionPhase::Performed);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("the same method may serve two actions, which is why it has a name") {
+    // The case the On- spelling cannot express at all: OnFire and OnAltFire
+    // are two methods by construction. A subscription is a call, so one
+    // method may answer to as many names as it likes.
+    PlayerSandbox box("subshared");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+    rig.input->Subscribe("Quit", rig.probe, &ActionProbe::Fire);
+    CHECK(rig.input->BindingCount() == 2);
+
+    eng::PlayerInputSystem::FrameDispatch();
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 1);
+
+    Feed({Key("X", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 2);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("Unsubscribe(this) takes back everything that object asked for") {
+    // ONE CALL AND NO TOKENS. The component remembers the subscription
+    // against the owner, so the owner is the only thing the caller has to
+    // still be holding - and it is holding itself.
+    PlayerSandbox box("subunsub");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+    rig.input->Subscribe("Move", rig.probe, &ActionProbe::Aim);
+    CHECK(rig.input->BindingCount() == 2);
+
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 1);
+
+    rig.input->Unsubscribe(rig.probe);
+    CHECK(rig.input->BindingCount() == 0);
+
+    // BOTH went, not just the one for the action that had fired.
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true), Key("W", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 1);
+    CHECK(rig.probe->aims == 0);
+
+    // IDEMPOTENT. A script that unsubscribes in OnDestroy and is then
+    // destroyed has the destructor do it a second time.
+    rig.input->Unsubscribe(rig.probe);
+    CHECK(rig.input->BindingCount() == 0);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("destroying the behaviour takes its subscriptions with it") {
+    // ======================================================================
+    //  THE CASE THAT MAKES THE API SAFE TO USE WITHOUT AN OnDestroy, and the
+    //  reason ~ScriptBehaviour has a body at all.
+    //
+    //  SetScriptName destroys the behaviour and builds another one WHILE THE
+    //  PLAYER INPUT COMPONENT BESIDE IT LIVES ON. That is not a contrived
+    //  arrangement - it is what a script rebuild, a rename and "Remove
+    //  Component" all do. A subscription holding the old `this` would be
+    //  called on the next press, through freed storage.
+    //
+    //  WITHOUT THE PURGE THIS CASE DOES NOT FAIL CLEANLY, which is worth
+    //  knowing when reading it: it reads a destroyed object, so it either
+    //  passes by luck or crashes the runner. BindingCount is checked first
+    //  precisely so that the failure is an assertion rather than a fault.
+    // ======================================================================
+    PlayerSandbox box("subdeath");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+    rig.input->Subscribe("Move", rig.probe, &ActionProbe::Aim);
+    CHECK(rig.input->BindingCount() == 2);
+
+    eng::PlayerInputSystem::FrameDispatch();
+
+    auto* script = rig.entity->Find<eng::ScriptComponent>();
+    REQUIRE(script != nullptr);
+    REQUIRE(script->Behaviour() == rig.probe);
+
+    script->SetScriptName("");            // the behaviour is destroyed here
+    CHECK(script->Behaviour() == nullptr);
+    CHECK(rig.input->BindingCount() == 0);
+
+    // AND THE PRESS AFTERWARDS REACHES NOBODY rather than reaching a corpse.
+    Feed({Key("Space", true), Key("W", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("Callbacks silences the messages and leaves the subscriptions") {
+    // THE MODE THIS API MAKES USABLE. Callbacks is per COMPONENT, so a script
+    // that switches to it stops OnJump() being called on every script on the
+    // entity - including its own. A per-action subscription is not a message,
+    // so it keeps running, which is what lets one script opt out of the
+    // automatic dispatch without disarming itself.
+    PlayerSandbox box("subcallbacks");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+    rig.input->SetNotifications(eng::InputNotification::Callbacks);
+
+    eng::PlayerInputSystem::FrameDispatch();
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    CHECK(rig.probe->fires == 1);    // the subscription still runs
+    CHECK(rig.probe->jumps == 0);    // and OnJump() does not
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("a subscribed method may unsubscribe itself mid-dispatch") {
+    // A ONE-SHOT, which is the obvious thing to write and the obvious way to
+    // destroy the std::function whose body you are standing in. Removal is
+    // deferred while the walk is up, so this is safe rather than lucky.
+    PlayerSandbox box("subselfremove");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    int calls = 0;
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+
+    struct OneShot {
+        eng::PlayerInputComponent* input = nullptr;
+        int*                       calls = nullptr;
+        void Fire() {
+            ++*calls;
+            input->Unsubscribe(this);
+        }
+    };
+    OneShot shot{rig.input, &calls};
+    rig.input->Subscribe("Jump", &shot, &OneShot::Fire);
+    CHECK(rig.input->BindingCount() == 2);
+
+    eng::PlayerInputSystem::FrameDispatch();
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(calls == 1);
+    CHECK(rig.probe->fires == 1);        // its neighbour was still called
+    CHECK(rig.input->BindingCount() == 1);
+
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(calls == 1);                   // and it is gone for good
+    CHECK(rig.probe->fires == 2);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("a subscribed method that removes the player stops that dispatch") {
+    // THE SAME HAZARD ActionMapState::Deliver answers, one level up. A
+    // subscribed method is script code, and RemoveComponent is immediate - so
+    // the walk over the bindings is standing in a component that has just
+    // been destroyed. DeliverBindings answers whether it survived, exactly as
+    // Deliver does, and Route stops when it says no.
+    PlayerSandbox box("subsuicide");
+
+    eng::PlayerInputComponent* input = box.MakePlayer("Gameplay");
+    REQUIRE(input != nullptr);
+    eng::Entity* entity = input->Owner();
+    REQUIRE(entity != nullptr);
+
+    int after = 0;
+
+    struct Remover {
+        eng::Entity*               entity = nullptr;
+        eng::PlayerInputComponent* input  = nullptr;
+        void Fire() { entity->RemoveComponent(eng::PlayerInputComponent::kTypeName); }
+    };
+    Remover remover{entity, input};
+
+    struct Counter {
+        int* seen = nullptr;
+        void Fire() { ++*seen; }
+    };
+    Counter counter{&after};
+
+    input->Subscribe("Jump", &remover, &Remover::Fire);
+    input->Subscribe("Jump", &counter, &Counter::Fire);
+
+    eng::PlayerInputSystem::FrameDispatch();
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    // The component is gone, and the binding behind the one that killed it
+    // was never called - which is the right answer rather than a compromise:
+    // the thing the event was about has ceased to exist.
+    CHECK(entity->Find<eng::PlayerInputComponent>() == nullptr);
+    CHECK(after == 0);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("a subscription is keyed on the name, so a reload cannot dangle it") {
+    // WHY THE API TAKES A STRING AND NOT AN InputAction*. Reload re-fills the
+    // asset's map vector in place, so every ActionMap* and InputAction* handed
+    // out before it dies - InputActionAsset.h says so at length. A name
+    // survives that, and so does a subscription keyed on one.
+    PlayerSandbox box("subreload");
+    ProbeRig      rig = MakeProbeRig(box);
+
+    rig.input->Subscribe("Jump", rig.probe, &ActionProbe::Fire);
+
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 1);
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    // What the Input Actions window does on Save.
+    std::string reloadError;
+    REQUIRE_MESSAGE(eng::InputActionLibrary::Reload("input/probe.oinput", reloadError), reloadError);
+    eng::PlayerInputSystem::ReloadAll("input/probe.oinput");
+    CHECK(rig.input->BindingCount() == 1);
+
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(rig.probe->fires == 2);
+
+    eng::InputActions::ReleaseAll();
+}
+
+TEST_CASE("a const `this`, and a script with a second base, still get withdrawn") {
+    // ======================================================================
+    //  WHAT OwnerKey IS FOR, AND THE ONLY ARRANGEMENT THAT CAN TELL.
+    //
+    //  ~ScriptBehaviour reports a death with the only address it has: the
+    //  BASE one. A script subscribes with the DERIVED one. Under single
+    //  inheritance those are the same address, so a normalisation that
+    //  quietly stopped happening would go unnoticed by every case above -
+    //  and the binding would outlive the object only for somebody whose
+    //  script has a second base.
+    //
+    //  THE CONST IS THE OTHER HALF. `Obj` is deduced from the argument, so
+    //  `this` inside a const method deduces `const T`; a convertibility test
+    //  written against a non-const `ScriptBehaviour*` answers NO for that,
+    //  because the conversion would drop const, and the raw derived address
+    //  is stored instead. Both halves are exercised here at once.
+    // ======================================================================
+    PlayerSandbox box("subconstbase");
+
+    eng::PlayerInputComponent* input = box.MakePlayer("Gameplay");
+    REQUIRE(input != nullptr);
+
+    // A POLYMORPHIC FIRST BASE, deliberately: it is what stops the compiler
+    // putting the polymorphic ScriptBehaviour at offset 0 and handing this
+    // case the very coincidence it exists to rule out.
+    struct Padding {
+        virtual ~Padding() = default;
+        double a = 0.0;
+        double b = 0.0;
+    };
+
+    struct Listener final : Padding, eng::ScriptBehaviour {
+        eng::PlayerInputComponent* player = nullptr;
+        int*                       calls  = nullptr;
+
+        // CONST, and so is the method it subscribes.
+        void Arm() const { player->Subscribe("Jump", this, &Listener::Fire); }
+        void Fire() const { ++*calls; }
+    };
+
+    int  calls = 0;
+    auto listener    = std::make_unique<Listener>();
+    listener->player = input;
+    listener->calls  = &calls;
+
+    // THE TWO ADDRESSES REALLY DO DIFFER, which is the premise of the case.
+    const void* derived = static_cast<const void*>(listener.get());
+    const void* base =
+        static_cast<const void*>(static_cast<const eng::ScriptBehaviour*>(listener.get()));
+    REQUIRE(derived != base);
+
+    listener->Arm();
+    CHECK(input->BindingCount() == 1);
+
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(calls == 1);
+
+    // WHAT ScriptComponent DOES ON A REBUILD: destroyed through the base,
+    // while this component lives on.
+    std::unique_ptr<eng::ScriptBehaviour> owned(listener.release());
+    owned.reset();
+    CHECK(input->BindingCount() == 0);
+
+    Feed({Key("Space", false)});
+    eng::PlayerInputSystem::FrameDispatch();
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+    CHECK(calls == 1);   // and nothing reached the corpse
+
+    eng::InputActions::ReleaseAll();
 }

@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include <engine/core/Log.h>
+#include <engine/input/PlayerInputComponent.h>
 #include <engine/core/Time.h>
 #include <engine/math/Transform2D.h>
 #include <engine/scene/Messaging.h>
@@ -110,6 +111,26 @@ void AddToTicking(ScriptComponent* script) {
 // ---------------------------------------------------------------------------
 //  ScriptBehaviour - the accessors a script uses
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+//  THE ONE THING THIS DESTRUCTOR DOES.
+//
+//  A script may have asked a Player Input component to call one of its
+//  methods by name - input->Subscribe("Fire", this, &Gun::FireGun) - and that
+//  component is NOT destroyed when this object is. SetScriptName destroys the
+//  behaviour and builds a new one, "Remove Component" destroys it outright,
+//  and a script rebuild does it to every script in the project; the Player
+//  Input component beside it survives all three. So the address is withdrawn
+//  here, by the only code that is certain to run however the object dies.
+//
+//  IT IS A KEY AND IT IS NEVER DEREFERENCED, which is what makes it safe to
+//  hand over a `this` whose derived part has already been destroyed - which
+//  is exactly what a base destructor is holding.
+//
+//  THE COST IS A WALK OVER THE PLAYER INPUT COMPONENTS IN THE SCENE, of which
+//  a scene has none or one, and which returns at once when there are none.
+// ---------------------------------------------------------------------------
+ScriptBehaviour::~ScriptBehaviour() { PlayerInputSystem::ForgetSubscriber(this); }
 
 Entity* ScriptBehaviour::Owner() const {
     return m_component != nullptr ? m_component->Owner() : nullptr;

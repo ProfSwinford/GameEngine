@@ -47,12 +47,16 @@
 #include <engine/core/Json.h>
 #include <engine/fs/AssetArchive.h>
 #include <engine/fs/FileSystem.h>
+#include <engine/render/Renderer.h>
 #include <engine/resource/ImportSettings.h>
+#include <engine/resource/ResourceManager.h>
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace eng;
@@ -1820,3 +1824,96 @@ TEST_CASE("SheetHasAnimation tells an animation from a frame, and needs a sheet"
     CHECK_FALSE(SheetHasAnimation("walk"));
     CHECK_FALSE(SheetHasAnimation(""));
 }
+
+// ===========================================================================
+//  THE PLACEHOLDER THAT IS NOT A FILE
+// ===========================================================================
+
+TEST_CASE("the missing-texture placeholder is built rather than loaded") {
+    // IT USED TO BE assets/textures/missing.bmp, and the stand-in for a
+    // missing file must not be a file that can itself go missing. When it did,
+    // MissingTexture() returned null and its own comment admitted that failed
+    // sprites would "draw as nothing at all" - the one thing whose job is to
+    // make a failure visible becoming a failure of its own.
+    //
+    // Making the TEXTURE needs a renderer, which these tests deliberately do
+    // not have (see the note at the top of this file). The PIXELS do not,
+    // which is the whole reason they are exposed: otherwise the only part of
+    // this with any logic in it would be the only part nothing could check.
+    const int size = eng::ResourceManager::MissingTextureSize();
+    CHECK(size == 32);
+
+    const std::vector<unsigned char> rgba =
+        eng::ResourceManager::MissingTexturePixels();
+    REQUIRE(rgba.size() == static_cast<std::size_t>(size) * size * 4);
+
+    // FULLY OPAQUE EVERYWHERE. A half-transparent placeholder reads as a
+    // sprite that loaded and is merely faint, which is the one thing it must
+    // never be mistaken for.
+    bool allOpaque = true;
+    for (std::size_t i = 3; i < rgba.size(); i += 4) {
+        if (rgba[i] != 255) {
+            allOpaque = false;
+            break;
+        }
+    }
+    CHECK(allOpaque);
+
+    auto pixelAt = [&](int x, int y) {
+        const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
+        return std::array<unsigned char, 3>{rgba[i], rgba[i + 1], rgba[i + 2]};
+    };
+    const std::array<unsigned char, 3> magenta{255, 0, 255};
+    const std::array<unsigned char, 3> dark{26, 26, 26};
+
+    // THE CHECKER, which is what tells it apart from a flat magenta sprite
+    // somebody actually drew - and which shows the scaling, so a stretched
+    // placeholder still reads as square.
+    CHECK(pixelAt(0, 0) == magenta);
+    CHECK(pixelAt(8, 0) == dark);
+    CHECK(pixelAt(0, 8) == dark);
+    CHECK(pixelAt(8, 8) == magenta);
+    CHECK(pixelAt(size - 1, size - 1) == magenta);
+
+    // AND ONLY THOSE TWO COLOURS, so no rounding at an edge leaves a stray
+    // pixel that would make the square look like real artwork.
+    bool onlyTwo = true;
+    for (int y = 0; y < size && onlyTwo; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const auto pixel = pixelAt(x, y);
+            if (pixel != magenta && pixel != dark) {
+                onlyTwo = false;
+                break;
+            }
+        }
+    }
+    CHECK(onlyTwo);
+}
+
+TEST_CASE("asking for a texture that is not there is answered, not fatal") {
+    // THE POINT OF THE WHOLE ARRANGEMENT. A mistyped path, a sprite whose
+    // artwork was never committed, an asset folder somebody moved - none of
+    // them may take the player down with them. The answer is a visible square
+    // where there is a renderer to make one, and an empty reference where
+    // there is not; both are handled, neither is a crash.
+    const eng::TextureRef absent =
+        eng::ResourceManager::LoadTexture("textures/no_such_file.png");
+
+    // With no renderer the placeholder cannot be built either, so this is the
+    // empty case - and the draw call below is still a no-op rather than a
+    // dereference of nothing.
+    eng::Renderer::DrawSprite(absent, eng::Vec2{0.0f, 0.0f}, eng::Vec2{32.0f, 32.0f},
+                              0.0f, eng::Color::White(), nullptr);
+
+    // Asking twice must behave the same way; nothing is left half-built.
+    const eng::TextureRef again =
+        eng::ResourceManager::LoadTexture("textures/no_such_file.png");
+    CHECK(static_cast<bool>(absent) == static_cast<bool>(again));
+
+    // And the placeholder itself is asked for directly without crashing.
+    const eng::TextureRef placeholder = eng::ResourceManager::MissingTexture();
+    if (placeholder) {
+        CHECK(placeholder->isPlaceholder);
+    }
+}
+

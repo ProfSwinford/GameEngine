@@ -191,6 +191,31 @@ public:
     //  store, and a reference that silently held its previous target after
     //  being assigned a failed lookup would be worse than one that is empty:
     //  the next `if (ref)` would say yes and hand back the wrong component.
+    //  AND THE SAME THING AS A CONSTRUCTOR, because `X x = p;` is not `x = p;`.
+    //
+    //  COPY-INITIALISATION IS RESOLVED AGAINST CONSTRUCTORS and never reaches
+    //  an assignment operator, so with only the operator below,
+    //
+    //      TilemapComponent tilemap = entity->Find<TilemapComponent>();   // no
+    //      TilemapComponent tilemap;                                      // yes
+    //      tilemap = entity->Find<TilemapComponent>();
+    //
+    //  the one-line form was a hard error while the two-line form compiled -
+    //  and the message named ComponentRef<eng::TilemapComponent>, a type the
+    //  author never typed, on a line that reads perfectly. A reference that
+    //  can be assigned from a lookup but not INITIALISED from one is an
+    //  asymmetry with nothing behind it.
+    //
+    //  NOT `explicit`, deliberately: copy-initialisation is exactly the
+    //  spelling this exists to allow, and an explicit constructor would not
+    //  be considered for it.
+    //
+    //  The defaulted line is here because declaring ANY constructor suppresses
+    //  the implicit default one, and `TilemapComponent tilemap;` has to keep
+    //  working - it is how every Inspector slot is declared.
+    ComponentRef()            = default;
+    ComponentRef(T* component) { *this = component; }
+
     ComponentRef& operator=(T* component) {
         if (component != nullptr && component->Owner() != nullptr) {
             EntityRef::Set(*component->Owner());
@@ -235,6 +260,10 @@ struct FindTargetOf<ComponentRef<T>> {
 template <class T>
 class ComponentRef<ComponentRef<T>> : public ComponentRef<T> {
 public:
+    // Constructors are not inherited unless they are asked for, and without
+    // this the explicit spelling could be assigned from a lookup but not
+    // initialised from one - the same asymmetry the base just lost.
+    using ComponentRef<T>::ComponentRef;
     using ComponentRef<T>::operator=;
 };
 

@@ -116,6 +116,14 @@ struct WalkScope {
 } // namespace
 
 PlayerInputComponent::~PlayerInputComponent() {
+    // FIRST, BEFORE ANYTHING ELSE CAN RUN. A DeliverBindings further down the
+    // stack is about to carry on walking a component that no longer exists,
+    // and this is how it finds out not to. ActionMapState's destructor says
+    // the same thing about itself.
+    if (m_alive != nullptr) {
+        *m_alive = false;
+    }
+
     // A safety net. OnDetach is where the removal normally happens; this
     // catches a component that was built but never attached, which is what
     // happens when loading a scene fails partway through - the scene loader
@@ -206,6 +214,15 @@ void PlayerInputComponent::OnDetach() {
 // ---------------------------------------------------------------------------
 
 void PlayerInputComponent::Route(const ActionEvent& event) {
+    // BEFORE THE BEHAVIOUR CHECK, DELIBERATELY. A per-action subscription is
+    // not a message, so no setting of the Behaviour dropdown turns it off -
+    // which is the whole point of Callbacks: it silences the automatic
+    // OnFire() calls on every script on the entity and leaves the methods
+    // that asked for Fire by name still running.
+    if (!DeliverBindings(event)) {
+        return;   // a subscribed method destroyed this component
+    }
+
     // "Invoke C# Events" in Unity means the events and NOTHING ELSE - no
     // messages are sent. Subscribers have already been told by the time this
     // runs, so there is simply nothing left to do.
@@ -275,6 +292,123 @@ void PlayerInputComponent::Route(const ActionEvent& event) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+//  THE PER-ACTION SUBSCRIPTIONS. The header has why they are shaped this way;
+//  what follows is the walking, which is the part that has to be careful.
+// ---------------------------------------------------------------------------
+
+void PlayerInputComponent::AddBinding(std::string_view action, const void* owner,
+                                      Callback call) {
+    // AN EMPTY NAME IS DROPPED RATHER THAN STORED. It can never match an
+    // event, so keeping it would only mean a binding that looks subscribed
+    // in BindingCount and never fires.
+    if (owner == nullptr || action.empty() || !call) {
+        return;
+    }
+
+    auto binding    = std::make_unique<Binding>();
+    binding->action = std::string(action);
+    binding->owner  = owner;
+    binding->call   = std::move(call);
+    m_bindings.push_back(std::move(binding));
+}
+
+void PlayerInputComponent::RemoveBindings(const void* owner) {
+    if (owner == nullptr) {
+        return;
+    }
+    for (std::unique_ptr<Binding>& binding : m_bindings) {
+        if (binding != nullptr && binding->owner == owner) {
+            // MARKED, NOT ERASED. This may be running inside one of these
+            // callbacks - a script that unsubscribes itself on its own Fire -
+            // and erasing would destroy the std::function whose body is on
+            // the stack above.
+            binding->owner = nullptr;
+        }
+    }
+    CompactBindings();
+}
+
+void PlayerInputComponent::CompactBindings() {
+    if (m_bindingDepth > 0) {
+        return;   // somebody is walking; the dead entries wait
+    }
+    std::erase_if(m_bindings, [](const std::unique_ptr<Binding>& binding) {
+        return binding == nullptr || binding->owner == nullptr;
+    });
+}
+
+std::size_t PlayerInputComponent::BindingCount() const {
+    std::size_t count = 0;
+    for (const std::unique_ptr<Binding>& binding : m_bindings) {
+        if (binding != nullptr && binding->owner != nullptr) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool PlayerInputComponent::DeliverBindings(const ActionEvent& event) {
+    if (m_bindings.empty()) {
+        return true;
+    }
+
+    // THE SAME RULE A HANDLER IS CALLED BY, and not every phase. A subscriber
+    // that took the collective Subscribe asked for everything and gets it;
+    // one that named an action asked for the moments that mean something, so
+    // one press is one call. ActionSendsMessage is that rule, shared rather
+    // than transcribed.
+    if (!ActionSendsMessage(event)) {
+        return true;
+    }
+
+    // TAKEN ON THIS STACK WHILE `this` IS STILL KNOWN TO EXIST. A subscribed
+    // method may destroy this component; afterwards m_alive can no more be
+    // read than any other member, but this copy keeps the flag alive.
+    const std::shared_ptr<bool> alive = m_alive;
+
+    // THE COUNT IS FIXED BEFORE THE WALK, so a subscription taken out by one
+    // of these callbacks does not also fire for the event that caused it -
+    // which would be surprising, and would let a method that subscribes on
+    // Fire recurse. Entries cannot disappear underneath the walk because
+    // removal is deferred while the depth is up.
+    const std::size_t count = m_bindings.size();
+
+    // COUNTED BY HAND AND NOT WITH A WalkScope, which is the idiom four lines
+    // up the file. A stack guard would have to decrement in its DESTRUCTOR,
+    // and the one case all of this is about is the component being destroyed
+    // by one of these callbacks - at which point the guard would be writing
+    // to a freed member on the way out. The early return below leaves the
+    // count standing deliberately: it is standing in storage that no longer
+    // exists, and nothing will read it again.
+    ++m_bindingDepth;
+    for (std::size_t i = 0; i < count && i < m_bindings.size(); ++i) {
+        Binding* binding = m_bindings[i].get();
+        if (binding == nullptr || binding->owner == nullptr) {
+            continue;   // unsubscribed, possibly by an earlier callback
+        }
+        if (binding->action != event.action) {
+            continue;
+        }
+        if (!binding->call) {
+            continue;
+        }
+
+        binding->call(event);
+
+        // CHECKED BETWEEN CALLBACKS AND NOT ONLY AT THE END, because the next
+        // statement of the loop reads m_bindings - a member of the thing that
+        // callback may just have destroyed.
+        if (alive != nullptr && !*alive) {
+            return false;   // m_bindingDepth died with everything else
+        }
+    }
+    --m_bindingDepth;
+
+    CompactBindings();
+    return true;
 }
 
 void PlayerInputComponent::SetNotifications(InputNotification notifications) {
@@ -519,6 +653,21 @@ void PlayerInputSystem::Unregister(PlayerInputComponent& component) {
         std::replace(g_players.begin(), g_players.end(), &component, dead);
     } else {
         std::erase(g_players, &component);
+    }
+}
+
+void PlayerInputSystem::ForgetSubscriber(const void* owner) {
+    if (owner == nullptr) {
+        return;
+    }
+    // A COPY OF THE REGISTRY IS NOT NEEDED and would be wrong to take:
+    // RemoveBindings runs no user code at all - it nulls a key and may erase
+    // - so nothing here can register, unregister or destroy a component
+    // underneath this walk.
+    for (PlayerInputComponent* player : g_players) {
+        if (player != nullptr) {
+            player->RemoveBindings(owner);
+        }
     }
 }
 

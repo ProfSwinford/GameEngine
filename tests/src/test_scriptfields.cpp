@@ -1598,6 +1598,95 @@ TEST_CASE("a reference finds a SCRIPT through the wrapped spelling too") {
     CHECK(ref.Find<eng::ScriptRef<TestRefs>>() == nullptr);
 }
 
+TEST_CASE("a reference can be INITIALISED from a lookup, not only assigned") {
+    // ======================================================================
+    //  THE ASYMMETRY THAT WAS REPORTED FROM GAME CODE.
+    //
+    //  ComponentRef had operator=(T*), so that
+    //      renderer = Find<SpriteComponent>();
+    //  read naturally - but no matching CONSTRUCTOR. Copy-initialisation is
+    //  resolved against constructors and never reaches an assignment
+    //  operator, so the one-line form
+    //      SpriteComponent renderer = Find<SpriteComponent>();
+    //  was a hard error while the two-line form compiled, and the message
+    //  named ComponentRef<eng::SpriteComponent> - a type the author never
+    //  typed - on a line that reads perfectly.
+    //
+    //  It only became reachable when a bare component name started meaning a
+    //  reference; before that the same line declared a component by value and
+    //  failed for an ordinary reason.
+    // ======================================================================
+    ENGINE_SCRIPT_COMPONENT_REFERENCES
+
+    TestScene world;
+    Entity&   decorated = world.Add("Decorated");
+    REQUIRE(decorated.AddComponent("SpriteComponent") != nullptr);
+
+    // (1) INITIALISED from a lookup - the form that did not compile.
+    SpriteComponent fromInit = decorated.Find<SpriteComponent>();
+    CHECK(static_cast<bool>(fromInit));
+    CHECK(fromInit.TargetName() == "Decorated");
+    CHECK(fromInit.Get() == decorated.Find<eng::SpriteComponent>());
+
+    // (2) ASSIGNED, which always worked and must keep working.
+    SpriteComponent fromAssign;
+    fromAssign = decorated.Find<SpriteComponent>();
+    CHECK(fromAssign == fromInit);
+
+    // (3) THE DEFAULT CONSTRUCTOR SURVIVED. Declaring any constructor
+    // suppresses the implicit one, and every Inspector slot is declared
+    // exactly this way - so losing it would have broken every script.
+    SpriteComponent empty;
+    CHECK_FALSE(empty.IsSet());
+
+    // (4) A FAILED LOOKUP INITIALISES TO EMPTY rather than to anything else,
+    // which is the rule the assignment already followed: a reference holding
+    // its previous target after a failed lookup would answer the next
+    // `if (ref)` with yes and hand back the wrong component.
+    Entity&         bare = world.Add("Bare");
+    SpriteComponent fromNothing = bare.Find<SpriteComponent>();
+    CHECK_FALSE(fromNothing.IsSet());
+
+    // (5) THE EXPLICIT SPELLING TOO. Inside a script the unqualified name is
+    // already a reference, so this is ComponentRef<ComponentRef<...>>, which
+    // inherits the constructor only because the specialisation says so.
+    eng::ComponentRef<SpriteComponent> doubled = decorated.Find<SpriteComponent>();
+    CHECK(doubled.TargetName() == "Decorated");
+
+    // And the qualified form, which is the plain template.
+    eng::ComponentRef<eng::SpriteComponent> qualified =
+        decorated.Find<eng::SpriteComponent>();
+    CHECK(qualified.TargetName() == "Decorated");
+}
+
+TEST_CASE("a SCRIPT reference can be initialised from a lookup too") {
+    // The same gap existed on ScriptRef, where the one-line form is if
+    // anything more natural: `Invisibility invis = Find<Invisibility>();`
+    TestScene world;
+    Entity&   carrier = world.AddWithScript("Carrier", "TestRefs");
+    world.Add("Bare");
+
+    TestRefs* script = eng::FindScriptOn<TestRefs>(carrier);
+    REQUIRE(script != nullptr);
+
+    eng::ScriptRef<TestRefs> fromInit = script;
+    CHECK(static_cast<bool>(fromInit));
+    CHECK(fromInit.TargetName() == "Carrier");
+    CHECK(fromInit.Get() == script);
+
+    eng::ScriptRef<TestRefs> fromAssign;
+    fromAssign = script;
+    CHECK(fromAssign == fromInit);
+
+    // Null clears, here as in the assignment.
+    eng::ScriptRef<TestRefs> fromNull = static_cast<TestRefs*>(nullptr);
+    CHECK_FALSE(fromNull.IsSet());
+
+    // The doubled spelling, which the specialisation has to pass through.
+    eng::ScriptRef<eng::ScriptRef<TestRefs>> doubled = script;
+    CHECK(doubled.TargetName() == "Carrier");
+}
+
 TEST_CASE("a reference resolves against the ACTIVE scene, whichever that is") {
     // Not a detail worth skipping: it is why a reference saved in a level file
     // means the same thing every time that level is loaded, into whatever

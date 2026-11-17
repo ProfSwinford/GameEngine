@@ -74,7 +74,7 @@
           "font": "",
           "fontSize": 30,
           "middle": true,
-          "text": "TILEMAP DEMO",
+          "text": "COLLECTOR",
           "type": "UITextComponent"
         }
       ],
@@ -124,7 +124,7 @@
           "font": "",
           "fontSize": 16,
           "middle": true,
-          "text": "walk the autotiled level - the floor solidifies as you paint it",
+          "text": "collect every pickup before the timer runs out",
           "type": "UITextComponent"
         }
       ],
@@ -221,7 +221,7 @@
           "type": "ScriptComponent",
           "vars": {
             "controller": "GameController",
-            "targetScene": "scenes/tilemap.oscene"
+            "targetScene": "scenes/collector.oscene"
           }
         }
       ],

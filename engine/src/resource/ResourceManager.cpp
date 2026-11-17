@@ -57,7 +57,6 @@ std::unordered_map<std::string, long long> g_loadedAt;
 TextureRef g_missing;
 
 bool g_initialised = false;
-bool g_loadingMissing = false;   // stops MissingTexture recursing if it fails
 
 // ---------------------------------------------------------------------------
 //  ONE SHEET'S PIXELS, kept just long enough to cut several frames out of it.
@@ -109,6 +108,75 @@ DecodedSheet g_decoded;
 bool UploadFileInto(Texture& texture, std::string_view virtualPath,
                     TextureFilter filter, std::string& outError);
 
+// ---------------------------------------------------------------------------
+//  PIXELS IN, TEXTURE OUT - the half of the upload that knows nothing about
+//  files.
+//
+//  SPLIT OUT SO THE PLACEHOLDER CAN BE BUILT RATHER THAN LOADED. The "this
+//  did not load" square used to be assets/textures/missing.bmp, which meant
+//  the stand-in for a missing file was itself a file that could go missing -
+//  and when it did, MissingTexture() returned null and the comment there
+//  admitted that failed sprites would "draw as nothing at all". A square made
+//  of arithmetic cannot go missing, needs no entry in the exporter, and ships
+//  nothing.
+//
+//  `rgba` is width * height * 4 bytes - one each of red, green, blue and
+//  alpha - which is exactly what stb_image is asked to produce below.
+// ---------------------------------------------------------------------------
+bool UploadPixelsInto(Texture& texture, const unsigned char* rgba, int width,
+                      int height, TextureFilter filter, std::string& outError) {
+    if (rgba == nullptr || width <= 0 || height <= 0) {
+        outError = "the image has no pixels";
+        return false;
+    }
+
+    auto* renderer = static_cast<SDL_Renderer*>(Renderer::NativeRendererHandle());
+    if (renderer == nullptr) {
+        outError = "there is no renderer yet, so textures cannot be created";
+        return false;
+    }
+
+    // Pixels in ordinary memory have to be copied to where the graphics card
+    // can draw them quickly. That is these two calls: make a texture of the
+    // right size and format, then fill it in.
+    //
+    // SDL_PIXELFORMAT_RGBA32 is SDL's name for "one byte each of red, green,
+    // blue and alpha, in the order this machine expects".
+    SDL_Texture* native = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                            SDL_TEXTUREACCESS_STATIC, width, height);
+    if (native == nullptr) {
+        outError = SDL_GetError();
+        return false;
+    }
+
+    // The pitch is how many bytes one row of the image takes: four per pixel.
+    if (!SDL_UpdateTexture(native, nullptr, rgba, width * 4)) {
+        SDL_DestroyTexture(native);
+        outError = SDL_GetError();
+        return false;
+    }
+
+    // HOW THIS IMAGE ASKED TO BE SCALED, which used to be NEAREST for
+    // everything. Nearest is still what it gets when nothing says otherwise:
+    // the test images are checkerboards, and smoothing turns a crisp 32x32
+    // checker into grey mush as soon as it is enlarged. It is also what
+    // pixel-art games want, which is why it stayed the default when the choice
+    // became an asset's to make. See engine/resource/ImportSettings.h.
+    SDL_SetTextureScaleMode(native, filter == TextureFilter::Linear
+                                        ? SDL_SCALEMODE_LINEAR
+                                        : SDL_SCALEMODE_NEAREST);
+
+    // NOW the old one goes, with the new one already built. See the note above.
+    if (texture.native != nullptr) {
+        SDL_DestroyTexture(static_cast<SDL_Texture*>(texture.native));
+    }
+    texture.width         = width;
+    texture.height        = height;
+    texture.native        = native;
+    texture.isPlaceholder = false;
+    return true;
+}
+
 TextureRef CreateTextureFromFile(std::string_view virtualPath, TextureFilter filter,
                                  std::string& outError) {
     TextureRef texture = std::make_shared<Texture>();
@@ -150,30 +218,8 @@ bool UploadFileInto(Texture& texture, std::string_view virtualPath,
         return false;
     }
 
-    auto* renderer = static_cast<SDL_Renderer*>(Renderer::NativeRendererHandle());
-    if (renderer == nullptr) {
-        stbi_image_free(pixels);
-        outError = "there is no renderer yet, so textures cannot be created";
-        return false;
-    }
-
-    // Pixels in ordinary memory have to be copied to where the graphics card
-    // can draw them quickly. That is these two calls: make a texture of the
-    // right size and format, then fill it in.
-    //
-    // SDL_PIXELFORMAT_RGBA32 is SDL's name for "one byte each of red, green,
-    // blue and alpha, in the order this machine expects" - exactly what stb was
-    // asked for above.
-    SDL_Texture* native = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
-                                            SDL_TEXTUREACCESS_STATIC, width, height);
-    if (native == nullptr) {
-        stbi_image_free(pixels);
-        outError = SDL_GetError();
-        return false;
-    }
-
-    // The pitch is how many bytes one row of the image takes: four per pixel.
-    const bool uploaded = SDL_UpdateTexture(native, nullptr, pixels, width * 4);
+    const bool uploaded =
+        UploadPixelsInto(texture, pixels, width, height, filter, outError);
 
     // The pixels have been copied into the texture, so stb's buffer is finished
     // with. Freed HERE, before anything can return, because it was allocated by
@@ -181,35 +227,7 @@ bool UploadFileInto(Texture& texture, std::string_view virtualPath,
     // objects - this is the one place in the engine with a raw allocation to
     // keep track of.
     stbi_image_free(pixels);
-
-    if (!uploaded) {
-        SDL_DestroyTexture(native);
-        outError = SDL_GetError();
-        return false;
-    }
-
-    // HOW THIS IMAGE ASKED TO BE SCALED, which used to be NEAREST for
-    // everything. Nearest is still what it gets when nothing says otherwise:
-    // the test images are checkerboards, and smoothing turns a crisp 32x32
-    // checker into grey mush as soon as it is enlarged. It is also what
-    // pixel-art games want, which is why it stayed the default when the choice
-    // became an asset's to make. See engine/resource/ImportSettings.h.
-    //
-    // PASSED IN rather than looked up here, because a sliced frame's settings
-    // belong to its SHEET and this function has only ever seen a real file.
-    SDL_SetTextureScaleMode(native, filter == TextureFilter::Linear
-                                        ? SDL_SCALEMODE_LINEAR
-                                        : SDL_SCALEMODE_NEAREST);
-
-    // NOW the old one goes, with the new one already built. See the note above.
-    if (texture.native != nullptr) {
-        SDL_DestroyTexture(static_cast<SDL_Texture*>(texture.native));
-    }
-    texture.width         = width;
-    texture.height        = height;
-    texture.native        = native;
-    texture.isPlaceholder = false;
-    return true;
+    return uploaded;
 }
 
 // ---------------------------------------------------------------------------
@@ -578,29 +596,73 @@ FontRef ResourceManager::DefaultFont(float pixelHeight) {
     return LoadFont("", pixelHeight);
 }
 
+// ---------------------------------------------------------------------------
+//  THE "THIS DID NOT LOAD" SQUARE, DRAWN IN CODE.
+//
+//  Magenta and near-black squares, because magenta is the colour nothing in a
+//  real game is by accident - a sprite that comes out this colour is a
+//  question answered before it is asked. The checker is what tells you it is
+//  the placeholder rather than a flat magenta sprite somebody actually made,
+//  and it shows the scaling: stretched over a whole wall the squares stay
+//  square, so you can see how big the thing that failed was meant to be.
+//
+//  32x32 in 8-pixel checks, which is 4KB of pixels built once per run.
+// ---------------------------------------------------------------------------
+constexpr int kMissingSize  = 32;
+constexpr int kMissingCheck = 8;
+
+int ResourceManager::MissingTextureSize() { return kMissingSize; }
+
+std::vector<unsigned char> ResourceManager::MissingTexturePixels() {
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(kMissingSize) *
+                                    kMissingSize * 4);
+    for (int y = 0; y < kMissingSize; ++y) {
+        for (int x = 0; x < kMissingSize; ++x) {
+            const bool magenta = ((x / kMissingCheck) + (y / kMissingCheck)) % 2 == 0;
+            unsigned char* p =
+                &rgba[(static_cast<std::size_t>(y) * kMissingSize + x) * 4];
+            p[0] = magenta ? 255 : 26;   // r
+            p[1] = magenta ? 0   : 26;   // g
+            p[2] = magenta ? 255 : 26;   // b
+            p[3] = 255;                  // opaque, so it cannot be mistaken for
+                                         // a sprite that loaded and is invisible
+        }
+    }
+    return rgba;
+}
+
 TextureRef ResourceManager::MissingTexture() {
-    if (g_missing || g_loadingMissing) {
+    if (g_missing) {
         return g_missing;
     }
 
-    // The guard matters: if the placeholder image itself is missing,
-    // LoadTexture would call this function again to report the failure, and
-    // round it would go forever.
-    g_loadingMissing = true;
+    // NOTHING HERE CAN RECURSE. The old version loaded a file, so a failure to
+    // load it would ask LoadTexture for the placeholder, which would ask here,
+    // and round it went - there was a g_loadingMissing flag whose whole job was
+    // to break that loop. Building the pixels touches no file and no cache, so
+    // the loop cannot form and the flag is gone.
+    const std::vector<unsigned char> pixels = MissingTexturePixels();
 
+    TextureRef texture = std::make_shared<Texture>();
     std::string error;
-    g_missing = CreateTextureFromFile(
-        "textures/missing.bmp",
-        ImportLibrary::ForTexture("textures/missing.bmp").filter, error);
-    if (g_missing) {
-        g_missing->isPlaceholder = true;
-    } else {
+    if (!UploadPixelsInto(*texture, pixels.data(), kMissingSize, kMissingSize,
+                          TextureFilter::Nearest, error)) {
+        // The one way left to fail: asked for before there is a renderer. Not
+        // cached, so the next ask tries again rather than being stuck with the
+        // answer from before the window existed.
         ENGINE_LOG_WARN(Channels::kResource,
-                        "the 'missing texture' placeholder could not be loaded itself "
-                        "({}); failed sprites will draw as nothing at all", error);
+                        "the 'missing texture' placeholder could not be created ({}); "
+                        "a failed image will draw as nothing until a renderer exists",
+                        error);
+        return nullptr;
     }
 
-    g_loadingMissing = false;
+    // A NAME THAT IS NOT A PATH, so nothing tries to reload it from disk and
+    // the Inspector has something honest to show.
+    texture->path          = "<built-in missing texture>";
+    texture->isPlaceholder = true;
+
+    g_missing = std::move(texture);
     return g_missing;
 }
 

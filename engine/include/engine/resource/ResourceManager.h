@@ -44,6 +44,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace eng {
 
@@ -65,8 +66,20 @@ public:
     // on screen instead of an invisible gap that is easy to miss.
     static TextureRef LoadTexture(std::string_view virtualPath);
 
-    // The magenta "this did not load" square, from assets/textures/missing.bmp.
+    // The magenta "this did not load" square. BUILT IN CODE rather than loaded
+    // from a file, so the stand-in for a missing image cannot itself go
+    // missing - and so a build ships one fewer asset. Null only when asked for
+    // before there is a renderer, and not cached in that case.
     static TextureRef MissingTexture();
+
+    // THE PLACEHOLDER'S SIZE AND PIXELS, exposed so the square can be checked
+    // without a graphics card. Creating a texture needs a renderer, which the
+    // tests deliberately do not have, so the only part of this with any logic
+    // in it would otherwise be the only part nothing could test.
+    //
+    // Square and RGBA8: MissingTextureSize() * MissingTextureSize() * 4 bytes.
+    static int                        MissingTextureSize();
+    static std::vector<unsigned char> MissingTexturePixels();
 
     // Loads a .ttf at one particular size, or returns the already-baked one.
     //

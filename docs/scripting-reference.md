@@ -768,6 +768,40 @@ The method is `On` plus the action's name. It may take the value, a single
 number, or nothing at all — whichever you declare is the one that gets called.
 **It must be public**, because the engine calls it from outside the class.
 
+**The parameter IS how you get the value**, and there is no event object to ask
+afterwards. The three shapes are tried most-specific-first and are mutually
+exclusive, so a handler wanting a `float` can never be handed a vector:
+
+| Declare | And you get |
+|---|---|
+| `void OnMove(eng::Vec2 direction)` | the whole value, for a `Vector2` action |
+| `void OnLean(float amount)` | one number, for an `Axis` action |
+| `void OnJump()` | nothing but the fact that it happened |
+
+**There is no fourth shape taking an `eng::ActionEvent`.** That struct is the
+`Subscribe` view, where one callback sees every action and every phase and has
+to tell them apart itself; a handler is handed `vector` or `value` already
+unpacked. A method whose parameters are none of the three is reported as
+unreachable rather than failing the build, so a wrong parameter costs you that
+one handler quietly — as does a non-`void` return, because the scanner that
+finds handlers anchors on the literal word `void`.
+
+That is about the `On` spelling. A method subscribed **by name** may take an
+`eng::ActionEvent` — see below.
+
+If you would rather take no parameter, the component will tell you the same
+thing at any moment:
+
+```cpp
+eng::PlayerInputComponent* input = Find<eng::PlayerInputComponent>();
+if (input != nullptr) {
+    const eng::Vec2 move = input->Vector("Move");   // Value / Vector2
+    const float     lean = input->Value("Lean");    // Value / Axis
+    const bool      held = input->IsDown("Jump");   // Button
+}
+```
+
+
 The actions themselves live in a **`.oinput` file** under `assets/input/`, one
 file holding several **action maps**, with one map current at a time. Put a
 **Player Input** component on the entity, point it at the file, and name the
@@ -799,11 +833,74 @@ running:
 |---|---|
 | `SendMessages` | scripts on **that entity**. The default. |
 | `BroadcastMessages` | that entity **and everything under it** - use this when the script handling `OnFire` lives on a child. |
-| `Callbacks` | **nothing automatic**; only `Subscribe()`. |
+| `Callbacks` | **no automatic calls at all**; only what `Subscribe` asked for, which keeps running. |
 
 Set it in the Inspector, on the Player Input component. It is Unity's
 *Behavior* dropdown less *Invoke Unity Events*, which picks a method per action
 from a dropdown and needs run-time reflection this engine has nowhere to get.
+
+
+### Naming the action instead of naming the method
+
+`OnFire()` works because the method's **name** is the wiring. When that is not
+possible — the method already has a name worth keeping, or one method is to
+answer to several actions — name the action instead:
+
+```cpp
+class Gun final : public eng::ScriptBehaviour {
+public:
+    PlayerInput input;                        // drag the Player entity onto this
+
+    void OnStart() {
+        input->Subscribe("Fire", this, &Gun::FireGun);
+        input->Subscribe("Move", this, &Gun::Aim);
+    }
+
+    void FireGun() { /* once per press */ }
+    void Aim(eng::Vec2 direction) { m_aim = direction; }
+
+private:
+    eng::Vec2 m_aim{};
+};
+```
+
+**The parameter is chosen the same way**, by the same ladder, in the same
+order — take `eng::Vec2`, `float`, nothing, or `const eng::ActionEvent&` if you
+want the phase as well. A method matching none of those is a **compile error**
+here, with a message saying so, which is the one thing the `On` spelling cannot
+offer: a handler with the wrong parameter is simply never called.
+
+**It fires when a handler would fire.** One press of a `Button` is one call, and
+a `Value` action still gets its final zero. The phase filtering that a raw
+`Subscribe(lambda)` has to do for itself is already applied.
+
+**There is nothing to store and nothing to clean up.** No token, no vector of
+tokens, no `OnDestroy`. The subscription is remembered against the *object*, so
+`input->Unsubscribe(this)` takes back everything it asked for in one call — and
+a script does not have to make even that call, because the behaviour's
+destructor withdraws the address. That matters more than it sounds: changing a
+Script Component's script destroys the behaviour and builds a new one **while
+the Player Input component beside it lives on**, so a remembered `this` would
+otherwise be called again on the next press.
+
+**And it runs whatever the Behaviour field says**, because a subscription is not
+a message. Setting `Callbacks` silences the automatic `OnFire()` calls on every
+script on the entity and leaves these running — which is what makes that mode
+usable from one script without disarming itself.
+
+The collective form is still there for the cases this one is not meant for:
+
+```cpp
+// Every action, every phase, one callback - and a token you have to keep.
+eng::PlayerInputComponent::Token token =
+    input->Subscribe([](const eng::ActionEvent& event) {
+        if (eng::ActionSendsMessage(event)) { /* ... */ }
+    });
+```
+
+Use it to log everything, or to see a phase that `ActionSendsMessage` filters
+out. For "call my method when Fire happens", the three-argument one is the
+shorter and the safer of the two.
 
 
 From another script, hold a reference and change what the controls mean:
@@ -1314,6 +1411,24 @@ in the Inspector, or in code from the lookup:
 renderer = Find<SpriteComponent>();
 body     = Find<Rigidbody2DComponent>();
 invis    = Find<Invisibility>();
+```
+
+The same line works as a **declaration** too, which is what you reach for when
+the reference is a local rather than a slot:
+
+```cpp
+SpriteComponent renderer = entity->Find<SpriteComponent>();
+```
+
+**For a local, though, a plain pointer is usually the better answer.** A
+reference stores the target entity's NAME and looks it up again on every use -
+which is exactly what makes it survive a save, a scene reload and a script
+rebuild, none of which a local lives long enough to see. It is paying for a
+property it cannot use, and the extra lookup, every time you touch it:
+
+```cpp
+auto* renderer = entity->Find<SpriteComponent>();   // a local: the component
+SpriteComponent renderer;                           // a member: the slot
 ```
 
 and all three are reached with `->`. There is nothing an engine component does

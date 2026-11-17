@@ -265,6 +265,17 @@ public:
     //  object is replaced wholesale whenever the scripts are recompiled.
     //
     //  A null pointer clears it, for the reason given in ComponentRef.
+    //  AND AS A CONSTRUCTOR, for the reason ComponentRef gives at length:
+    //  copy-initialisation is resolved against constructors and never reaches
+    //  an assignment operator, so `Invisibility invis = Find<Invisibility>();`
+    //  would not compile while the two-line form would.
+    //
+    //  Not `explicit`, because copy-initialisation is the spelling this is for.
+    //  The defaulted line keeps `Invisibility invis;` working, which declaring
+    //  any constructor would otherwise take away.
+    ScriptRef()          = default;
+    ScriptRef(T* script) { *this = script; }
+
     ScriptRef& operator=(T* script) {
         if (script != nullptr && script->Owner() != nullptr) {
             EntityRef::Set(*script->Owner());
@@ -302,7 +313,10 @@ template <class T>
 class ScriptRef<ScriptRef<T>> : public ScriptRef<T> {
 public:
     // Re-exposed, because the derived class's own implicit copy-assignment
-    // would otherwise hide the pointer assignment added above.
+    // would otherwise hide the pointer assignment added above. Constructors
+    // are not inherited unless asked for either, and the explicit spelling
+    // needs the same initialise-from-a-lookup the base has.
+    using ScriptRef<T>::ScriptRef;
     using ScriptRef<T>::operator=;
 };
 

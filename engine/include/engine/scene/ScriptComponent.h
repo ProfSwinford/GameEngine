@@ -391,9 +391,25 @@ public:
     // ======================================================================
     ENGINE_SCRIPT_COMPONENT_REFERENCES
 
-    // Virtual so a script can be deleted through this base pointer. It is the
-    // only virtual function left, and the only one that needs to be.
-    virtual ~ScriptBehaviour() = default;
+    // ======================================================================
+    //  Virtual so a script can be deleted through this base pointer. It is
+    //  the only virtual function left, and the only one that needs to be.
+    //
+    //  AND IT HAS A BODY NOW, WHICH IT DID NOT USED TO. It tells every
+    //  Player Input component that this object is gone, so that a method
+    //  subscribed with input->Subscribe("Fire", this, &Gun::FireGun) stops
+    //  being called the moment the object it belongs to stops existing.
+    //
+    //  THAT IS NOT A TIDINESS: SetScriptName destroys this behaviour and
+    //  builds a new one while the Player Input component on the same entity
+    //  LIVES ON, and so does removing the Script Component. Without this the
+    //  next press would call a method on freed storage.
+    //
+    //  The body is out of line, in ScriptComponent.cpp, which is the only
+    //  reason this is not `= default` - the input header has no business
+    //  being included by every script in the project.
+    // ======================================================================
+    virtual ~ScriptBehaviour();
 
     // ======================================================================
     //  NOT COPYABLE, AND THAT IS NEW.
