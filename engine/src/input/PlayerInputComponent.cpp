@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -253,19 +254,59 @@ void PlayerInputComponent::Route(const ActionEvent& event) {
     CollectTargets(*owner, m_notifications == InputNotification::BroadcastMessages,
                    targets);
 
-    std::vector<ScriptComponent*> scripts;
     for (const EntityId id : targets) {
-        Entity* entity = scene->Get(id);
-        if (entity == nullptr) {
-            continue;   // a handler destroyed it since the list was taken
-        }
+        // ===================================================================
+        //  BY INDEX, AND THE ENTITY RE-READ EVERY STEP.
+        //
+        //  The ids above are what makes a destroyed ENTITY safe. This is the
+        //  same care one level down, for a destroyed COMPONENT, and it is a
+        //  different hazard rather than the same one again:
+        //
+        //    - an entity's components are held behind unique_ptr, so erasing
+        //      one does NOT move its siblings. Only the removed component
+        //      dangles - which is why this never showed up through
+        //      RemoveComponent("ScriptComponent"), that being the FIRST
+        //      match and so usually the one already being dispatched;
+        //
+        //    - but removal IS immediate. Entity::RemoveComponent and
+        //      RemoveComponentAt call OnDetach and destroy the owning
+        //      unique_ptr before returning, and there is no deferred form
+        //      for components the way DeferredOps gives one for entities.
+        //
+        //  So a snapshot of ScriptComponent* taken before the first handler
+        //  ran is a freed pointer the moment a handler removes a LATER
+        //  script on the same entity - and the next turn of this loop would
+        //  read Behaviour() and ScriptName() out of that freed storage and
+        //  hand the result to a script DLL by reference.
+        //
+        //  WHY NOT THE TOMBSTONE IDIOM AT THE TOP OF THIS FILE. g_players is
+        //  this file's own list, so this file may choose to null an entry
+        //  rather than erase it. An entity's component list is Entity's, and
+        //  every other walk over it would then have to cope with holes; the
+        //  tombstone answers the "survivors move" hazard, which is precisely
+        //  the one that does not arise here.
+        //
+        //  THE TRADE, which is Entity::ForEachComponent's own: an erase does
+        //  shift later components down by one, so at most the entry behind a
+        //  removed one is skipped for this event. A script not told about
+        //  one Jump is a far smaller thing than a read of freed memory, and
+        //  it is the same answer the rest of the engine already gives.
+        // ===================================================================
+        for (std::size_t s = 0;; ++s) {
+            // RE-RESOLVED EVERY STEP: a handler may have destroyed the whole
+            // entity, which is exactly what the ids above are for.
+            Entity* entity = scene->Get(id);
+            if (entity == nullptr || s >= entity->ComponentCount()) {
+                break;
+            }
 
-        scripts.clear();
-        entity->FindAll<ScriptComponent>(scripts);
-        for (ScriptComponent* script : scripts) {
-            if (script == nullptr) {
+            Component* component = entity->ComponentAt(s);
+            if (component == nullptr ||
+                std::string_view(component->TypeName()) != ScriptComponent::kTypeName) {
                 continue;
             }
+            auto* script = static_cast<ScriptComponent*>(component);
+
             ScriptBehaviour* behaviour = script->Behaviour();
             if (behaviour == nullptr) {
                 continue;   // the script is attached but not compiled in

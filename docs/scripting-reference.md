@@ -839,6 +839,17 @@ Set it in the Inspector, on the Player Input component. It is Unity's
 *Behavior* dropdown less *Invoke Unity Events*, which picks a method per action
 from a dropdown and needs run-time reflection this engine has nowhere to get.
 
+**A handler may destroy things, including itself.** `OnJump` can remove a
+component, remove the Player Input that is dispatching it, or destroy its own
+entity, and the engine finishes the round of calls without reading anything it
+has just freed — the object being removed is still whole while its `OnDestroy`
+runs, and the ones behind it are re-read rather than remembered. The one thing
+that is not promised is that a component destroyed mid-round still hears *this*
+action: it may be skipped, which is the same answer `LoadScene` above gets, and
+for the same reason. Removing a *later* component on the same entity can also
+cost the one directly behind it that single call — a position-based walk cannot
+tell a shift from a step — so if two scripts must both hear an action, do not
+have one of them remove the other.
 
 ### Naming the action instead of naming the method
 

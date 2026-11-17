@@ -1752,3 +1752,216 @@ TEST_CASE("a const `this`, and a script with a second base, still get withdrawn"
 
     eng::InputActions::ReleaseAll();
 }
+
+// ===========================================================================
+//  A HANDLER THAT REMOVES A LATER SCRIPT ON THE SAME ENTITY.
+//
+//  The cases above are about the PLAYER list: a handler that removes a
+//  PlayerInputComponent, and the tombstone that keeps the walk over
+//  g_players honest. This one is about the OTHER list Route holds while
+//  script code runs - the ScriptComponents of one entity.
+//
+//  THE TWO ARE NOT THE SAME HAZARD. g_players is a vector of pointers, so an
+//  erase moves its SURVIVORS and the symptom is a player silently skipped.
+//  An entity's components live behind unique_ptr, so an erase moves nobody -
+//  it DESTROYS the one that went, and a snapshot taken before the handler ran
+//  is left holding that one freed pointer. The next turn of the loop then
+//  reads Behaviour() and ScriptName() out of freed storage and hands the
+//  result to a script DLL by reference.
+//
+//  WHY A LATER SIBLING AND NOT THE FIRST MATCH. RemoveComponent(name) removes
+//  the first ScriptComponent, which is usually the one being dispatched - and
+//  that one's slot has already been read, so nothing reads it again.
+//  Reproducing it needs the removed component to be one the walk has NOT
+//  reached yet, which is what RemoveComponentAt on a later index gives.
+// ===========================================================================
+
+namespace {
+
+// The removal the first script performs, as data rather than a captured
+// lambda: a script is reached through the registry's dispatcher, which hands
+// the behaviour nothing of the test's own.
+eng::Entity* g_removeFrom  = nullptr;
+std::size_t  g_removeIndex = 0;
+bool         g_removeDone  = false;
+
+// Set by the SECOND script's handler. A GLOBAL and not a member on purpose:
+// after the removal that object is freed, so the only evidence it can leave
+// that does not itself read destroyed storage is a flag somewhere else.
+bool g_laterScriptHeard = false;
+
+// The first script on the entity. Its OnJump destroys a LATER sibling.
+class RemoverProbe final : public eng::ScriptBehaviour {
+public:
+    int jumps = 0;
+
+    void OnStart() {}
+
+    void OnJump() {
+        ++jumps;
+        if (g_removeFrom != nullptr && !g_removeDone) {
+            g_removeDone = true;
+            g_removeFrom->RemoveComponentAt(g_removeIndex);
+        }
+    }
+};
+
+// The later script - the one that is destroyed mid-walk.
+class SiblingProbe final : public eng::ScriptBehaviour {
+public:
+    void OnStart() {}
+
+    void OnJump() { g_laterScriptHeard = true; }
+};
+
+} // namespace
+
+// At file scope, after the namespace closes - the same idiom ActionProbe uses.
+ENGINE_REGISTER_SCRIPT(RemoverProbe)
+ENGINE_REGISTER_SCRIPT(SiblingProbe)
+
+namespace {
+
+constexpr const char* kOneJumpHandler[] = {"OnJump"};
+
+constexpr bool kRemoverHandlerBound[]  = {ENGINE_ACTION_HANDLER_BINDS(RemoverProbe, OnJump)};
+constexpr bool kSiblingHandlerBound[]  = {ENGINE_ACTION_HANDLER_BINDS(SiblingProbe, OnJump)};
+
+template <class T>
+void DispatchOneJump(eng::ScriptBehaviour& behaviour, std::size_t index,
+                     const eng::ActionEvent& event) {
+    T& self = static_cast<T&>(behaviour);
+    (void)self;
+    (void)event;
+    switch (index) {
+        case 0: ENGINE_CALL_ACTION_HANDLER(self, OnJump, event); break;
+        default: break;
+    }
+}
+
+// Attaches a named script and hands back its component, in the shape
+// AttachProbe above uses.
+eng::ScriptComponent* AttachNamedScript(eng::Entity& entity, const char* name) {
+    eng::Json node = eng::Json::object();
+    node["script"] = name;
+
+    auto component = eng::ComponentFactory::Create(eng::ScriptComponent::kTypeName);
+    REQUIRE(component != nullptr);
+    std::string error;
+    REQUIRE(component->Deserialize(node, error));
+
+    auto* script =
+        static_cast<eng::ScriptComponent*>(entity.AddComponent(std::move(component)));
+    REQUIRE(script != nullptr);
+    REQUIRE_MESSAGE(script->IsResolved(), "that script is not in this build");
+    return script;
+}
+
+// Where a component sits in its entity's list, which is what
+// RemoveComponentAt takes.
+std::size_t IndexOf(eng::Entity& entity, const eng::Component* wanted) {
+    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+        if (entity.ComponentAt(i) == wanted) {
+            return i;
+        }
+    }
+    return entity.ComponentCount();
+}
+
+std::size_t ScriptCount(eng::Entity& entity) {
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < entity.ComponentCount(); ++i) {
+        const eng::Component* component = entity.ComponentAt(i);
+        if (component != nullptr &&
+            std::string_view(component->TypeName()) == eng::ScriptComponent::kTypeName) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("a handler that removes a later script on the same entity is not read after") {
+    PlayerSandbox box("routeremovesibling");
+
+    g_removeFrom       = nullptr;
+    g_removeIndex      = 0;
+    g_removeDone       = false;
+    g_laterScriptHeard = false;
+
+    REQUIRE(eng::ScriptRegistry::SetActionHandlers(
+        "RemoverProbe", kOneJumpHandler, kRemoverHandlerBound, 1,
+        &DispatchOneJump<RemoverProbe>));
+    REQUIRE(eng::ScriptRegistry::SetActionHandlers(
+        "SiblingProbe", kOneJumpHandler, kSiblingHandlerBound, 1,
+        &DispatchOneJump<SiblingProbe>));
+
+    box.Write("input/probe.oinput", kProbeActions);
+
+    eng::PlayerInputComponent* input = box.MakePlayer("Gameplay");
+    REQUIRE(input != nullptr);
+    std::string error;
+    REQUIRE_MESSAGE(input->SetActions("input/probe.oinput", error), error);
+
+    eng::Entity* entity = input->Owner();
+    REQUIRE(entity != nullptr);
+
+    // ORDER IS THE WHOLE TEST. The remover goes on first, so the walk is
+    // standing on it when the sibling behind it is destroyed.
+    eng::ScriptComponent* remover = AttachNamedScript(*entity, "RemoverProbe");
+    eng::ScriptComponent* sibling = AttachNamedScript(*entity, "SiblingProbe");
+    REQUIRE(remover != nullptr);
+    REQUIRE(sibling != nullptr);
+    REQUIRE(ScriptCount(*entity) == 2);
+
+    const std::size_t removerIndex = IndexOf(*entity, remover);
+    const std::size_t siblingIndex = IndexOf(*entity, sibling);
+    REQUIRE(removerIndex < entity->ComponentCount());
+    REQUIRE(siblingIndex < entity->ComponentCount());
+    REQUIRE(removerIndex < siblingIndex);
+
+    g_removeFrom  = entity;
+    g_removeIndex = siblingIndex;
+
+    // Frame one resolves the asset and raises nothing; see the cases above.
+    eng::PlayerInputSystem::FrameDispatch();
+
+    Feed({Key("Space", true)});
+    eng::PlayerInputSystem::FrameDispatch();
+
+    // The removal happened, and from inside the dispatch.
+    CHECK(g_removeDone);
+    CHECK(ScriptCount(*entity) == 1);
+
+    // THE WHOLE POINT. Before the fix, Route held a snapshot of
+    // ScriptComponent* taken before any handler ran, so the entry behind the
+    // remover was a freed pointer by the time the loop reached it - read for
+    // its Behaviour and its ScriptName, and then dispatched into.
+    //
+    // WHERE THAT SHOWS, measured rather than assumed. A DEBUG build fails
+    // this case outright: the freed block is scrubbed, ScriptName() hands
+    // back a std::string whose length is now garbage, and the case ends as
+    //
+    //     ERROR: test case THREW exception: string too long
+    //
+    // before any CHECK below is reached. A RELEASE build does NOT, and for
+    // a reason worth writing down rather than leaving as luck: the freed
+    // block is not scrubbed, but ~ScriptComponent has already nulled the
+    // unique_ptr holding the behaviour, so Behaviour() reads back null out
+    // of the dead object and Route's own null check skips it. The read is
+    // still a read of freed storage - it is simply one that happens to see
+    // a zero. So this case is a genuine regression test in Debug and a
+    // no-regression check in Release, which is the usual shape for a
+    // use-after-free without a sanitizer.
+    //
+    // The flag is what a release build WOULD catch if that block were ever
+    // reused between the erase and this loop, and it costs nothing to keep.
+    CHECK_FALSE(g_laterScriptHeard);
+
+    // And the script that did the removing was dispatched exactly once.
+    CHECK(static_cast<RemoverProbe*>(remover->Behaviour())->jumps == 1);
+
+    g_removeFrom = nullptr;
+    eng::InputActions::ReleaseAll();
+}
