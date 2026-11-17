@@ -3,6 +3,9 @@
 #include <engine/core/Log.h>
 #include <engine/core/Time.h>
 #include <engine/render/Camera.h>
+#include <engine/scene/DeferredOps.h>
+#include <engine/scene/Entity.h>
+#include <engine/scene/Scene.h>
 #include <engine/tilemap/TilemapCollider.h>
 
 #include <algorithm>
@@ -394,6 +397,39 @@ TileId TilemapComponent::AddToPalette(std::string_view otilePath) {
     return static_cast<TileId>(m_palette.size());
 }
 
+std::size_t TilemapComponent::CellsUsing(TileId tile) const {
+    if (tile == kEmptyTile || tile > m_palette.size()) {
+        return 0;
+    }
+
+    std::size_t count = 0;
+    for (const auto& [chunkCoord, chunk] : m_chunks) {
+        for (const TileId cell : chunk.cells) {
+            if (cell == tile) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+bool TilemapComponent::RemoveFromPalette(TileId tile, bool eraseCells) {
+    if (tile == kEmptyTile || tile > m_palette.size()) {
+        return false;
+    }
+
+    // THE REFUSAL IS THE POINT, and it is checked before anything is touched.
+    // A caller that has not asked its user gets false and an untouched map,
+    // rather than a map that quietly lost a hundred painted cells.
+    if (!eraseCells && CellsUsing(tile) != 0) {
+        return false;
+    }
+
+    std::vector<bool> drop(m_palette.size(), false);
+    drop[static_cast<std::size_t>(tile) - 1] = true;
+    return DropPaletteEntries(drop) == 1;
+}
+
 std::size_t TilemapComponent::CompactPalette() {
     if (m_palette.empty()) {
         return 0;
@@ -408,13 +444,23 @@ std::size_t TilemapComponent::CompactPalette() {
         }
     }
 
-    // old id -> new id, with 0 staying 0.
+    // UNUSED IS THE MASK, and nothing else here knows how to remove anything.
+    std::vector<bool> drop(m_palette.size(), false);
+    for (std::size_t i = 0; i < m_palette.size(); ++i) {
+        drop[i] = !used[i + 1];
+    }
+    return DropPaletteEntries(drop);
+}
+
+std::size_t TilemapComponent::DropPaletteEntries(const std::vector<bool>& drop) {
+    // old id -> new id, with 0 staying 0 and a dropped entry mapping to 0 -
+    // which is what erases the cells that named it.
     std::vector<TileId>      remap(m_palette.size() + 1, kEmptyTile);
     std::vector<std::string> kept;
     kept.reserve(m_palette.size());
 
-    for (std::size_t old = 1; old < used.size(); ++old) {
-        if (!used[old]) {
+    for (std::size_t old = 1; old <= m_palette.size(); ++old) {
+        if (old - 1 < drop.size() && drop[old - 1]) {
             continue;
         }
         kept.push_back(m_palette[old - 1]);
@@ -431,10 +477,55 @@ std::size_t TilemapComponent::CompactPalette() {
     const bool derived = !m_cellSizeExplicit;
     const Vec2 before  = derived ? CellSize() : Vec2{0.0f, 0.0f};
 
-    for (auto& [chunkCoord, chunk] : m_chunks) {
+    // ======================================================================
+    //  THE CELLS ARE RECOUNTED RATHER THAN ADJUSTED, because a dropped entry
+    //  empties every cell that named it - which compaction never did, since
+    //  it drops only entries nothing uses. A chunk can empty out entirely
+    //  here, and an empty chunk has to GO: SetTile erases one the moment its
+    //  last cell is cleared, and a map that kept a chunk full of zeroes would
+    //  save it, reload it, and disagree with itself about ChunkCount.
+    // ======================================================================
+    bool        anyCellChanged = false;
+    std::size_t total          = 0;
+
+    for (auto it = m_chunks.begin(); it != m_chunks.end();) {
+        Chunk&      chunk = it->second;
+        std::size_t used  = 0;
+
         for (TileId& cell : chunk.cells) {
+            const TileId before_ = cell;
             cell = (cell < remap.size()) ? remap[cell] : kEmptyTile;
+            if (cell != before_) {
+                anyCellChanged = true;
+            }
+            if (cell != kEmptyTile) {
+                ++used;
+            }
         }
+
+        chunk.used = used;
+        total += used;
+
+        if (used == 0) {
+            it = m_chunks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    m_tileCount = total;
+
+    // THE LOOKUP CACHE NAMES A CHUNK THAT MAY HAVE JUST BEEN ERASED, so it
+    // goes unconditionally rather than on a condition somebody has to get
+    // right. It is one pointer and the next GetTile refills it.
+    m_cachedChunk = nullptr;
+
+    // RENUMBERING IS A CELL CHANGE even when the same cells stay occupied, and
+    // the collider's cache is keyed on this. Rebuilding once more than
+    // strictly needed costs a frame; not rebuilding at all would leave the
+    // solid world describing a palette that no longer exists.
+    if (anyCellChanged) {
+        ++m_revision;
     }
 
     m_palette = std::move(kept);
@@ -501,6 +592,21 @@ void TilemapComponent::RefreshPalette() {
             m_connects[self * size + other] = connected ? 1 : 0;
         }
     }
+
+    // ======================================================================
+    //  AND THE MAP COUNTS AS CHANGED, although not one cell has moved.
+    //
+    //  Everything that watches a tilemap watches the revision, and what the
+    //  palette says about a cell is as much a part of that cell as the cell's
+    //  own number is. A .otile edited from decoration to solid changes which
+    //  cells are solid; one edited to carry a component changes which cells
+    //  want a tile object. Neither touches a cell, so without this the
+    //  collider and the tile objects would both go on describing the tiles as
+    //  they were before the edit.
+    //
+    //  TilemapColliderComponent::Invalidate exists because this line did not.
+    // ======================================================================
+    ++m_revision;
 }
 
 bool TilemapComponent::Connects(TileId self, TileId other) const {
@@ -1008,15 +1114,178 @@ void TilemapComponent::Render(Camera& camera, double seconds, bool editorTints) 
 //  Component plumbing
 // ---------------------------------------------------------------------------
 
+// ===========================================================================
+//  Tile objects
+// ===========================================================================
+
+EntityId TilemapComponent::TileObjectAt(int x, int y) const {
+    const auto it = m_tileObjects.find(TileCoord{x, y});
+    return (it == m_tileObjects.end()) ? EntityId{} : it->second.id;
+}
+
+EntityId TilemapComponent::BuildTileObject(TileCoord cell, const TileAsset& asset) {
+    Entity* owner = Owner();
+    Scene*  scene = (owner == nullptr) ? nullptr : owner->GetScene();
+    if (scene == nullptr) {
+        return EntityId{};
+    }
+
+    // NAMED AFTER ITS CELL, so that one is findable in the hierarchy while a
+    // map is being worked out, and UNIQUELY so, because a name identifies an
+    // entity in this engine (see EntityRef.h) and two maps in one scene can
+    // each have a cell (3, 4).
+    const std::string base = std::string(owner->Name()) + " tile " +
+                             std::to_string(cell.x) + "," + std::to_string(cell.y);
+
+    const EntityId id     = scene->CreateEntityUniquelyNamed(base);
+    Entity*        object = scene->Get(id);
+    if (object == nullptr) {
+        return EntityId{};
+    }
+
+    // MARKED FIRST, before anything that could go wrong below, so that even a
+    // half-built object is one the save leaves alone.
+    scene->SetDerived(id, true);
+
+    object->Transform().SetParent(&owner->Transform());
+    object->Transform().SetLocalPosition(CellBoundsLocal(cell.x, cell.y).Center());
+
+    for (const Json& entry : asset.Components()) {
+        const std::string typeName = ReadString(entry, "type", "");
+
+        Component* component = object->AddComponent(typeName);
+        if (component == nullptr) {
+            // Already reported against the .otile when it was loaded, which
+            // is where somebody can do something about it. Saying it again
+            // once per painted cell would bury the useful message.
+            continue;
+        }
+
+        std::string whyNot;
+        if (!component->Deserialize(entry, whyNot)) {
+            ENGINE_LOG_WARN(Channels::kTilemap,
+                            "tile '{}' at cell ({}, {}): its '{}' would not read "
+                            "({}), so that component is left at its defaults",
+                            asset.Path(), cell.x, cell.y, typeName, whyNot);
+        }
+    }
+
+    return id;
+}
+
+void TilemapComponent::SyncTileObjects() {
+    Entity* owner = Owner();
+    Scene*  scene = (owner == nullptr) ? nullptr : owner->GetScene();
+    if (scene == nullptr) {
+        return;
+    }
+
+    // THE WHOLE OF THE PER-STEP COST in the common case, which is a map that
+    // nobody has painted on since last step. RefreshPalette bumps the
+    // revision too, so editing a .otile to add a component is seen here.
+    if (m_tileObjectRevision == m_revision) {
+        return;
+    }
+    m_tileObjectRevision = m_revision;
+
+    // ---- which cells want an object, and of which tile ---------------------
+    std::map<TileCoord, TileId, CoordLess> wanted;
+
+    TileCoord lo{};
+    TileCoord hi{};
+    if (TileBounds(lo, hi)) {
+        for (int y = lo.y; y <= hi.y; ++y) {
+            for (int x = lo.x; x <= hi.x; ++x) {
+                const TileId tile = GetTile(x, y);
+                if (tile == kEmptyTile) {
+                    continue;
+                }
+                const TileAsset* asset = AssetFor(tile);
+                if (asset == nullptr || !asset->HasComponents()) {
+                    continue;
+                }
+                wanted.emplace(TileCoord{x, y}, tile);
+            }
+        }
+    }
+
+    // ---- what is there already, and whether it still should be -------------
+    //
+    // A SURVIVING ENTRY IS TAKEN OUT OF `wanted` as it is matched, so what is
+    // left in that map at the end is exactly the set to build. That is what
+    // keeps repainting a cell with the tile it already holds free.
+    for (auto it = m_tileObjects.begin(); it != m_tileObjects.end();) {
+        const auto found = wanted.find(it->first);
+
+        const bool stillWanted = found != wanted.end();
+        const bool sameTile    = stillWanted && found->second == it->second.tile;
+        const bool stillThere  = scene->Get(it->second.id) != nullptr;
+
+        if (sameTile && stillThere) {
+            wanted.erase(found);
+            ++it;
+            continue;
+        }
+
+        // IMMEDIATE and not deferred, unlike ClearTileObjects: this runs from
+        // a system update, where nothing is part-way through being destroyed,
+        // and a cell repainted this step should not keep the old tile's
+        // trigger until the end of it.
+        scene->DestroyEntityImmediate(it->second.id);
+        it = m_tileObjects.erase(it);
+    }
+
+    // ---- and build what is missing -----------------------------------------
+    for (const auto& [cell, tile] : wanted) {
+        const TileAsset* asset = AssetFor(tile);
+        if (asset == nullptr) {
+            continue;
+        }
+        const EntityId id = BuildTileObject(cell, *asset);
+        if (!id.IsNull()) {
+            m_tileObjects.emplace(cell, TileObject{id, tile});
+        }
+    }
+}
+
+void TilemapComponent::ClearTileObjects() {
+    // DEFERRED, because the commonest caller is OnDetach - which runs while
+    // the entity these are children of is itself being destroyed. Destroying
+    // from inside a destruction is how a tidy-up becomes a crash, and
+    // DeferredOps exists precisely so that nothing has to.
+    for (const auto& [cell, object] : m_tileObjects) {
+        (void)cell;
+        DeferredOps::QueueDestroy(object.id);
+    }
+    m_tileObjects.clear();
+
+    // Not equal to m_revision, so that a map re-attached later builds its
+    // objects again rather than believing it already has them.
+    m_tileObjectRevision = 0;
+}
+
 TilemapComponent::~TilemapComponent() {
     // Belt and braces: OnDetach is what normally takes the entry out, but a
     // component destroyed without having been detached would leave the render
     // system holding a dangling pointer.
     TilemapRenderSystem::Unregister(*this);
+
+    // And the objects go too. OnDetach normally does this; a component
+    // destroyed without having been detached would otherwise leave its
+    // children behind with nothing left to tidy them up.
+    ClearTileObjects();
 }
 
 void TilemapComponent::OnAttach() { TilemapRenderSystem::Register(*this); }
-void TilemapComponent::OnDetach() { TilemapRenderSystem::Unregister(*this); }
+
+void TilemapComponent::OnDetach() {
+    TilemapRenderSystem::Unregister(*this);
+
+    // THE OBJECTS GO WITH THE MAP. Taking the TilemapComponent off an entity
+    // and leaving two hundred entities called "Level tile 4,-7" behind would
+    // be a leak nobody could tidy up by hand.
+    ClearTileObjects();
+}
 
 // ---------------------------------------------------------------------------
 //  TilemapRenderSystem
@@ -1084,6 +1353,21 @@ std::size_t TilemapRenderSystem::CellsSkipped() { return g_cellsSkipped; }
 void TilemapRenderSystem::ResetCounters() {
     g_cellsDrawn  = 0;
     g_cellsSkipped = 0;
+}
+
+void TileObjectSystem::Update(float deltaSeconds) {
+    (void)deltaSeconds;
+
+    // A COPY OF THE REGISTRY, because building a tile object creates an
+    // entity, and creating an entity can attach a TilemapComponent - which
+    // registers, which can reallocate the vector being walked. A map added
+    // during this pass is simply synced on the next one.
+    const std::vector<TilemapComponent*> maps = Registry();
+    for (TilemapComponent* map : maps) {
+        if (map != nullptr) {
+            map->SyncTileObjects();
+        }
+    }
 }
 
 void TilemapRenderSystem::RegisterComponentTypes() {

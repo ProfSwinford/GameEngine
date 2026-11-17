@@ -15,6 +15,8 @@
 #include "panels/HierarchyPanel.h"   // kPayloadEntity, for dropping an entity on a reference
 #include "ScriptBuild.h"              // IsBuilding, for the NOT FOUND explanation
 #include "ShellOpen.h"
+#include "TileAssetEditor.h"   // a .otile, edited where every other asset is
+#include "TilePaint.h"   // the brush, the tools, and the tile preview
 
 #include <engine/render/Renderer.h>
 #include <engine/fs/FileSystem.h>   // ListDirectory, for the asset pickers
@@ -97,8 +99,8 @@ bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
 }
 
 // Everything that could go in a slot of this kind. The same recursive shape
-// CollectTiles uses in the Tile Palette, and walked only while a picker is
-// open - never per frame.
+// CollectTiles uses (editor/src/TilePaint.h), and walked only while a picker
+// is open - never per frame.
 void CollectSlotCandidates(const std::string& directory, AssetSlotKind kind,
                            std::vector<std::string>& out) {
     std::vector<eng::FileSystem::DirEntry> entries;
@@ -735,22 +737,353 @@ void DrawRigidbody(eng::Rigidbody2DComponent& body) {
 // ---------------------------------------------------------------------------
 //  TilemapComponent
 //
-//  Deliberately NOT a cell editor. Cells are painted in the Scene view with
-//  the Tile Palette; a grid of numbers here would be a second, worse way of
-//  doing the same thing. What belongs here is everything ABOUT the map that
-//  is not a cell: how big a cell is, which layer it draws on, and which
-//  materials it uses.
-// ---------------------------------------------------------------------------
-void DrawTilemap(eng::TilemapComponent& map) {
-    ImGui::Text("%zu tile(s) in %zu chunk(s)", map.TileCount(), map.ChunkCount());
+//  Deliberately NOT a cell editor. Cells are painted in the SCENE VIEW, with
+//  the brush chosen below; a grid of numbers here would be a second, worse
+//  way of doing the same thing. What belongs here is everything ABOUT the map
+//  that is not a cell: how big a cell is, which layer it draws on, and - the
+//  part that used to be a window of its own - which materials it uses.
+// ===========================================================================
+//  THE TILE PALETTE, which used to be a window of its own.
+//
+//  IT LIVES HERE BECAUSE A PALETTE BELONGS TO A MAP. The old Tile Palette
+//  panel showed every .otile in the project to whichever map it had guessed
+//  you meant, which is wrong in both halves at once:
+//
+//    A MULTI-LAYER MAP DROWNS IN IT. Base, detail and collision layers are
+//    three tilemaps, and each wants a handful of materials - but one global
+//    grid cannot know which handful, so it offers all of them to all three
+//    and the one you want is somewhere in the pile.
+//
+//    AND THE MAP BEING PAINTED WAS A SECOND ANSWER to a question the editor
+//    had already answered. The panel kept its own target id, guessed one when
+//    it went stale, and could therefore be pointing somewhere other than the
+//    thing the Inspector was showing.
+//
+//  Both go away by putting the palette on the selected map. The list drawn
+//  here IS TilemapComponent::Palette() - the thing the scene file has always
+//  stored - so what you see is what the map uses, a tile enters it because
+//  somebody added it, and only the selected map can be painted at all.
+//
+//  ==========================================================================
+//  WHAT WENT WHERE, for anybody looking for a button that used to exist:
+//
+//    the tool row, the brush grid and the map statistics are all below;
+//    "Tidy palette" was the same thing as "Drop unused entries" and only one
+//    of them survived; the project-wide tile list is now behind "Add tile",
+//    which is the one place it still makes sense; and editing a .otile is in
+//    the Inspector's ASSET view - select the file in Assets.
+// ===========================================================================
+
+// The project's .otile files, for the Add popup only. Scanned on demand
+// rather than per frame: a disk walk per frame while a popup is open would be
+// a disk walk per frame, and tiles do not appear by themselves.
+struct TileChoices {
+    std::vector<std::string> paths;
+    bool                     scanned = false;
+    char                     filter[96] = {};
+
+    void Rescan() {
+        paths.clear();
+        CollectTiles("", paths);
+        std::sort(paths.begin(), paths.end());
+        scanned = true;
+    }
+
+    static TileChoices& Get() {
+        static TileChoices choices;
+        return choices;
+    }
+};
+
+void DrawTilemapToolRow() {
+    TilePaintState& state = TilePaintState::Get();
+
+    const TileTool tools[] = {TileTool::Select, TileTool::Paint, TileTool::Erase,
+                              TileTool::Rectangle, TileTool::Fill, TileTool::Pick};
+
+    for (std::size_t i = 0; i < std::size(tools); ++i) {
+        if (i != 0) {
+            ImGui::SameLine();
+        }
+        const bool active = (state.tool == tools[i]);
+        if (active) {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        }
+        if (ImGui::Button(TileToolName(tools[i]))) {
+            state.tool = tools[i];
+        }
+        if (active) {
+            ImGui::PopStyleColor();
+        }
+    }
+
+    switch (state.tool) {
+        case TileTool::Select:
+            ImGui::TextDisabled("the Scene view behaves normally; pick a tool to paint");
+            break;
+        case TileTool::Paint:
+            ImGui::TextDisabled("left-drag paints, right-drag erases");
+            break;
+        case TileTool::Erase:
+            ImGui::TextDisabled("left-drag erases");
+            break;
+        case TileTool::Rectangle:
+            ImGui::TextDisabled("drag a box; right-drag clears one");
+            break;
+        case TileTool::Fill:
+            ImGui::TextDisabled("fills the connected area of whatever you click");
+            break;
+        case TileTool::Pick:
+            ImGui::TextDisabled("click a cell to make its tile the chosen one");
+            break;
+    }
+
+    ImGui::Checkbox("Show grid", &state.showGrid);
+    if (state.IsPainting()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Ctrl+Z undoes a whole stroke");
+    }
+}
+
+// What the last frame actually drew, and what the collider made of it. Both
+// answer "my tilemap is invisible" and "why is my floor two hundred boxes",
+// which is why they are worth the four lines.
+void DrawTilemapStats(eng::TilemapComponent& map) {
+    ImGui::Text("%zu tile(s) in %zu chunk(s), %zu material(s)", map.TileCount(),
+                map.ChunkCount(), map.Palette().size());
 
     eng::TileCoord lo{};
     eng::TileCoord hi{};
     if (map.TileBounds(lo, hi)) {
-        ImGui::TextDisabled("painted from (%d, %d) to (%d, %d)", lo.x, lo.y, hi.x, hi.y);
+        ImGui::TextDisabled("painted from (%d, %d) to (%d, %d)", lo.x, lo.y, hi.x,
+                            hi.y);
     } else {
-        ImGui::TextDisabled("nothing painted yet - use the Tile Palette");
+        ImGui::TextDisabled("nothing painted yet - add a tile below and pick a tool");
     }
+
+    ImGui::TextDisabled("last frame: %zu cell(s) drawn, %zu skipped",
+                        eng::TilemapRenderSystem::CellsDrawn(),
+                        eng::TilemapRenderSystem::CellsSkipped());
+
+    eng::Entity* owner = map.Owner();
+    if (owner == nullptr) {
+        return;
+    }
+    if (auto* collider = owner->Find<eng::TilemapColliderComponent>()) {
+        const std::size_t cells = collider->SolidCellCount();
+        const std::size_t boxes = collider->BoxCount();
+        if (boxes > 0) {
+            ImGui::TextDisabled(
+                "collider: %zu solid cell(s) merged into %zu box(es)  (%.0fx)", cells,
+                boxes, static_cast<double>(cells) / static_cast<double>(boxes));
+        } else {
+            ImGui::TextDisabled("collider: nothing solid yet");
+        }
+    } else {
+        ImGui::TextDisabled("no TilemapColliderComponent: nothing here is solid");
+    }
+}
+
+// Every .otile in the project, in a popup, so that the one place the global
+// list still exists is the one place it is actually wanted.
+void DrawAddTilePopup(eng::TilemapComponent& map) {
+    if (!ImGui::BeginPopup("addtile")) {
+        return;
+    }
+
+    TileChoices& choices = TileChoices::Get();
+    if (!choices.scanned) {
+        choices.Rescan();
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputTextWithHint("##filter", "filter", choices.filter,
+                             sizeof(choices.filter));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Rescan")) {
+        choices.Rescan();
+    }
+
+    if (choices.paths.empty()) {
+        ImGui::TextWrapped(
+            "No .otile files in this project. A tile is a .otile naming a sheet "
+            "that is ONE TILE WIDE and FIVE TILES TALL - see assets/tiles/stone.otile "
+            "for the smallest useful example.");
+        ImGui::EndPopup();
+        return;
+    }
+
+    std::string needle = choices.filter;
+    std::transform(needle.begin(), needle.end(), needle.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    ImGui::BeginChild("tilelist", ImVec2(320.0f, 260.0f), ImGuiChildFlags_Borders);
+    for (const std::string& path : choices.paths) {
+        if (!needle.empty()) {
+            std::string lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
+            if (lower.find(needle) == std::string::npos) {
+                continue;
+            }
+        }
+
+        // ALREADY IN IS SHOWN RATHER THAN HIDDEN, so that a tile you expected
+        // to find and cannot is a tile that is not in the project - one
+        // explanation instead of two.
+        const bool already = map.FindInPalette(path) != eng::kEmptyTile;
+        if (already) {
+            ImGui::BeginDisabled();
+        }
+
+        ImGui::PushID(path.c_str());
+        if (const eng::TileAsset* asset = eng::TileLibrary::Load(path)) {
+            DrawTilePreview(*asset, 24.0f);
+            ImGui::SameLine();
+        }
+        if (ImGui::Selectable(path.c_str())) {
+            const eng::TileId id = map.AddToPalette(path);
+            if (id != eng::kEmptyTile) {
+                EditorState::Get().MarkDirty();
+
+                // Adding one is almost always followed by painting with it.
+                TilePaintState& state = TilePaintState::Get();
+                state.tilePath        = path;
+                if (state.tool == TileTool::Select) {
+                    state.tool = TileTool::Paint;
+                }
+                ImGui::CloseCurrentPopup();
+            } else {
+                ENGINE_LOG_ERROR(eng::Channels::kTilemap,
+                                 "'{}' was not added to the palette - the Console "
+                                 "says why it would not load",
+                                 path);
+            }
+        }
+        if (already) {
+            ImGui::SetItemTooltip("already in this map's palette");
+        }
+        ImGui::PopID();
+
+        if (already) {
+            ImGui::EndDisabled();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::EndPopup();
+}
+
+// The map's own tiles, as a grid of thumbnails. Clicking one makes it the
+// brush; the chosen one carries a border.
+void DrawPaletteGrid(eng::TilemapComponent& map, eng::TileId& outRemove) {
+    TilePaintState& state = TilePaintState::Get();
+
+    const float preview   = 48.0f;
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float step      = preview + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    const int   perRow    = std::max(1, static_cast<int>(available / step));
+
+    int column = 0;
+    for (std::size_t i = 0; i < map.Palette().size(); ++i) {
+        const auto            id    = static_cast<eng::TileId>(i + 1);
+        const std::string&    path  = map.Palette()[i];
+        const eng::TileAsset* asset = map.AssetFor(id);
+
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::BeginGroup();
+
+        const bool chosen = (state.tilePath == path);
+        if (chosen) {
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.95f, 0.75f, 0.35f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+        }
+
+        if (asset != nullptr) {
+            // An invisible button OVER the preview, so the whole square is
+            // clickable rather than just a caption underneath it.
+            const ImVec2 corner = ImGui::GetCursorScreenPos();
+            DrawTilePreview(*asset, preview);
+            ImGui::SetCursorScreenPos(corner);
+            if (ImGui::InvisibleButton("##pick", ImVec2(preview, preview))) {
+                state.tilePath = path;
+                if (state.tool == TileTool::Select) {
+                    state.tool = TileTool::Paint;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%zu. %s\n%dpx, %d frame(s), %s\ncollision: %s%s",
+                                  i + 1, path.c_str(), asset->TileSize(),
+                                  asset->FrameCount(),
+                                  eng::TileFrameModeName(asset->FrameMode()),
+                                  eng::TileCollisionName(asset->Collision()),
+                                  asset->IsConnector()
+                                      ? "\nconnector: invisible, but its neighbours "
+                                        "join through it"
+                                      : "");
+            }
+        } else {
+            // Named but not loadable. Said in red, because every cell using
+            // this entry is occupied as far as the map is concerned and
+            // invisible as far as the screen is - a confusing pair of symptoms
+            // to be left to work out.
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.15f, 0.15f, 1.0f));
+            if (ImGui::Button("ERR", ImVec2(preview, preview))) {
+                state.tilePath = path;
+            }
+            ImGui::PopStyleColor();
+            ImGui::SetItemTooltip("%zu. %s\nWILL NOT LOAD - the Console says why",
+                                  i + 1, path.c_str());
+        }
+
+        if (chosen) {
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+        }
+
+        // THE REMOVE IS ON THE TILE ITSELF, through its right-click menu,
+        // rather than on a row of buttons underneath: there is one of these
+        // per entry already, and "which one did that button mean" is the
+        // question a separate button would raise.
+        if (ImGui::BeginPopupContextItem("tilemenu")) {
+            ImGui::TextDisabled("%s", path.c_str());
+            ImGui::Separator();
+            if (ImGui::MenuItem("Use as brush")) {
+                state.tilePath = path;
+                if (state.tool == TileTool::Select) {
+                    state.tool = TileTool::Paint;
+                }
+            }
+            if (ImGui::MenuItem("Edit this tile")) {
+                EditorState::Get().selectedAsset = path;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Remove from this map")) {
+                outRemove = id;
+            }
+            ImGui::EndPopup();
+        }
+
+        const std::string name = TileShortName(path);
+        ImGui::TextDisabled("%.9s", name.c_str());
+
+        ImGui::EndGroup();
+        ImGui::PopID();
+
+        if (++column % perRow != 0) {
+            ImGui::SameLine();
+        }
+    }
+    ImGui::NewLine();
+}
+
+// ---------------------------------------------------------------------------
+//  The Tilemap component's own fields, and then its palette.
+// ---------------------------------------------------------------------------
+void DrawTilemap(eng::TilemapComponent& map) {
+    DrawTilemapStats(map);
 
     int layer = map.Layer();
     if (row::DragInt("Layer", &layer, 0.2f, -1000, 1000)) {
@@ -793,48 +1126,48 @@ void DrawTilemap(eng::TilemapComponent& map) {
         ImGui::TextDisabled("taken from the first tile in the palette");
     }
 
-    // ---- the palette -------------------------------------------------------
-    ImGui::SeparatorText("Palette");
-    ImGui::TextDisabled("a cell stores a position in this list, not a path");
+    // ======================================================================
+    //  The palette
+    // ======================================================================
+    ImGui::SeparatorText("Tile Palette");
+
+    DrawTilemapToolRow();
+    ImGui::Separator();
 
     if (map.Palette().empty()) {
-        ImGui::TextDisabled("empty - painting adds to it");
+        ImGui::TextWrapped(
+            "This map has no tiles yet. Add one and it becomes a material this map "
+            "can paint - a cell stores a POSITION in this list, not a path, which "
+            "is why the list is the map's own and not the project's.");
     }
 
-    for (std::size_t i = 0; i < map.Palette().size(); ++i) {
-        const std::string&    path  = map.Palette()[i];
-        const eng::TileAsset* asset = map.AssetFor(static_cast<eng::TileId>(i + 1));
+    // The id to take out, decided inside the grid and acted on after it, so
+    // that nothing mutates the palette while the loop is walking it.
+    eng::TileId remove = eng::kEmptyTile;
+    DrawPaletteGrid(map, remove);
 
-        ImGui::PushID(static_cast<int>(i));
-        if (asset != nullptr) {
-            ImGui::Text("%zu. %s", i + 1, path.c_str());
-            ImGui::SameLine();
-            ImGui::TextDisabled("(%dpx%s%s)", asset->TileSize(),
-                                asset->IsSolid() ? ", solid" : "",
-                                asset->IsConnector() ? ", connector" : "");
-        } else {
-            // Named but not loadable. Said in red, because every cell using
-            // this entry is occupied as far as the map is concerned and
-            // invisible as far as the screen is - which is a confusing pair of
-            // symptoms to be left to work out.
-            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
-                               "%zu. %s  - WILL NOT LOAD", i + 1, path.c_str());
-        }
-        ImGui::PopID();
+    if (ImGui::Button("Add tile...")) {
+        ImGui::OpenPopup("addtile");
     }
+    ImGui::SetItemTooltip("every .otile in the project; only what you add is "
+                          "offered by the brush");
+    DrawAddTilePopup(map);
 
     if (!map.Palette().empty()) {
-        if (ImGui::Button("Drop unused entries")) {
+        ImGui::SameLine();
+        if (ImGui::Button("Drop unused")) {
             const std::size_t dropped = map.CompactPalette();
             EditorState::Get().MarkDirty();
             ENGINE_LOG_INFO(eng::Channels::kTilemap,
                             "tilemap palette compacted: {} entr{} dropped", dropped,
                             dropped == 1 ? "y" : "ies");
         }
+        ImGui::SetItemTooltip("takes out every entry no cell uses any more");
+
         ImGui::SameLine();
         if (ImGui::Button("Reload tiles")) {
-            // Re-reads every .otile the map uses, so editing one in a text
-            // editor and coming back shows the change.
+            // Re-reads every .otile the map uses, so editing one and coming
+            // back shows the change.
             for (const std::string& path : map.Palette()) {
                 std::string error;
                 if (!eng::TileLibrary::Reload(path, error)) {
@@ -855,12 +1188,6 @@ void DrawTilemap(eng::TilemapComponent& map) {
             //  changed from "collision": "None" to "Grid" left every cell
             //  using it walk-through - and the reverse left a field of
             //  invisible walls.
-            //
-            //  TilemapCollider.h documents Invalidate() as existing for
-            //  precisely this: "the editor calls it after a .otile is
-            //  edited, because a tile changing from decoration to solid
-            //  changes which cells are solid without any cell changing."
-            //  Nothing called it.
             // ==========================================================
             if (eng::Entity* owner = map.Owner(); owner != nullptr) {
                 if (auto* solid = owner->Find<eng::TilemapColliderComponent>()) {
@@ -868,6 +1195,54 @@ void DrawTilemap(eng::TilemapComponent& map) {
                 }
             }
         }
+    }
+
+    // ---- removing one ------------------------------------------------------
+    //
+    //  TWO STEPS, because the answer depends on what is painted. An entry
+    //  nothing uses goes straight away; one that is painted asks first, and
+    //  says how many cells it is about to erase. RemoveFromPalette refuses
+    //  outright without the second argument, so a missed confirmation is a
+    //  no-op rather than a quiet deletion.
+    static eng::TileId pending      = eng::kEmptyTile;
+    static std::size_t pendingCells = 0;
+
+    if (remove != eng::kEmptyTile) {
+        const std::size_t cells = map.CellsUsing(remove);
+        if (cells == 0) {
+            if (map.RemoveFromPalette(remove, false)) {
+                EditorState::Get().MarkDirty();
+            }
+        } else {
+            pending      = remove;
+            pendingCells = cells;
+            ImGui::OpenPopup("confirmremovetile");
+        }
+    }
+
+    if (ImGui::BeginPopupModal("confirmremovetile", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("%zu cell(s) still use this tile.", pendingCells);
+        ImGui::TextWrapped("Removing it erases them and renumbers the entries after "
+                           "it. Ctrl+Z will bring them back.");
+        if (ImGui::Button("Remove and erase")) {
+            if (map.RemoveFromPalette(pending, true)) {
+                EditorState::Get().MarkDirty();
+                if (eng::Entity* owner = map.Owner(); owner != nullptr) {
+                    if (auto* solid = owner->Find<eng::TilemapColliderComponent>()) {
+                        solid->Invalidate();
+                    }
+                }
+            }
+            pending = eng::kEmptyTile;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            pending = eng::kEmptyTile;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::SeparatorText("Danger");
@@ -3203,6 +3578,61 @@ void DrawComponentOverrides(const std::vector<eng::PrefabOverrideItem>& override
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+//  One component's fields. See the note in InspectorPanel.h.
+//
+//  OUTSIDE THE ANONYMOUS NAMESPACE, so that the tile editor can call it; the
+//  draw functions it dispatches to are all inside one, which is why this sits
+//  immediately after it closes.
+// ---------------------------------------------------------------------------
+void DrawComponentBody(eng::Component& component, eng::Scene& scene, bool running) {
+    // Work out which kind of component this is and call the matching draw
+    // function. Comparing type NAMES is the same way the scene file
+    // identifies components.
+    const std::string_view type = component.TypeName();
+
+    if (type == eng::TransformComponent::kTypeName) {
+        DrawTransform(static_cast<eng::TransformComponent&>(component), running);
+    } else if (type == eng::SpriteComponent::kTypeName) {
+        DrawSprite(static_cast<eng::SpriteComponent&>(component));
+    } else if (type == eng::BoxColliderComponent::kTypeName ||
+               type == eng::CircleColliderComponent::kTypeName ||
+               type == eng::CapsuleColliderComponent::kTypeName ||
+               type == eng::PolygonColliderComponent::kTypeName ||
+               type == eng::EdgeColliderComponent::kTypeName ||
+               type == eng::TilemapColliderComponent::kTypeName) {
+        DrawCollider(static_cast<eng::ColliderComponent&>(component), scene);
+    } else if (type == eng::Rigidbody2DComponent::kTypeName) {
+        DrawRigidbody(static_cast<eng::Rigidbody2DComponent&>(component));
+    } else if (type == eng::TilemapComponent::kTypeName) {
+        DrawTilemap(static_cast<eng::TilemapComponent&>(component));
+    } else if (type == eng::SpriteAnimationComponent::kTypeName) {
+        DrawSpriteAnimation(static_cast<eng::SpriteAnimationComponent&>(component));
+    } else if (type == eng::SpinComponent::kTypeName) {
+        DrawSpin(static_cast<eng::SpinComponent&>(component));
+    } else if (type == eng::PlayerInputComponent::kTypeName) {
+        DrawPlayerInput(static_cast<eng::PlayerInputComponent&>(component));
+    } else if (type == eng::ScriptComponent::kTypeName) {
+        DrawScript(static_cast<eng::ScriptComponent&>(component));
+    } else if (type == eng::CameraComponent::kTypeName) {
+        DrawCamera(static_cast<eng::CameraComponent&>(component));
+    } else if (type == eng::UIRectComponent::kTypeName) {
+        DrawUIRect(static_cast<eng::UIRectComponent&>(component));
+    } else if (type == eng::UITextComponent::kTypeName) {
+        DrawUIText(static_cast<eng::UITextComponent&>(component));
+    } else if (type == eng::UIImageComponent::kTypeName) {
+        DrawUIImage(static_cast<eng::UIImageComponent&>(component));
+    } else if (type == eng::UIButtonComponent::kTypeName) {
+        DrawUIButton(static_cast<eng::UIButtonComponent&>(component));
+    } else if (type == eng::UISliderComponent::kTypeName) {
+        DrawUISlider(static_cast<eng::UISliderComponent&>(component));
+    } else {
+        // Not an error. Somebody may write their own component type, and the
+        // Inspector should say so rather than pretend it is not there.
+        ImGui::TextDisabled("no editor written for this component type yet");
+    }
+}
+
 void InspectorPanel::ApplyPendingRemoval() {
     if (!m_pendingRemoval.requested) {
         return;
@@ -4782,10 +5212,32 @@ void DrawAssetInspector(const std::string& path) {
             ImGui::TextDisabled("a prefab has no import settings.");
             ImGui::TextDisabled("double-click it to place one, then edit that.");
             return;
-        case AssetKind::Tile:
-            ImGui::TextDisabled("a tile's settings are its own file.");
-            ImGui::TextDisabled("double-click it to open the Tile Palette.");
+        case AssetKind::Tile: {
+            // ============================================================
+            //  THE ONE ASSET KIND THAT IS EDITED HERE RATHER THAN POINTED
+            //  AT, because a .otile IS its settings - there is no import
+            //  step and no entity to put one on. It used to say "open the
+            //  Tile Palette"; the palette became the selected tilemap's
+            //  own, and the file editor came here.
+            //
+            //  ONE EDITOR FOR THE WHOLE PANEL, held across frames because
+            //  it holds the edit buffer. Selecting a different .otile
+            //  loads it; selecting something else leaves it alone and
+            //  costs nothing.
+            // ============================================================
+            static TileAssetEditor editor;
+            editor.Draw(path, [](eng::Component& component) {
+                // THE SCENE IS ONLY FOR THE LAYER PICKER - DrawCollider
+                // gathers the collision layer names already in use so that a
+                // tile can be put on one of them by name rather than by
+                // typing it twice. `running` is false: a tile is a file, not
+                // a thing a system is moving.
+                if (eng::Scene* active = eng::Scene::Active()) {
+                    DrawComponentBody(component, *active, false);
+                }
+            });
             return;
+        }
         case AssetKind::Script:
             ImGui::TextDisabled("a script has no import settings.");
             ImGui::TextDisabled("its variables appear on the entity it is attached to.");
@@ -5182,54 +5634,11 @@ void InspectorPanel::Draw() {
         }
 
         if (open) {
-            // Work out which kind of component this is and call the matching
-            // draw function. Comparing type NAMES is the same way the scene
-            // file identifies components.
-            const std::string_view type = typeName;
-
-            if (type == eng::TransformComponent::kTypeName) {
-                DrawTransform(static_cast<eng::TransformComponent&>(component), running);
-            } else if (type == eng::SpriteComponent::kTypeName) {
-                DrawSprite(static_cast<eng::SpriteComponent&>(component));
-            } else if (type == eng::BoxColliderComponent::kTypeName ||
-                       type == eng::CircleColliderComponent::kTypeName ||
-                       type == eng::CapsuleColliderComponent::kTypeName ||
-                       type == eng::PolygonColliderComponent::kTypeName ||
-                       type == eng::EdgeColliderComponent::kTypeName ||
-                       type == eng::TilemapColliderComponent::kTypeName) {
-                DrawCollider(static_cast<eng::ColliderComponent&>(component), scene);
-            } else if (type == eng::Rigidbody2DComponent::kTypeName) {
-                DrawRigidbody(static_cast<eng::Rigidbody2DComponent&>(component));
-            } else if (type == eng::TilemapComponent::kTypeName) {
-                DrawTilemap(static_cast<eng::TilemapComponent&>(component));
-            } else if (type == eng::SpriteAnimationComponent::kTypeName) {
-                DrawSpriteAnimation(
-                    static_cast<eng::SpriteAnimationComponent&>(component));
-            } else if (type == eng::SpinComponent::kTypeName) {
-                DrawSpin(static_cast<eng::SpinComponent&>(component));
-            } else if (type == eng::PlayerInputComponent::kTypeName) {
-                DrawPlayerInput(
-                    static_cast<eng::PlayerInputComponent&>(component));
-            } else if (type == eng::ScriptComponent::kTypeName) {
-                DrawScript(static_cast<eng::ScriptComponent&>(component));
-            } else if (type == eng::CameraComponent::kTypeName) {
-                DrawCamera(static_cast<eng::CameraComponent&>(component));
-            } else if (type == eng::UIRectComponent::kTypeName) {
-                DrawUIRect(static_cast<eng::UIRectComponent&>(component));
-            } else if (type == eng::UITextComponent::kTypeName) {
-                DrawUIText(static_cast<eng::UITextComponent&>(component));
-            } else if (type == eng::UIImageComponent::kTypeName) {
-                DrawUIImage(static_cast<eng::UIImageComponent&>(component));
-            } else if (type == eng::UIButtonComponent::kTypeName) {
-                DrawUIButton(static_cast<eng::UIButtonComponent&>(component));
-            } else if (type == eng::UISliderComponent::kTypeName) {
-                DrawUISlider(static_cast<eng::UISliderComponent&>(component));
-            } else {
-                // Not an error. Somebody may write their own component type,
-                // and the Inspector should say so rather than pretend it is
-                // not there.
-                ImGui::TextDisabled("no editor written for this component type yet");
-            }
+            // THE SAME FUNCTION A TILE'S COMPONENTS GO THROUGH. See the note
+            // above DrawComponentBody in InspectorPanel.h: an entity is no
+            // longer the only thing that carries components, and the two must
+            // not grow separate editors.
+            DrawComponentBody(component, scene, running);
 
             // AFTER the fields, so the list of what differs reads as a summary
             // of what is above it rather than as a header for it.

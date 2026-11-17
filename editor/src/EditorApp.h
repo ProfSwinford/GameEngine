@@ -527,12 +527,6 @@ private:
     // background tab, so its own Draw is not running. See GamePanel.h.
     void FocusGameViewIfRequested();
 
-    // The same arrangement for the Tile Palette, which the Assets panel asks
-    // to show when a .otile is double-clicked or created. Same reason it
-    // cannot be done from the panel itself: it is usually a background tab,
-    // and a background tab does not Draw.
-    void RevealTilePaletteIfRequested();
-
     // ======================================================================
     //  And the Assets panel, for the same reason and with the same bug if it
     //  is not done here.
@@ -586,7 +580,6 @@ private:
     // keeps the same flag for the same reason; see Engine::Shutdown.
     bool m_ready = false;
     class GamePanel*  m_gamePanel  = nullptr;
-    class TilePalettePanel* m_tilePalettePanel = nullptr;
     class InputActionsPanel* m_inputActionsPanel = nullptr;
     class AssetBrowserPanel* m_assetBrowserPanel = nullptr;
 

@@ -77,7 +77,8 @@ private:
     void DrawOverlay();
     void FrameSelection();
 
-    // Tile painting, when the Tile Palette has a brush chosen. Returns true
+    // Tile painting, when a tilemap is selected and a brush is chosen in the
+    // Inspector's Tile Palette. Returns true
     // when it has taken the mouse, in which case picking and the right-drag
     // pan stand down - otherwise a stroke would also select whatever was
     // underneath it, and right-drag could not erase.

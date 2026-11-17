@@ -7,7 +7,7 @@
 
 #include "AssetDragDrop.h"
 #include "EditorApp.h"
-#include "panels/TilePalettePanel.h"
+#include "TilePaint.h"
 
 #include <imgui.h>
 
@@ -372,9 +372,10 @@ bool ScenePanel::HandleTilePainting(const ImVec2& imageOrigin) {
 
     eng::TilemapComponent* map = state.TargetMap();
     if (map == nullptr) {
-        // A brush with nothing to paint into. The editor is left behaving
-        // normally rather than swallowing clicks that can do nothing - the
-        // Tile Palette already says there is no target.
+        // NOTHING SELECTED THAT CARRIES A MAP, so there is nothing to paint
+        // into. The editor is left behaving normally rather than swallowing
+        // clicks that can do nothing - selecting the map is how you aim the
+        // brush, and the Inspector is showing whatever you did select.
         return false;
     }
 
@@ -398,12 +399,25 @@ bool ScenePanel::HandleTilePainting(const ImVec2& imageOrigin) {
     const bool leftDown  = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     const bool rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
 
-    // Resolved only when something is actually about to be painted. Doing it
-    // on hover would add a tile to the map's palette just for moving the mouse
-    // across the view.
+    // ======================================================================
+    //  THE BRUSH CAN ONLY PAINT WHAT THE MAP ALREADY HAS, which is the whole
+    //  of what makes a palette explicit.
+    //
+    //  THIS USED TO BE AddToPalette. A stroke with a tile the map had never
+    //  heard of silently added it, so a map's palette was whatever had ever
+    //  been dragged across it - which is exactly how a detail layer ends up
+    //  listing every material in the game and why the old Tile Palette window
+    //  could offer all of them to all of them.
+    //
+    //  Now a tile enters a map because somebody pressed "Add tile" in the
+    //  Inspector, and nowhere else. A brush naming something outside the
+    //  palette paints NOTHING rather than quietly joining it - and cannot
+    //  normally happen at all, since the only way to choose a brush is to
+    //  click one of the map's own entries.
+    // ======================================================================
     const auto brushId = [&]() -> eng::TileId {
         return state.tilePath.empty() ? eng::kEmptyTile
-                                      : map->AddToPalette(state.tilePath);
+                                      : map->FindInPalette(state.tilePath);
     };
 
     const auto markDirty = [] { EditorState::Get().MarkDirty(); };

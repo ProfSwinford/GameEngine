@@ -524,9 +524,10 @@ already loaded.
 
 **`+ Tile` in the Assets panel writes one for you** - select a sheet, press it,
 and the dialog validates the image with the loader's own code before writing
-anything. Double-click a `.otile` to edit it in the Tile Palette, which can
-also draw all 47 shapes the sheet produces so a mistake in the art is visible
-at once.
+anything. Select a `.otile` to edit it in the Inspector, which draws all 47
+shapes the sheet produces so a mistake in the art is visible at once, and draws
+one cell as it will be — the art, the solid square, and every collider
+component where it will actually sit.
 
 Underneath it is a text file, and the smallest useful one is a single line:
 
@@ -559,15 +560,65 @@ description of a fact the file already carries.
   to everything around it. A line of them along the edge of a map makes the
   ground run off the screen instead of growing a finished border, and a line
   down the facing edges of two maps hides the seam between them.
+- **Art is optional.** Name neither `"sheet"` nor `"image"` and the tile draws
+  nothing — but it still fills a cell, is still its own material to its
+  neighbours, and is still in the palette. With `"collision": "Grid"` that is an
+  invisible wall, which a connector can never be: a connector is forced
+  non-solid, because a solid one would be a wall along the very seam it was
+  added to hide.
+
+### A tile is a kind of thing
+
+A tile can carry **components**, the same ones an entity can, and every cell
+painted with it gets them:
+
+```json
+{
+  "tileSize": 32,
+  "collision": "None",
+  "components": [
+    { "type": "BoxColliderComponent",
+      "size": [28, 12], "offset": [0, -10], "trigger": true, "layer": "Hazard" }
+  ]
+}
+```
+
+That is the difference between *solid* and *a spike*. A grid of identical
+squares can describe a wall; it cannot describe a hazard that hurts, a ladder
+that is climbable or a vent that pushes. Those are properties of the material.
+`assets/tiles/hazard.otile` is a worked example.
+
+Each painted cell of such a tile becomes **one entity**, parented to the map and
+sitting at the centre of its cell — Unity's `Tile.gameObject`, and the only
+honest way to make arbitrary components work: a component lives on an entity, so
+for a tile's components to *do* anything there has to be an entity for them to
+live on. They are built from the map and the `.otile` and are **never written
+into the scene file**, so editing the tile reaches every cell of it, in every
+scene.
+
+The properties belong to the **tile**, not to the placement. Two spikes that do
+different damage are two `.otile` files, the way two enemies that do are two
+prefabs. A cell is one 16-bit palette index with nowhere to hang a difference,
+and that is exactly what keeps a hundred-thousand-cell map a hundred thousand
+numbers.
+
+A tile with no components costs nothing, so the expensive case is opt-in one
+file at a time. Solid ground should stay `"collision": "Grid"` and carry no
+collider: that path merges whole regions into a handful of boxes, while a
+collider component is one box per cell. The two are for different jobs.
 
 ### Painting
 
-Open the **Tile Palette**, choose a tile and a tool, and paint in the Scene
-view. Paint, Erase, Rectangle, Fill and Pick; left-drag paints and right-drag
-erases, middle-drag still pans. The default tool is Select, so the Scene view
-behaves exactly as it always did until you choose otherwise — and the current
-tool is shown over the view, because a mode you cannot see is a mode you forget
-you are in. **`Ctrl+Z` undoes a whole stroke** - see
+Select the tilemap. Its **Tile Palette** is in the Inspector: the materials
+this map uses, the tools, and the brush. Press **Add tile...** to put a
+`.otile` into it — a map's palette is the set somebody chose, not everything
+in the project, which is what keeps a three-layer level's three palettes short
+and separate. Then paint in the Scene view. Paint, Erase, Rectangle, Fill and
+Pick; left-drag paints and right-drag erases, middle-drag still pans. The
+default tool is Select, so the Scene view behaves exactly as it always did
+until you choose otherwise — and the current tool is shown over the view,
+because a mode you cannot see is a mode you forget you are in.
+**`Ctrl+Z` undoes a whole stroke** - see
 [the editor guide](docs/editor-guide.md#undo).
 
 ### Making it solid

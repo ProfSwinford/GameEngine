@@ -33,7 +33,6 @@
 #include "panels/InspectorPanel.h"
 #include "panels/ScenePanel.h"
 #include "panels/InputActionsPanel.h"
-#include "panels/TilePalettePanel.h"
 
 #include <imgui.h>
 
@@ -225,14 +224,11 @@ bool EditorApp::Init(const std::string& projectRoot) {
     auto assets         = std::make_unique<AssetBrowserPanel>();
     m_assetBrowserPanel = assets.get();
     AddPanel(std::move(assets));                       // files on disk
-    auto tiles         = std::make_unique<TilePalettePanel>();
-    m_tilePalettePanel = tiles.get();
-    AddPanel(std::move(tiles));                        // tiles, and the brush
     auto inputActions   = std::make_unique<InputActionsPanel>();
     m_inputActionsPanel = inputActions.get();
     // CLOSED UNTIL IT IS ASKED FOR. It edits one asset and most sessions
     // never touch one, so it starts out of the way - the Assets panel's
-    // double-click opens it, as the Tile Palette is opened.
+    // double-click opens it.
     inputActions->SetOpen(false);
     AddPanel(std::move(inputActions));                 // action maps and bindings
     AddPanel(std::make_unique<BuildPanel>());          // what ships, and in what order
@@ -1377,9 +1373,9 @@ void EditorApp::RevealAssetsPanelIfRequested() {
         return;
     }
 
-    // Opened first and focused on the NEXT frame, exactly as the Game view and
-    // the Tile Palette are, and for the same reason: a closed panel has never
-    // been shown to ImGui, so there is no window of that name to focus yet.
+    // Opened first and focused on the NEXT frame, exactly as the Game view is,
+    // and for the same reason: a closed panel has never been shown to ImGui, so
+    // there is no window of that name to focus yet.
     if (!m_assetBrowserPanel->IsOpen()) {
         m_assetBrowserPanel->SetOpen(true);
         return;
@@ -1390,24 +1386,6 @@ void EditorApp::RevealAssetsPanelIfRequested() {
     // folder and select the file - which only it knows how to do. Clearing the
     // flag here would bring the tab forward and select nothing.
     ImGui::SetWindowFocus(m_assetBrowserPanel->Title());
-}
-
-void EditorApp::RevealTilePaletteIfRequested() {
-    TilePaintState& tiles = TilePaintState::Get();
-    if (!tiles.revealRequested || m_tilePalettePanel == nullptr) {
-        return;
-    }
-
-    // Opened first and focused on the NEXT frame, exactly as the Game view is
-    // and for the same reason: a closed panel has never been shown to ImGui,
-    // so there is no window of that name to focus yet.
-    if (!m_tilePalettePanel->IsOpen()) {
-        m_tilePalettePanel->SetOpen(true);
-        return;
-    }
-
-    tiles.revealRequested = false;
-    ImGui::SetWindowFocus(m_tilePalettePanel->Title());
 }
 
 // ---------------------------------------------------------------------------
@@ -1890,7 +1868,6 @@ void EditorApp::Run(int frameLimit) {
 
         FocusGameViewIfRequested();
         RevealAssetsPanelIfRequested();
-        RevealTilePaletteIfRequested();
 
         // The title carries the project, the scene and whether there is
         // unsaved work, all three of which change while the editor runs. It

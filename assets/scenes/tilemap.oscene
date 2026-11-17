@@ -11,7 +11,6 @@
   },
   "entities": [
     {
-      "_comment": "The other half of the pair in start_menu.oscene. The controller does not survive the load - no entity does - so each scene carries one, and the statics inside the script are what actually cross over. This one finds the transition mid-flight and fades the screen back up.",
       "components": [
         {
           "position": [
@@ -128,7 +127,7 @@
         },
         {
           "collidesWith": [
-            "World"
+            "All"
           ],
           "friction": 0.0,
           "halfExtents": [
@@ -140,7 +139,7 @@
           "type": "BoxColliderComponent"
         },
         {
-          "bodyType": "Dynamic",
+          "bodyType": "Kinematic",
           "freezeRotation": true,
           "gravityScale": 1.0,
           "mass": 1.0,
@@ -164,7 +163,10 @@
         },
         {
           "script": "PlayerMovement",
-          "type": "ScriptComponent"
+          "type": "ScriptComponent",
+          "vars": {
+            "movementSpeed": 200.0
+          }
         },
         {
           "script": "TestScript",
@@ -172,6 +174,46 @@
         }
       ],
       "name": "Player"
+    },
+    {
+      "components": [
+        {
+          "position": [
+            512.0,
+            240.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ],
+          "type": "TransformComponent"
+        },
+        {
+          "chunks": [
+            {
+              "at": [
+                -3,
+                -1
+              ],
+              "cells": "88:0 1 15:0 1 15:0 1 15:0 1 15:0 2:1 102:0"
+            },
+            {
+              "at": [
+                -2,
+                -1
+              ],
+              "cells": "82:0 3:1 13:0 1 157:0"
+            }
+          ],
+          "palette": [
+            "tiles/Fence.otile"
+          ],
+          "type": "TilemapComponent"
+        }
+      ],
+      "name": "Tilemap",
+      "parent": "Level"
     }
   ],
   "name": "<unnamed>",

@@ -233,6 +233,11 @@ void Scene::DestroyEntityImmediate(EntityId id) {
     slot.prefab        = nullptr;
     slot.prefabLocalId = 0;
 
+    // And so does "this was built by something else", for the same reason: a
+    // new entity in a reused slot would otherwise be silently left out of
+    // every save.
+    slot.derived = false;
+
     // The generation goes up LAST. From this moment every EntityId still
     // referring to this slot can be recognised as out of date, which is what
     // lets the editor keep a selection across a delete without crashing.
@@ -632,6 +637,15 @@ Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraP
         //  would produce every member twice over.
         // ==================================================================
         if (scene.PrefabInstanceOf(entity.Id()) != nullptr) {
+            return;
+        }
+
+        // AND NEITHER IS ANYTHING ELSE BUILT FROM AN ASSET. A tilemap's tile
+        // objects are rebuilt from the map's cells and the tiles' .otile
+        // files every time the map changes, so writing them here would both
+        // duplicate them and freeze the tile's components into this file.
+        // See Scene::SetDerived.
+        if (scene.IsDerived(entity.Id())) {
             return;
         }
 
@@ -1037,6 +1051,20 @@ int Scene::PrefabLocalIdOf(EntityId id) const {
         return 0;
     }
     return m_slots[static_cast<std::size_t>(id.index)].prefabLocalId;
+}
+
+void Scene::SetDerived(EntityId id, bool derived) {
+    if (!IsValid(id)) {
+        return;
+    }
+    m_slots[static_cast<std::size_t>(id.index)].derived = derived;
+}
+
+bool Scene::IsDerived(EntityId id) const {
+    if (!IsValid(id)) {
+        return false;
+    }
+    return m_slots[static_cast<std::size_t>(id.index)].derived;
 }
 
 bool Scene::IsPrefabRoot(EntityId id) const {

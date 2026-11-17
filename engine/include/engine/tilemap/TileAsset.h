@@ -9,6 +9,11 @@
 //  file rather than a code change - the same rule every other asset in this
 //  engine follows.
 //
+//  A TILE IS A KIND OF THING, NOT ONE PLACED THING. Every cell painted with
+//  grass is the same grass; two crates that behave differently are two .otile
+//  files. That is the same bargain a prefab makes, and it is what lets one
+//  cell cost a single number - see Tilemap.h.
+//
 //  ==========================================================================
 //  WHY A TILE IS AN ASSET AND NOT PART OF THE MAP
 //
@@ -90,12 +95,74 @@
 //    "connector"         true for an invisible joining tile (see below)
 //    "connectsTo"        other .otile paths this tile joins up with
 //    "collision"         "None" | "Grid"
+//    "components"        [ { "type": "...", ... }, ... ] - see below
 //    "editorTint"        [r, g, b, a], applied in the editor only
 //
-//  Exactly one of "sheet" and "image" is required, and only a "connector" may
-//  omit both - because a connector is invisible and so needs no art.
+//  ==========================================================================
+//  AND ART IS OPTIONAL
+//
+//  Naming BOTH "sheet" and "image" is refused: they are the two kinds of art,
+//  not two settings, and a file naming both has not decided. Naming NEITHER is
+//  allowed, and is not a special case - a tile with nothing to draw is still a
+//  material. An invisible wall is one (no art, "collision": "Grid"); so is a
+//  trigger, a spawn marker, or a tile whose entire job is the components on
+//  it.
+//
+//  THIS USED TO REQUIRE "connector", which confused two unrelated things. A
+//  connector JOINS EVERYTHING around it, which is a statement about what its
+//  neighbours believe; being invisible is a consequence of what that is for.
+//  Having no art is its own fact. A connector is still forced non-solid - a
+//  solid one would be an invisible wall along the seam it was added to hide -
+//  and an art-less tile that is NOT a connector keeps whatever collision its
+//  file asks for, which is how the invisible wall is spelled.
+//
+//  An art-less tile is given a default "editorTint" so that it can be seen and
+//  placed in the editor: magenta for a connector, teal for anything else. A
+//  key that is present and EMPTY ("sheet": "") is refused, because that is a
+//  deleted path rather than a decision.
 // ============================================================================
 
+//  ==========================================================================
+//  A TILE CARRIES COMPONENTS, THE SAME WAY AN ENTITY DOES
+//
+//      "components": [
+//        { "type": "BoxCollider2DComponent",
+//          "size": [1.0, 0.25], "offset": [0, -0.375], "trigger": true }
+//      ]
+//
+//  Exactly the JSON an entity's component list holds, read by exactly the
+//  same ComponentFactory. That is deliberate and not a coincidence: it means
+//  a component written years after this file works on a tile the day it is
+//  written, and that the Inspector can edit a tile's components with the same
+//  widgets it edits an entity's.
+//
+//  WHAT THIS IS FOR is the difference between "solid" and "a spike". A tile
+//  grid full of identical squares can describe a wall; it cannot describe a
+//  hazard that hurts, a ladder that is climbable, or a vent that pushes. Those
+//  are properties of the MATERIAL, and this is where a material says them.
+//
+//  --------------------------------------------------------------------------
+//  AND THEY BELONG TO THE TILE, NOT TO THE PLACEMENT
+//
+//  Every cell painted with a tile gets the same components, because a tile IS
+//  a kind of thing. Two spikes that do different amounts of damage are two
+//  .otile files, in the same way that two enemies that do different amounts of
+//  damage are two prefabs. A cell is one 16-bit palette index and has nowhere
+//  to hang a difference - see Tilemap.h - and that is what keeps a map of a
+//  hundred thousand cells a hundred thousand numbers.
+//
+//  --------------------------------------------------------------------------
+//  THE ASSET HOLDS THE JSON, NOT LIVE COMPONENTS
+//
+//  A TileAsset is shared by every map that uses it, and a live Component
+//  belongs to one entity. So this stores what was written and hands it out;
+//  whatever makes it real builds from it. It is validated on load - an entry
+//  must be an object naming a "type" - but an UNKNOWN type is a warning and
+//  not a refusal, because which components exist depends on which game code
+//  is loaded, and a tile is read by tools that load none of it.
+//
+#include <engine/core/Json.h>
+#include <engine/tilemap/AutoTile.h>
 #include <engine/core/Json.h>
 #include <engine/tilemap/AutoTile.h>
 
@@ -256,17 +323,21 @@ public:
     const std::string& ArtPath() const { return m_artPath; }
     const TextureRef&  ArtTexture() const { return m_artTexture; }
 
-    // False only for a connector, which is invisible and so needs no art.
-    // Everything that draws has to check this before reaching for the sheet.
+    // False for a tile that names neither "sheet" nor "image" - a connector,
+    // an invisible wall, a marker, a carrier for components. Legal and not
+    // rare, so everything that draws has to check this before reaching for the
+    // texture. What the editor draws instead is EditorTint, which such a tile
+    // is always given one of.
     bool HasArt() const { return !m_artPath.empty(); }
 
     // Which kind the art is. Asked by everything that draws a tile, because
     // the two are drawn differently - four quarters against one picture.
     TileArt Art() const { return m_art; }
 
-    // The same question, spelled the way the draw loops ask it. A connector
-    // has no art at all and reports AutoTile, so this is never the only test:
-    // HasSheet comes first everywhere.
+    // The same question, spelled the way the draw loops ask it. A tile with no
+    // art at all reports AutoTile, because the kind is read off which key is
+    // present and neither is - so this is never the only test, and HasArt
+    // comes first everywhere.
     bool IsAutoTile() const { return m_art == TileArt::AutoTile; }
 
     int TileSize()   const { return m_tileSize; }
@@ -309,6 +380,24 @@ public:
     // renderer reads that. See TilemapComponent::RefreshPalette.
     bool ConnectsToAsset(const TileAsset& other) const;
 
+    // ---- components -------------------------------------------------------
+
+    // What the file's "components" said, verbatim and in order, each still
+    // carrying its own "type". Empty for the great majority of tiles.
+    const std::vector<Json>& Components() const { return m_components; }
+
+    bool HasComponents() const { return !m_components.empty(); }
+
+    // The FIRST entry of that type, or nullptr. First and not "the only one",
+    // because AllowsSeveral exists and a tile is free to carry two of
+    // something; the callers that ask this way want the one that decides
+    // something, and the first is the one that does.
+    //
+    // The pointer is into Components() and lives as long as the asset does -
+    // which is until TileLibrary::Clear, or until this tile is reloaded.
+    const Json* FindComponent(std::string_view typeName) const;
+
+    // ---- drawing ----------------------------------------------------------
     // ---- drawing ----------------------------------------------------------
 
     // Which column to draw for a cell. Deterministic in the cell position, so
@@ -321,9 +410,14 @@ public:
     Color EditorTint() const { return m_editorTint; }
 
 private:
-    // The fields a connector shares with an ordinary tile: everything that is
+    // The fields a tile with art shares with one without: everything that is
     // not about art. Called from both paths through Deserialize.
     bool DeserializeConnections(const Json& node, std::string& outError);
+
+    // Reads and checks "components". Part of the shared tail above, because a
+    // tile with nothing to draw is exactly the one most likely to be carrying
+    // them - an invisible trigger is components and nothing else.
+    bool DeserializeComponents(const Json& node, std::string& outError);
 
     std::string m_path;
     std::string m_artPath;
@@ -341,6 +435,10 @@ private:
     std::vector<std::string> m_connectsTo;
 
     TileCollision m_collision = TileCollision::Grid;
+
+    // Verbatim, in file order. See the section at the top of this file for
+    // why this is JSON and not a list of Components.
+    std::vector<Json> m_components;
 
     Color m_editorTint{0, 0, 0, 0};   // transparent: no tint
 };

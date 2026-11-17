@@ -66,7 +66,27 @@
 
 #include <cstddef>
 
+namespace eng {
+class Scene;
+}
+
 namespace editor {
+
+// ---------------------------------------------------------------------------
+//  Draws the FIELDS of one component - everything inside its header, and
+//  nothing of the header itself.
+//
+//  OUT HERE RATHER THAN BURIED IN THE ENTITY LOOP because an entity is no
+//  longer the only thing that carries components. A .otile does too (see
+//  engine/tilemap/TileAsset.h), and its BoxCollider has to be edited by
+//  exactly the same widgets as an entity's or the two drift apart - one of
+//  them growing a field, or a tooltip, or a unit, that the other never gets.
+//
+//  `scene` is used only to gather the collision layer names already in use,
+//  for the layer picker. `running` greys out the fields a system owns while
+//  the game is playing; a tile is not a running thing, so it passes false.
+// ---------------------------------------------------------------------------
+void DrawComponentBody(eng::Component& component, eng::Scene& scene, bool running);
 
 class InspectorPanel final : public Panel {
 public:

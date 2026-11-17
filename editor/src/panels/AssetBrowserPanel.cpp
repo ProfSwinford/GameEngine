@@ -12,7 +12,7 @@
 #include "ScriptTemplate.h"
 #include "panels/HierarchyPanel.h"   // kPayloadEntity, for an entity dropped in here
 #include "panels/InputActionsPanel.h"   // CreateDefault, for "+ Input"
-#include "panels/TilePalettePanel.h"
+#include "TilePaint.h"
 
 #include <engine/resource/ImportSettings.h>
 #include <engine/scene/Prefab.h>
@@ -1026,7 +1026,7 @@ void AssetBrowserPanel::DrawEntry(const Tile& tile, int index) {
                 ImGui::TextDisabled("double-click to open");
                 break;
             case AssetKind::Tile:
-                ImGui::TextDisabled("double-click to edit it in the Tile Palette");
+                ImGui::TextDisabled("double-click to edit it in the Inspector");
                 break;
             case AssetKind::Prefab:
                 ImGui::TextDisabled("drag into the Scene view, onto an entity, or "
@@ -1102,12 +1102,14 @@ void AssetBrowserPanel::DrawEntry(const Tile& tile, int index) {
             EditorState::Get().requestedScene = tile.path;
         } else if (kind == AssetKind::Tile) {
             // A .otile is JSON, so the system editor WOULD open it - but the
-            // Tile Palette can show the sheet, every one of the 47 shapes it
+            // Inspector can show the sheet, every one of the 47 shapes it
             // produces, and the settings as checkboxes. Opening Notepad on it
             // instead would be the least useful of the available answers.
-            TilePaintState& tiles = TilePaintState::Get();
-            tiles.tilePath        = tile.path;
-            tiles.revealRequested = true;
+            //
+            // SELECTING IT IS THE WHOLE OF IT. The Inspector draws whatever
+            // asset is selected, so there is no panel to reveal and no flag
+            // to raise - which is what the old revealRequested was.
+            EditorState::Get().selectedAsset = tile.path;
         } else if (kind == AssetKind::InputActions) {
             // A .oinput is JSON and the system editor WOULD open it, which
             // is a perfectly good way to edit one. The Input Actions window
@@ -2305,12 +2307,11 @@ bool AssetBrowserPanel::CreateTile(const std::string& name, const std::string& a
 
     ENGINE_LOG_INFO(eng::Channels::kEditor, "created the tile '{}'", path);
 
-    // Chosen as the brush straight away, and the Tile Palette asked to show
-    // it. A new tile you then have to go and find is a new tile you have to
-    // go and find.
-    TilePaintState& tiles = TilePaintState::Get();
-    tiles.tilePath        = path;
-    tiles.revealRequested = true;
+    // SELECTED STRAIGHT AWAY, so the Inspector is already showing it. A new
+    // tile you then have to go and find is a new tile you have to go and
+    // find. It is not made the brush: a tile belongs to no map until somebody
+    // adds it to one, which is what "Add tile" in the Inspector is for.
+    EditorState::Get().selectedAsset = path;
     return true;
 }
 
@@ -2448,7 +2449,7 @@ void AssetBrowserPanel::DrawNewTilePopup() {
                 if (probe.FrameCount() > 1) {
                     ImGui::TextDisabled("%d frames sideways - set Frames in",
                                         probe.FrameCount());
-                    ImGui::TextDisabled("the Tile Palette to use them");
+                    ImGui::TextDisabled("the Inspector to use them");
                 }
                 ImGui::EndGroup();
             }

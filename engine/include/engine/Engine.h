@@ -565,6 +565,10 @@ private:
     std::unique_ptr<ScriptSystem>    m_scriptSystem;
     std::unique_ptr<SpriteAnimationSystem> m_animationSystem;
 
+    // Keeps each tilemap's tile objects matching its cells. See the note
+    // above TilemapComponent::SyncTileObjects for what those are.
+    std::unique_ptr<TileObjectSystem> m_tileObjectSystem;
+
     // Copies the active camera entity into m_camera once a frame. Registered
     // with the scheduler like the others, so its place in the frame is one
     // number rather than a call buried somewhere - see CameraComponent.h.

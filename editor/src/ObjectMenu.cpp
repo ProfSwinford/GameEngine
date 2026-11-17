@@ -52,6 +52,16 @@ constexpr ObjectKind kKinds[] = {
      "An entity with a SpriteComponent, ready for an image to be dropped on "
      "it."},
 
+    // THE PAIR, because a map nothing can stand on is almost never what was
+    // wanted and adding the collider afterwards is a step people forget. The
+    // Tile Palette window used to have a "New Tilemap entity" button that did
+    // exactly this; the window is gone and creating things belongs here.
+    {"Tilemap", nullptr,
+     {eng::TilemapComponent::kTypeName, eng::TilemapColliderComponent::kTypeName,
+      nullptr, nullptr},
+     "A grid of tiles, and the collider that makes the solid ones solid. "
+     "Select it and its Tile Palette is in the Inspector."},
+
     // ---- the interface ---------------------------------------------------
     {"Text", "UI",
      {eng::UIRectComponent::kTypeName, eng::UITextComponent::kTypeName, nullptr,

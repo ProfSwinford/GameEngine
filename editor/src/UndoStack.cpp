@@ -6,7 +6,6 @@
 #include "UndoStack.h"
 
 #include "EditorApp.h"
-#include "panels/TilePalettePanel.h"
 
 #include <engine/Engine.h>
 #include <engine/core/Log.h>
@@ -45,26 +44,20 @@ struct Snapshot {
     std::vector<std::string> selection;
     std::string              active;
 
-    // ---- AND THE TILE BRUSH'S TARGET, for the same reason ----------------
+    // ---- AND NOTHING FOR THE TILE BRUSH, WHICH IS NEW --------------------
     //
-    // TilePaintState holds the map it paints into as an EntityId too. After a
-    // restore that id is not merely stale, it can be VALID and name a
-    // different entity - ids are handed out as a compacted index plus a
-    // generation that resets to 1 on a reload, so {5,1} still passes every
-    // validity check and resolves to whatever is now sixth.
+    // There used to be a `brushTarget` here, carrying the map the tile brush
+    // was painting into by name for exactly the reason the selection is
+    // carried that way: TilePaintState held its target as an EntityId, and a
+    // restored id is not merely stale but can be VALID and name a different
+    // entity, because ids are a compacted index plus a generation that resets
+    // to 1 on a reload.
     //
-    // It is the only id in editor state that PERSISTS across frames besides
-    // the selection. The panels hold a few others - HierarchyPanel's rename
-    // target and pending reparent, InspectorPanel's pending removal - but each
-    // is set and consumed within a frame or two, and an undo can only land
-    // between the two while a modal is open, which the shortcut guard already
-    // forbids. Those are not reached from here; EditorApp owns no pointer to
-    // the panels that hold them.
-    //
-    // Left unfixed, the first paint stroke after a Ctrl+Z could land in a
-    // different tilemap, or in an entity that has no tilemap at all. Carrying
-    // the name and re-resolving is the same treatment the selection gets.
-    std::string brushTarget;
+    // THE BRUSH NO LONGER HOLDS AN ID. Its target is whatever tilemap the
+    // SELECTED entity carries - see editor/src/TilePaint.h - so restoring the
+    // selection above restores the brush's target with it, and a map that no
+    // longer exists resolves to nothing rather than to the wrong entity. One
+    // field fewer, and one fewer way for the two to disagree.
 };
 
 Snapshot              g_baseline;
@@ -166,12 +159,6 @@ void CaptureSelection(Snapshot& out) {
         entity != nullptr) {
         out.active = entity->Name();
     }
-
-    out.brushTarget.clear();
-    if (const eng::Entity* entity = scene.Get(TilePaintState::Get().tilemap);
-        entity != nullptr) {
-        out.brushTarget = entity->Name();
-    }
 }
 
 bool Capture(Snapshot& out) {
@@ -242,14 +229,6 @@ bool Apply(const Snapshot& snapshot, std::string& outError) {
         if (const eng::EntityId id = scene.Find(snapshot.active); !id.IsNull()) {
             EditorState::Get().AddToSelection(id);
         }
-    }
-
-    // CLEARED FIRST, SO A FAILED LOOKUP LEAVES NOTHING rather than the old id.
-    // An empty target makes the paint tools do nothing until a map is chosen,
-    // which is the safe answer; a stale one paints into the wrong entity.
-    TilePaintState::Get().tilemap = eng::EntityId{};
-    if (!snapshot.brushTarget.empty()) {
-        TilePaintState::Get().tilemap = scene.Find(snapshot.brushTarget);
     }
     return true;
 }
@@ -325,7 +304,6 @@ void Poll() {
             g_baseline.selection = std::move(live.selection);
             g_baseline.active    = std::move(live.active);
         }
-        g_baseline.brushTarget = std::move(live.brushTarget);
     }
 
     // THE CHEAP TEST, and on the overwhelming majority of frames nothing

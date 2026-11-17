@@ -377,9 +377,8 @@ The menu item's tooltip tells you how many steps are left.
 +---------------------------------------------------------------+
 ```
 
-The **Tile Palette** is not in the picture because it arrives floating the first
-time you run a build that has it - drag it onto the Inspector or the Assets row
-and it stays there.
+The **Input Actions** window is not in the picture because it starts closed -
+the Assets panel opens it when you double-click a `.oinput`.
 
 Every panel can be dragged, tabbed and resized. The arrangement is remembered
 in a file called `imgui.ini`, written into whichever folder you started the
@@ -513,8 +512,8 @@ explained — *"that is a whole image, not a part of one"* — rather than refus
 because a refused drop leaves you holding the thing you meant with no idea why
 nothing happened.
 
-The **Tile Palette**'s art field is deliberately *not* one of these slots: it
-is a field of a `.otile` file rather than a reference, and the panel's whole
+The tile editor's art field is deliberately *not* one of these slots: it is a
+field of a `.otile` file rather than a reference, and that editor's whole
 design is that a wrong path turns red as you type it. It takes a drop too, and
 keeps the text box.
 
@@ -1163,22 +1162,31 @@ to work out why a collision is not firing.
 
 ---
 
-## Tile Palette
+## Tilemaps
 
 A tilemap is a grid of tiles that work out what they look like from the tiles
 around them: paint a line of stone and the ends round themselves off, paint a
 block and the middle fills in. The reasoning is in
 [the README](../README.md#tilemaps); this is how to use it.
 
-### Two kinds of tile
+**The palette belongs to the map.** Select a tilemap and its own list of
+materials is in the Inspector, under **Tile Palette** — along with the tools,
+the brush and the statistics. There is no Tile Palette window any more; there
+used to be one, and it showed every `.otile` in the project to whichever map it
+had guessed you meant, which is two problems at once. A base layer, a detail
+layer and a collision layer are three tilemaps wanting three different handfuls
+of tiles, and one global grid cannot know which handful belongs to which.
 
-There are two, and the one you want depends on whether the art should **join up
-with itself**:
+### Two kinds of tile, and no art at all
+
+There are two kinds of art, and the one you want depends on whether it should
+**join up with itself**:
 
 | Kind      | What it is                                      | When |
 | --------- | ----------------------------------------------- | ---- |
 | **Sheet** | Five bands, assembled from four quarters chosen by the neighbours | ground, water, walls — anything that forms a *surface* |
 | **Image** | One picture, drawn whole. Every cell identical.  | a crate, a bush, a sign, a single frame of a spritesheet |
+| **None**  | Nothing is drawn. The cell is still a cell.      | an invisible wall, a trigger, a spawn marker, a tile that is only its components |
 
 A sheet is the clever one: paint a line of it and the ends round themselves off.
 An image is the plain one, and plain is right far more often than it sounds —
@@ -1191,8 +1199,21 @@ nothing is copied out to a file of its own. That is the quickest way to get a
 pile of scenery tiles out of one atlas.
 
 The `.otile` says which kind it is **by which key it uses** — `"sheet"` or
-`"image"`. There is no separate setting to contradict it, naming both is
-refused, and naming neither tells you what the difference is.
+`"image"`. There is no separate setting to contradict it, and naming both is
+refused: they are the two kinds of art, not two settings, so a file naming both
+has not decided.
+
+**Naming neither is allowed.** A tile with nothing to draw is still a material:
+it fills a cell, it is its own thing to its neighbours, and it sits in a map's
+palette like any other. An **invisible wall** is one of these with
+`"collision": "Grid"` — which a connector can never be, because a connector is
+forced non-solid. So is a trigger, a spawn marker, or a tile whose entire job is
+the components on it.
+
+The editor gives an art-less tile a tint so that you can still see and place it:
+magenta for a connector, teal for everything else. A key that is *there and
+empty* (— `"sheet": ""`) is refused, because that is a deleted path rather
+than a decision.
 
 ### Making a tile
 
@@ -1262,20 +1283,21 @@ file: if "outer corner" and "fill" are pointing at bits of a character, choose
 
 ### Editing a tile
 
-Double-click a `.otile` in the Assets panel — or choose it in the palette and
-open **Edit tile**. Everything is a widget: collision, frame mode, animation
-speeds, what it joins up with, the editor tint.
+Select a `.otile` in the Assets panel — double-clicking one does it too — and
+the **Inspector** shows it. Everything is a widget: collision, frame mode,
+animation speeds, what it joins up with, the editor tint, and the components it
+carries. A tile in a map's palette has **Edit this tile** in its right-click
+menu, which is the same thing from the other direction.
 
 Two things worth knowing:
 
 **It edits the file, not a copy of it.** The widgets change keys in the `.otile`
 as it was read, and saving writes that back out — so `_comment` lines and
-anything else the panel does not know about survive. Keys come out in
+anything else the editor does not know about survive. Keys come out in
 alphabetical order, the same as a saved scene.
 
-**The preview is of your unsaved edits.** The panel re-reads its own buffer
-every frame, so a wrong sheet path turns red as you type it rather than after
-you save.
+**The preview is of your unsaved edits.** The buffer is re-read every frame, so
+a wrong sheet path turns red as you type it rather than after you save.
 
 **Art** at the top switches between the two kinds. The path moves across with
 it, and any `tileSize` or `frames` already in the file are dropped — a size
@@ -1289,8 +1311,8 @@ them to see which band each quarter came from. For an animated sheet, the
 **Preview frame** slider picks the column.
 
 An image tile has neither of those: one picture has no bands to be in the wrong
-order and no shapes to vary, so the panel shows the picture and says so rather
-than greying out a row of controls that could never mean anything.
+order and no shapes to vary, so the Inspector shows the picture and says so
+rather than greying out a row of controls that could never mean anything.
 
 Saving re-reads the tile in place, so every map already using it updates — and
 their colliders rebuild, because changing `collision` changes which cells are
@@ -1298,11 +1320,24 @@ solid without any cell having changed.
 
 ### Painting
 
-1. Open **Tile Palette** (it is in the **View** menu if you closed it).
-2. If the scene has no tilemap, press **New Tilemap entity**. That gives you a
-   `TilemapComponent` and a `TilemapColliderComponent` on one entity.
-3. Click a tile in the grid. The tool switches to **Paint** automatically.
-4. Paint in the Scene view.
+1. **Select the tilemap.** Its palette is in the Inspector; nothing else can be
+   painted, which is what stops a stroke landing in the wrong layer.
+2. If the scene has no tilemap, add one from the **Object** menu — that gives
+   you a `TilemapComponent` and a `TilemapColliderComponent` on one entity.
+3. Press **Add tile...** and choose a `.otile`. That is the only way a material
+   enters a map, and it is what keeps the list short.
+4. Click a tile in the grid. The tool switches to **Paint** automatically.
+5. Paint in the Scene view.
+
+**A brush can only paint what the map already has.** Adding a tile is a
+deliberate act, so a map's palette is the set somebody chose rather than
+everything that has ever been dragged across it. Painting used to add silently,
+which is how a detail layer ended up listing every material in the game.
+
+**Taking one out** is on the tile's right-click menu. An entry nothing uses goes
+straight away; one that is painted says how many cells it is about to erase and
+asks first. Either way the entries after it are renumbered, along with every
+cell that named one — a cell stores a *position* in the list, not a path.
 
 | Tool          | What it does                                               |
 | ------------- | ---------------------------------------------------------- |
@@ -1325,8 +1360,8 @@ Erase is still the quicker fix for a single wrong cell.
 
 ### Why nothing appears
 
-The Tile Palette reports `N cell(s) drawn, M skipped` for the last frame, and
-the two add up to every cell in the scene's maps. So:
+The Inspector reports `N cell(s) drawn, M skipped` for the last frame, and the
+two add up to every cell in the scene's maps. So:
 
 - **drawn 0, skipped many** - the camera is not looking at the map.
 - **drawn 0, skipped 0** - nothing is painted, or the map's `layer` puts it
@@ -1349,6 +1384,63 @@ tiles** in the Inspector. Painting rebuilds the collider by itself, but
 changing a tile from decoration to solid changes which cells are solid without
 any cell having changed, so nothing would otherwise notice.
 
+### What a tile becomes when you paint it
+
+A tile is not only a picture. The **Components** section of its Inspector gives
+it the same components an entity can have, and every cell painted with it gets
+them:
+
+```json
+"components": [
+  { "type": "BoxColliderComponent",
+    "size": [32, 8], "offset": [0, -12], "trigger": true, "layer": "Hazard" }
+]
+```
+
+That is the difference between *solid* and *a spike*. A grid of identical
+squares can describe a wall; it cannot describe a hazard that hurts, a ladder
+that is climbable, or a vent that pushes. Those are properties of the material,
+and this is where a material says them. `assets/tiles/hazard.otile` is a worked
+example — no art, and a trigger shorter than its cell so that walking past the
+base of a spike is safe.
+
+**Add component...** offers everything the engine and your own code have
+registered, minus the three that cannot mean anything on a tile (a transform —
+the *cell* decides where it sits — a tilemap, and a tilemap collider). The
+fields are the Inspector's own, so a tile's box collider is edited by exactly
+the same widgets as an entity's.
+
+**The properties belong to the tile, not to the placement.** Every cell painted
+with a spike is the same spike, the way every instance of a prefab is the same
+prefab until you override one. Two spikes that do different damage are two
+`.otile` files. A cell is one small number with nowhere to hang a difference,
+and that is what keeps a hundred-thousand-cell map a hundred thousand numbers.
+
+**In a cell**, at the bottom of the Inspector, draws exactly what you have
+configured: the art (or the editor tint), the cell's edge, the blue square a
+`"collision": "Grid"` tile fills, and every collider component where it will
+actually sit — green for a solid one, amber for a trigger. Typing an offset as
+a pair of numbers is unreadable; this is how you get a hitbox right without
+playing the game after every nudge.
+
+#### What it costs
+
+A tile with no components costs **nothing**. One with any costs **one entity per
+painted cell**, created when the game runs and never written into the scene file
+— the map's cells and the `.otile` already say everything about them, so
+editing the tile reaches every cell of it.
+
+So: keep components for the sparse interesting things, and leave the ground
+alone. Solid ground should say `"collision": "Grid"` and carry no collider at
+all, because that path merges whole regions into a handful of boxes while a
+collider component is one box per cell. The two are for different jobs.
+
+They exist **while the game is running**, which is why you will not see them in
+the Hierarchy while editing. A scene full of entities called `Level tile 4,-7`
+that you cannot usefully edit would be worse than none; the Inspector's own
+preview is what the editor shows instead.
+
+### Connector tiles
 ### Connector tiles
 
 A connector is invisible at runtime but counts as present to its neighbours.

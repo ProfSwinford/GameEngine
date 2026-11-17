@@ -54,7 +54,7 @@ bool NameTaken(const std::vector<eng::InputAction>& actions, const std::string& 
 // "_1" AND NOT UNITY'S "1", which is the one place this deliberately does not
 // follow Unity. eng::Scene::MakeUniqueName spells it with the underscore and
 // every other "+" in this editor goes through it - the Hierarchy's entities,
-// the Object menu's, the Tile Palette's - so a second spelling here would be
+// the Object menu's, the Assets panel's - so a second spelling here would be
 // the only one in the editor. It cannot share that function itself: that one
 // uniquifies against a SCENE's entity names, and there is no scene in sight.
 template <typename T>

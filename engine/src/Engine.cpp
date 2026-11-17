@@ -142,10 +142,16 @@ bool Engine::SceneSubsystem::Init(const BootConfig&) {
                                    return std::make_unique<CameraComponent>();
                                });
 
-    engine.m_spinSystem      = std::make_unique<SpinSystem>();
-    engine.m_scriptSystem    = std::make_unique<ScriptSystem>();
-    engine.m_animationSystem = std::make_unique<SpriteAnimationSystem>();
-    engine.m_cameraSystem    = std::make_unique<CameraSystem>();
+    engine.m_spinSystem       = std::make_unique<SpinSystem>();
+    engine.m_scriptSystem     = std::make_unique<ScriptSystem>();
+    engine.m_animationSystem  = std::make_unique<SpriteAnimationSystem>();
+    engine.m_cameraSystem     = std::make_unique<CameraSystem>();
+    engine.m_tileObjectSystem = std::make_unique<TileObjectSystem>();
+
+    // FIRST OF THE SIMULATION STAGES, so that a cell painted by a script last
+    // step has its tile object before anything this step looks for one.
+    SystemScheduler::Register(engine.m_tileObjectSystem.get());
+
     SystemScheduler::Register(engine.m_spinSystem.get());
     SystemScheduler::Register(engine.m_scriptSystem.get());
 
@@ -182,6 +188,10 @@ void Engine::SceneSubsystem::Shutdown() {
     if (engine.m_cameraSystem != nullptr) {
         SystemScheduler::Unregister(engine.m_cameraSystem.get());
         engine.m_cameraSystem.reset();
+    }
+    if (engine.m_tileObjectSystem != nullptr) {
+        SystemScheduler::Unregister(engine.m_tileObjectSystem.get());
+        engine.m_tileObjectSystem.reset();
     }
     SpinSystem::Clear();
     ScriptSystem::Clear();

@@ -1,0 +1,16 @@
+{
+  "_comment": "A hazard tile: no art of its own, and a trigger that is shorter than its cell so that walking past the base of a spike is safe. Shows both halves of what a tile can be - see engine/include/engine/tilemap/TileAsset.h. Every cell painted with this becomes one entity carrying this collider; see TilemapComponent::SyncTileObjects.",
+  "tileSize": 32,
+  "collision": "None",
+  "editorTint": [230, 90, 70, 110],
+  "components": [
+    {
+      "type": "BoxColliderComponent",
+      "halfExtents": [14.0, 6.0],
+      "offset": [0.0, -10.0],
+      "trigger": true,
+      "layer": "Hazard",
+      "collidesWith": ["Player"]
+    }
+  ]
+}

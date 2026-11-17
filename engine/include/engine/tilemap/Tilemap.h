@@ -51,6 +51,8 @@
 
 #include <engine/math/Overlap.h>
 #include <engine/scene/Component.h>
+#include <engine/scene/EntityId.h>
+#include <engine/scene/SystemOrder.h>
 #include <engine/tilemap/AutoTile.h>
 #include <engine/tilemap/TileAsset.h>
 
@@ -148,9 +150,10 @@ public:
     // Drops palette entries no cell uses any more, and renumbers the cells
     // that remain.
     //
-    // A MANUAL ACTION, not part of saving. Two buttons call it - the
-    // Inspector's "Drop unused entries" and the Tile Palette's "Tidy
-    // palette" - and nothing on the save path does.
+    // A MANUAL ACTION, not part of saving. The Inspector's "Drop unused"
+    // button calls it and nothing on the save path does. There were two
+    // buttons for it - the Tile Palette window had a "Tidy palette" that did
+    // the same thing - and that window is gone.
     //
     // It used to claim it was called on save, which it never was: Serialize
     // writes the palette verbatim and is const, so it could not compact even
@@ -162,6 +165,40 @@ public:
     // IT PINS THE CELL SIZE when that size was being derived; see the note in
     // the implementation for the resize this prevents.
     std::size_t CompactPalette();
+
+    // How many painted cells use this palette entry. Zero for kEmptyTile and
+    // for an id past the end, so it is safe to ask about anything.
+    //
+    // FOR THE QUESTION THE EDITOR HAS TO ASK BEFORE IT REMOVES ONE. Counting
+    // is a whole-map walk, so ask it once when something changes rather than
+    // from inside a per-frame draw.
+    std::size_t CellsUsing(TileId tile) const;
+
+    // =======================================================================
+    //  TAKES ONE ENTRY OUT, WHATEVER IS PAINTED WITH IT.
+    //
+    //  This is the operation an explicit per-map palette needs and
+    //  CompactPalette is not: that one drops only what nothing uses, which by
+    //  definition can never be the entry somebody is pointing at.
+    //
+    //  `eraseCells` IS THE WHOLE OF THE SAFETY. False refuses the removal and
+    //  answers false while any cell still uses the entry, so a caller that
+    //  has not asked first cannot quietly delete somebody's work; true erases
+    //  those cells and then removes it. CellsUsing is how a caller finds out
+    //  which of the two it is about to be. False for kEmptyTile and for an id
+    //  past the end.
+    //
+    //  EVERY LATER ENTRY IS RENUMBERED, and so is every cell that referred to
+    //  one - the palette is positional, and a cell id past the end of it is a
+    //  hard scene-load error rather than a blank tile. That is the same walk
+    //  CompactPalette does, and the two share it.
+    //
+    //  IT PINS THE CELL SIZE by the same rule and for the same reason: a map
+    //  with no "cellSize" of its own takes it from the first entry that
+    //  loads, so removing that entry would otherwise resize the whole map and
+    //  move the solid world out from under whatever was standing on it.
+    // =======================================================================
+    bool RemoveFromPalette(TileId tile, bool eraseCells);
 
     // ---- geometry ----------------------------------------------------------
 
@@ -218,6 +255,74 @@ public:
     // appear in the Game view.
     void Render(Camera& camera, double seconds, bool editorTints) const;
 
+    // =======================================================================
+    //  TILE OBJECTS - what makes a tile's components real.
+    //
+    //  A tile that carries components (see TileAsset.h) gets ONE ENTITY PER
+    //  PAINTED CELL, parented to this map and sitting at the centre of its
+    //  cell, holding those components. A spike tile is then a trigger that
+    //  hurts, a ladder is climbable and a vent pushes - none of which a grid
+    //  of identical squares can say.
+    //
+    //  This is Unity's Tile.gameObject, and it is the only honest way to make
+    //  arbitrary components work: a component is a thing that lives on an
+    //  entity, so for a tile's components to DO anything there has to be an
+    //  entity for them to live on.
+    //
+    //  ----------------------------------------------------------------------
+    //  WHAT IT COSTS, AND WHY THAT IS ALL RIGHT
+    //
+    //  One entity per painted cell OF A TILE THAT CARRIES COMPONENTS, and
+    //  nothing at all for every other tile. A ground layer of fifty thousand
+    //  grass cells costs zero objects; a level with two hundred spikes costs
+    //  two hundred entities, which is nothing. The cheap case stays cheap
+    //  because the expensive case is opt-in, one .otile at a time.
+    //
+    //  SOLID GROUND SHOULD STAY "collision": "Grid" and carry no collider
+    //  component. That path merges fifty thousand cells into a handful of
+    //  boxes (see TilemapCollider.h); a collider component on a tile is one
+    //  box per cell, which is the thing that merge exists to avoid. The two
+    //  are for different jobs: Grid for surfaces, components for the sparse
+    //  interesting things standing on them.
+    //
+    //  ----------------------------------------------------------------------
+    //  THEY ARE DERIVED, AND SO THEY ARE NEVER SAVED
+    //
+    //  Scene::SetDerived marks each one, and the save skips it exactly as it
+    //  skips a prefab instance's members. The map's cells and the tile's
+    //  .otile already say everything about them, so writing them out would
+    //  freeze a copy of the tile into every scene using it and break the link
+    //  to the asset. Edit the .otile and every object of it is rebuilt.
+    //
+    //  ----------------------------------------------------------------------
+    //  THEY EXIST WHILE THE GAME IS RUNNING
+    //
+    //  TileObjectSystem drives this, and that is a simulation-stage system,
+    //  so it does not run while the editor sits paused. An editor showing two
+    //  hundred entities called "Level tile 4,-7" in its hierarchy - which you
+    //  cannot usefully edit, because the tile owns them - would be worse than
+    //  showing none. What the editor shows instead is the tile's own
+    //  component list and its collider preview, in the Inspector.
+    // =======================================================================
+
+    // Builds what should exist and takes away what should not. Cheap and
+    // safe to call every step: it does nothing at all unless the map has
+    // changed since the last pass.
+    void SyncTileObjects();
+
+    // Queues every tile object for destruction and forgets them. DEFERRED and
+    // not immediate, because this is called from OnDetach - which can itself
+    // be running inside the destruction of the entity these are children of,
+    // and destroying from inside a destruction is how a tidy-up turns into a
+    // crash.
+    void ClearTileObjects();
+
+    std::size_t TileObjectCount() const { return m_tileObjects.size(); }
+
+    // The object for one cell, or a null id. For the tests and for anything
+    // that wants to find what a cell spawned.
+    EntityId TileObjectAt(int x, int y) const;
+
     // Reloads every palette entry and rebuilds the connection table. Called
     // when the palette changes, and by the editor after a .otile is edited.
     void RefreshPalette();
@@ -242,6 +347,33 @@ private:
     const Chunk* FindChunk(TileCoord chunk) const;
 
     bool DeserializeChunks(const Json& node, std::string& outError);
+
+    // THE ONE PLACE A PALETTE ENTRY EVER GOES AWAY. `drop` is one flag per
+    // palette entry, in palette order; a cell using a dropped entry is
+    // erased, and every entry that survives is renumbered along with the
+    // cells that name it. CompactPalette and RemoveFromPalette are each a
+    // mask and a call to this, which is what stops the renumbering and the
+    // cell-size pinning from existing twice and drifting apart. Answers how
+    // many entries went.
+    std::size_t DropPaletteEntries(const std::vector<bool>& drop);
+
+    // One cell's object. The TILE IS REMEMBERED ALONGSIDE IT so that a cell
+    // repainted from one componented tile to another is rebuilt: the cell is
+    // still occupied and still wants an object, so comparing cells alone
+    // would leave the old tile's components sitting there.
+    struct TileObject {
+        EntityId id{};
+        TileId   tile = kEmptyTile;
+    };
+
+    EntityId BuildTileObject(TileCoord cell, const TileAsset& asset);
+
+    std::map<TileCoord, TileObject, CoordLess> m_tileObjects;
+
+    // The revision the objects were built for. Equal to m_revision means
+    // "nothing has happened since", which is the whole of the per-step cost
+    // in the common case.
+    unsigned long long m_tileObjectRevision = 0;
 
     std::map<TileCoord, Chunk, CoordLess> m_chunks;
     std::size_t                           m_tileCount = 0;
@@ -316,6 +448,23 @@ public:
     static void        ResetCounters();
 
     static void RegisterComponentTypes();
+};
+
+// ---------------------------------------------------------------------------
+//  TileObjectSystem - calls SyncTileObjects on every registered map.
+//
+//  A SIMULATION-STAGE SYSTEM, at the input stage, which decides two things at
+//  once. It runs before gameplay, so a spike painted by a script this step is
+//  a real trigger before anything looks for one; and it does NOT run while
+//  the editor sits with its clock paused, which is what keeps a scene you are
+//  editing free of entities you did not put there. See the long note above
+//  TilemapComponent::SyncTileObjects.
+// ---------------------------------------------------------------------------
+class TileObjectSystem final : public System {
+public:
+    void        Update(float deltaSeconds) override;
+    const char* Name() const override { return "TileObjects"; }
+    int         Order() const override { return SystemStage::kInput; }
 };
 
 } // namespace eng

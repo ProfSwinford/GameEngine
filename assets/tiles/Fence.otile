@@ -1,0 +1,16 @@
+{
+  "_comment": "A tile material. The sheet is ONE TILE WIDE and FIVE TILES TALL: outer corner / vertical edge / horizontal edge / inner corner / fill, top to bottom. Extra frames go sideways. tileSize and frames are measured from the image.",
+  "collision": "None",
+  "components": [
+    {
+      "collidesWith": [
+        "All"
+      ],
+      "layer": "Default",
+      "radius": 7.0,
+      "trigger": false,
+      "type": "CircleColliderComponent"
+    }
+  ],
+  "sheet": "textures/Sprites/Environments/TilePalette/Autotiles/root/single/ground_autotile_14.png"
+}

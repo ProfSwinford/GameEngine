@@ -26,6 +26,7 @@
 #include <engine/fs/FileSystem.h>
 #include <engine/physics/Collider.h>
 #include <engine/scene/Component.h>
+#include <engine/scene/DeferredOps.h>
 #include <engine/scene/Scene.h>
 #include <engine/tilemap/AutoTile.h>
 #include <engine/tilemap/TileAsset.h>
@@ -778,6 +779,148 @@ TEST_CASE("compacting a palette that is fully used changes nothing") {
 }
 
 // ===========================================================================
+//  Taking one entry out of the palette
+//
+//  THE OPERATION AN EXPLICIT PER-MAP PALETTE NEEDS, and the one compaction
+//  cannot do: compaction drops only what nothing uses, which by definition is
+//  never the entry somebody is pointing at in the Inspector.
+// ===========================================================================
+
+TEST_CASE("counting the cells that use one palette entry") {
+    MapFixture f(3);
+    f.map->SetTile(0, 0, 2);
+    f.map->SetTile(1, 0, 2);
+    f.map->SetTile(2, 0, 3);
+
+    CHECK(f.map->CellsUsing(1) == 0);
+    CHECK(f.map->CellsUsing(2) == 2);
+    CHECK(f.map->CellsUsing(3) == 1);
+
+    // SAFE TO ASK ABOUT ANYTHING, because the caller asking is a panel with a
+    // row index and no reason to have validated it.
+    CHECK(f.map->CellsUsing(kEmptyTile) == 0);
+    CHECK(f.map->CellsUsing(99) == 0);
+}
+
+TEST_CASE("an entry nothing uses comes out without permission to erase") {
+    MapFixture f(3);
+    f.map->SetTile(0, 0, 1);
+    f.map->SetTile(1, 0, 3);
+
+    // Entry 2 is unpainted, so there is nothing to lose and no question to ask.
+    CHECK(f.map->RemoveFromPalette(2, false));
+    CHECK(f.map->Palette().size() == 2);
+
+    // AND THE CELLS FOLLOW THE RENUMBERING. Entry 3 became entry 2; a cell
+    // left naming 3 would be past the end of the palette, which is a hard
+    // scene-load error rather than a blank tile.
+    CHECK(f.map->GetTile(0, 0) == 1);
+    CHECK(f.map->GetTile(1, 0) == 2);
+    CHECK(f.map->TileCount() == 2);
+}
+
+TEST_CASE("an entry something uses is refused unless the caller says erase") {
+    MapFixture f(2);
+    f.map->SetTile(0, 0, 1);
+    f.map->SetTile(1, 0, 2);
+    const unsigned long long before = f.map->Revision();
+
+    // THE REFUSAL IS THE WHOLE SAFETY. A panel that has not asked its user
+    // gets false and an untouched map rather than a map quietly missing a
+    // hundred painted cells.
+    CHECK_FALSE(f.map->RemoveFromPalette(1, false));
+    CHECK(f.map->Palette().size() == 2);
+    CHECK(f.map->GetTile(0, 0) == 1);
+    CHECK(f.map->GetTile(1, 0) == 2);
+    CHECK(f.map->TileCount() == 2);
+    CHECK(f.map->Revision() == before);
+
+    // Neither end of the range is a surprise either.
+    CHECK_FALSE(f.map->RemoveFromPalette(kEmptyTile, true));
+    CHECK_FALSE(f.map->RemoveFromPalette(9, true));
+    CHECK(f.map->Palette().size() == 2);
+}
+
+TEST_CASE("removing an entry erases its cells and renumbers the rest") {
+    MapFixture f(3);
+    f.map->SetTile(0, 0, 1);
+    f.map->SetTile(1, 0, 2);
+    f.map->SetTile(2, 0, 2);
+    f.map->SetTile(3, 0, 3);
+    const unsigned long long before = f.map->Revision();
+
+    CHECK(f.map->RemoveFromPalette(2, true));
+
+    CHECK(f.map->Palette().size() == 2);
+    CHECK(f.map->GetTile(0, 0) == 1);
+    CHECK(f.map->GetTile(1, 0) == kEmptyTile);
+    CHECK(f.map->GetTile(2, 0) == kEmptyTile);
+    CHECK(f.map->GetTile(3, 0) == 2);   // was 3
+    CHECK(f.map->TileCount() == 2);
+
+    // THE COLLIDER REBUILDS ON THIS. Leaving it still would leave the solid
+    // world describing a palette that no longer exists.
+    CHECK(f.map->Revision() > before);
+}
+
+TEST_CASE("a chunk emptied by a removal goes, as it would under the eraser") {
+    MapFixture f(2);
+
+    // Two cells, deliberately in different chunks: one of them is about to
+    // lose its only tile, and a map that kept a chunk full of zeroes would
+    // save it, load it back, and disagree with itself about ChunkCount.
+    f.map->SetTile(0, 0, 1);
+    f.map->SetTile(100, 100, 2);
+    CHECK(f.map->ChunkCount() == 2);
+
+    CHECK(f.map->RemoveFromPalette(2, true));
+    CHECK(f.map->ChunkCount() == 1);
+    CHECK(f.map->TileCount() == 1);
+    CHECK(f.map->IsEmpty() == false);
+
+    // And the last one out empties the map rather than leaving a husk.
+    CHECK(f.map->RemoveFromPalette(1, true));
+    CHECK(f.map->ChunkCount() == 0);
+    CHECK(f.map->TileCount() == 0);
+    CHECK(f.map->IsEmpty());
+    CHECK(f.map->Palette().empty());
+}
+
+TEST_CASE("a map survives a removal and a round trip") {
+    // THE REASON RENUMBERING IS NOT OPTIONAL. A cell naming an id past the end
+    // of the palette is refused by Deserialize outright, so a removal that got
+    // the renumbering wrong would not look wrong - it would make the scene
+    // unloadable the next time it was opened.
+    MapFixture f(3);
+    f.map->SetTile(0, 0, 1);
+    f.map->SetTile(1, 0, 3);
+    f.map->SetTile(2, 0, 3);
+
+    REQUIRE(f.map->RemoveFromPalette(1, true));
+
+    Json out;
+    REQUIRE(f.map->Serialize(out));
+
+    Scene other;
+    Scene::SetActive(&other);
+    Entity* entity = other.Get(other.CreateEntity("Copy"));
+    auto*   copy   = static_cast<TilemapComponent*>(
+        entity->AddComponent(TilemapComponent::kTypeName));
+    REQUIRE(copy != nullptr);
+
+    std::string error;
+    REQUIRE_MESSAGE(copy->Deserialize(out, error), error);
+    CHECK(copy->Palette().size() == 2);
+    CHECK(copy->GetTile(0, 0) == kEmptyTile);
+    CHECK(copy->GetTile(1, 0) == 2);
+    CHECK(copy->GetTile(2, 0) == 2);
+    CHECK(copy->TileCount() == 2);
+
+    other.Unload();
+    Scene::SetActive(&f.scene);
+}
+
+// ===========================================================================
 //  Merging solid cells into boxes
 // ===========================================================================
 
@@ -1152,14 +1295,20 @@ TEST_CASE("an odd tile size is refused") {
     CHECK(error.find("EVEN") != std::string::npos);
 }
 
-TEST_CASE("a tile with no sheet is refused unless it is a connector") {
+TEST_CASE("a tile may have no art at all, without being a connector") {
+    // IT USED TO BE REFUSED unless the file also said "connector", which tied
+    // "joins everything" to "has nothing to draw". They are different facts.
     std::string error;
 
     TileAsset plain;
-    Json      withoutSheet = ParseJson(R"({"tileSize":32})", error);
+    Json      withoutArt = ParseJson(R"({"tileSize":32})", error);
     REQUIRE(error.empty());
-    CHECK_FALSE(plain.Deserialize(withoutSheet, error));
-    CHECK(error.find("sheet") != std::string::npos);
+
+    REQUIRE(plain.Deserialize(withoutArt, error));
+    CHECK(error.empty());
+    CHECK_FALSE(plain.HasArt());
+    CHECK_FALSE(plain.IsConnector());
+    CHECK(plain.TileSize() == 32);
 
     TileAsset connector;
     Json      asConnector = ParseJson(R"({"connector":true,"tileSize":32})", error);
@@ -1168,6 +1317,77 @@ TEST_CASE("a tile with no sheet is refused unless it is a connector") {
     CHECK(connector.IsConnector());
     CHECK_FALSE(connector.HasArt());
     CHECK(connector.TileSize() == 32);
+}
+
+TEST_CASE("an art-less tile keeps the collision its file asks for") {
+    // THE INVISIBLE WALL, which is the whole reason art and collision had to
+    // stop being one decision. A connector cannot be one - it is forced
+    // non-solid - so before this there was no way to spell it at all.
+    std::string error;
+
+    TileAsset wall;
+    Json solid = ParseJson(R"({"tileSize":32,"collision":"Grid"})", error);
+    REQUIRE(error.empty());
+    REQUIRE(wall.Deserialize(solid, error));
+    CHECK_FALSE(wall.HasArt());
+    CHECK(wall.IsSolid());
+    CHECK(wall.Collision() == TileCollision::Grid);
+
+    TileAsset marker;
+    Json hollow = ParseJson(R"({"tileSize":32,"collision":"None"})", error);
+    REQUIRE(error.empty());
+    REQUIRE(marker.Deserialize(hollow, error));
+    CHECK_FALSE(marker.HasArt());
+    CHECK_FALSE(marker.IsSolid());
+
+    // A BAD VALUE IS STILL A BAD VALUE on this path. The two readings of
+    // "collision" are one function for exactly this reason.
+    TileAsset nonsense;
+    Json wrong = ParseJson(R"({"tileSize":32,"collision":"Sometimes"})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(nonsense.Deserialize(wrong, error));
+    CHECK(error.find("collision") != std::string::npos);
+}
+
+TEST_CASE("an art key that is present and empty is refused") {
+    // Leaving the key out says "no art". An empty one says a path was deleted
+    // or mistyped, and accepting it would make a map full of cells draw
+    // nothing with no complaint anywhere.
+    std::string error;
+
+    TileAsset emptySheet;
+    Json sheet = ParseJson(R"({"sheet":"","tileSize":32})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(emptySheet.Deserialize(sheet, error));
+    CHECK(error.find("sheet") != std::string::npos);
+
+    TileAsset emptyImage;
+    Json image = ParseJson(R"({"image":"","tileSize":32})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(emptyImage.Deserialize(image, error));
+    CHECK(error.find("image") != std::string::npos);
+}
+
+TEST_CASE("an art-less tile survives a save and a load") {
+    // Serialize writes no "sheet" and no "image" for one, and that absence has
+    // to read back as the same absence rather than as a failure.
+    std::string error;
+
+    TileAsset wall;
+    Json node = ParseJson(R"({"tileSize":24,"collision":"Grid"})", error);
+    REQUIRE(error.empty());
+    REQUIRE(wall.Deserialize(node, error));
+
+    Json saved;
+    REQUIRE(wall.Serialize(saved));
+    CHECK_FALSE(HasKey(saved, "sheet"));
+    CHECK_FALSE(HasKey(saved, "image"));
+
+    TileAsset reloaded;
+    REQUIRE(reloaded.Deserialize(saved, error));
+    CHECK_FALSE(reloaded.HasArt());
+    CHECK(reloaded.TileSize() == 24);
+    CHECK(reloaded.IsSolid());
 }
 
 TEST_CASE("a connector is never solid, whatever its file says") {
@@ -1184,14 +1404,39 @@ TEST_CASE("a connector is never solid, whatever its file says") {
     CHECK(connector.Collision() == TileCollision::None);
 }
 
-TEST_CASE("a connector gets an editor tint so it can be found") {
+TEST_CASE("every art-less tile gets an editor tint so it can be placed") {
+    // Something invisible to the player had better not be invisible to the
+    // person painting it. The two kinds get DIFFERENT colours, because the
+    // difference between "joins everything" and "a material with nothing to
+    // draw" is worth seeing while looking at a map.
     std::string error;
-    TileAsset   connector;
-    Json node = ParseJson(R"({"connector":true,"tileSize":32})", error);
-    REQUIRE(error.empty());
-    REQUIRE(connector.Deserialize(node, error));
 
+    TileAsset connector;
+    Json asConnector = ParseJson(R"({"connector":true,"tileSize":32})", error);
+    REQUIRE(error.empty());
+    REQUIRE(connector.Deserialize(asConnector, error));
     CHECK(connector.EditorTint().a > 0);
+
+    TileAsset wall;
+    Json asWall = ParseJson(R"({"tileSize":32,"collision":"Grid"})", error);
+    REQUIRE(error.empty());
+    REQUIRE(wall.Deserialize(asWall, error));
+    CHECK(wall.EditorTint().a > 0);
+
+    const bool sameColour = connector.EditorTint().r == wall.EditorTint().r &&
+                            connector.EditorTint().g == wall.EditorTint().g &&
+                            connector.EditorTint().b == wall.EditorTint().b;
+    CHECK_FALSE(sameColour);
+
+    // A FILE THAT SAYS ONE KEEPS IT. The default fills a gap; it does not
+    // overrule.
+    TileAsset chosen;
+    Json tinted = ParseJson(
+        R"({"tileSize":32,"editorTint":[10,20,30,40]})", error);
+    REQUIRE(error.empty());
+    REQUIRE(chosen.Deserialize(tinted, error));
+    CHECK(chosen.EditorTint().r == 10);
+    CHECK(chosen.EditorTint().a == 40);
 }
 
 TEST_CASE("connecting is one-way unless both files say so") {
@@ -1393,6 +1638,96 @@ TEST_CASE("a palette entry that will not load is not added") {
     TilemapRenderSystem::Clear();
 }
 
+TEST_CASE("a tile with no art is a palette entry and a solid one") {
+    // ======================================================================
+    //  THE END OF THE INVISIBLE WALL, from the file to the collider.
+    //
+    //  AddToPalette loads the asset BEFORE it grows the palette, so while an
+    //  art-less tile was refused by the loader it could not enter a map at
+    //  all - there was nothing to fix in the editor because the material
+    //  could not exist.
+    // ======================================================================
+    TileSandbox box("artless");
+    box.Write("tiles/wall.otile", R"({"tileSize":32,"collision":"Grid"})");
+
+    Scene scene;
+    ComponentFactory::RegisterBuiltins();
+    TilemapRenderSystem::RegisterComponentTypes();
+    Scene::SetActive(&scene);
+
+    Entity* entity = scene.Get(scene.CreateEntity("Map"));
+    auto*   map    = static_cast<TilemapComponent*>(
+        entity->AddComponent(TilemapComponent::kTypeName));
+    REQUIRE(map != nullptr);
+
+    const TileId wall = map->AddToPalette("tiles/wall.otile");
+    REQUIRE(wall != kEmptyTile);
+    REQUIRE(map->Palette().size() == 1);
+
+    // The map took its cell size from it, exactly as it would from a tile
+    // with art - a tile with nothing to draw still occupies a square.
+    CHECK(map->CellSize().x == doctest::Approx(32.0f));
+    CHECK(map->CellSize().y == doctest::Approx(32.0f));
+
+    auto* collider = static_cast<TilemapColliderComponent*>(
+        entity->AddComponent(TilemapColliderComponent::kTypeName));
+    REQUIRE(collider != nullptr);
+
+    for (int x = 0; x < 4; ++x) {
+        map->SetTile(x, 0, wall);
+    }
+
+    CHECK(collider->SolidCellCount() == 4);
+    CHECK(collider->BoxCount() == 1);
+
+    scene.Unload();
+    Scene::SetActive(nullptr);
+    TilemapRenderSystem::Clear();
+}
+
+TEST_CASE("removing the entry a map took its size from does not resize it") {
+    // ======================================================================
+    //  THE HAZARD CompactPalette'S OWN NOTE DESCRIBES, reached the other way.
+    //
+    //  A map with no "cellSize" of its own takes the size from the FIRST
+    //  palette entry that loads. Remove that entry and the size would come
+    //  from the next one - every cell on screen would change size, and the
+    //  collider would rebuild every box at the new one, moving the solid
+    //  world out from under whatever was standing on it.
+    // ======================================================================
+    TileSandbox box("removesize");
+    box.Write("tiles/big.otile",   R"({ "sheet": "textures/big.png",   "tileSize": 32 })");
+    box.Write("tiles/small.otile", R"({ "sheet": "textures/small.png", "tileSize": 16 })");
+
+    Scene scene;
+    ComponentFactory::RegisterBuiltins();
+    TilemapRenderSystem::RegisterComponentTypes();
+    Scene::SetActive(&scene);
+
+    Entity* entity = scene.Get(scene.CreateEntity("Map"));
+    auto*   map    = static_cast<TilemapComponent*>(
+        entity->AddComponent(TilemapComponent::kTypeName));
+    REQUIRE(map != nullptr);
+
+    // NO "cellSize" IN THE FILE, which is what makes the size derived.
+    Json node       = Json::object();
+    node["palette"] = Json::array({"tiles/big.otile", "tiles/small.otile"});
+    std::string error;
+    REQUIRE_MESSAGE(map->Deserialize(node, error), error);
+    REQUIRE(map->CellSize().x == doctest::Approx(32.0f));
+
+    map->SetTile(0, 0, 2);   // only the small one is painted
+    REQUIRE(map->RemoveFromPalette(1, true));
+
+    CHECK(map->Palette().size() == 1);
+    CHECK(map->CellSize().x == doctest::Approx(32.0f));
+    CHECK(map->CellSize().y == doctest::Approx(32.0f));
+
+    scene.Unload();
+    Scene::SetActive(nullptr);
+    TilemapRenderSystem::Clear();
+}
+
 // ===========================================================================
 //  The two kinds of tile art - Stage 5
 //
@@ -1569,18 +1904,24 @@ TEST_CASE("naming both kinds of art is refused") {
     CHECK(error.find("image") != std::string::npos);
 }
 
-TEST_CASE("a tile with no art names both keys in the refusal") {
-    // Somebody writing their first .otile does not yet know there are two
-    // kinds. "sheet is required" used to send them to point it at whatever
-    // picture they had, which is how the scrambled-quarters bug was met.
+TEST_CASE("an empty tile file reads as a plain invisible solid") {
+    // WHAT "{}" MEANS, pinned because it is now legal and somebody will write
+    // one. Nothing stated is nothing to draw; the tile size and the collision
+    // fall back to the defaults every other tile uses, so a bare file is a
+    // 16px solid square you cannot see. That is the useful reading - it is an
+    // invisible wall with nothing typed - and not an accident of ordering.
     std::string error;
-    TileAsset   nothing;
-    Json        node = ParseJson(R"({"tileSize":32})", error);
+    TileAsset   bare;
+    Json        node = ParseJson(R"({})", error);
     REQUIRE(error.empty());
 
-    CHECK_FALSE(nothing.Deserialize(node, error));
-    CHECK(error.find("sheet") != std::string::npos);
-    CHECK(error.find("image") != std::string::npos);
+    REQUIRE(bare.Deserialize(node, error));
+    CHECK_FALSE(bare.HasArt());
+    CHECK_FALSE(bare.IsConnector());
+    CHECK(bare.TileSize() == 16);
+    CHECK(bare.FrameCount() == 1);
+    CHECK(bare.FrameMode() == TileFrameMode::Single);
+    CHECK(bare.IsSolid());
 }
 
 TEST_CASE("an odd tile size is refused for a sheet and allowed for an image") {
@@ -1674,4 +2015,363 @@ TEST_CASE("an image tile loads through the library like any other") {
     // And the cache hands back the same one, as it does for a sheet.
     CHECK(TileLibrary::Load("tiles/rock.otile") == asset);
     CHECK(TileLibrary::Count() == 1);
+}
+
+// ===========================================================================
+//  Components on a tile, and the objects they become
+// ===========================================================================
+
+namespace {
+
+// The fixture every tile-object case wants: a sandbox holding a spike that
+// carries a trigger and a plain grass that carries nothing, a scene, and a
+// map on an entity.
+//
+// ONE PLACE, because the set-up is six registrations deep and a case that got
+// one of them wrong would fail for a reason that has nothing to do with what
+// it was testing.
+struct ObjectSandbox {
+    TileSandbox box;
+    Scene       scene;
+    Entity*     entity = nullptr;
+    TilemapComponent* map = nullptr;
+    TileId      spike = kEmptyTile;
+    TileId      grass = kEmptyTile;
+
+    explicit ObjectSandbox(const char* name) : box(name) {
+        box.Write("tiles/spike.otile",
+                  R"({"tileSize":32,"collision":"None","components":[)"
+                  R"({"type":"BoxColliderComponent","size":[32,8],)"
+                  R"("offset":[0,-12],"trigger":true,"layer":"Hazard"}]})");
+        box.Write("tiles/grass.otile", R"({"tileSize":32,"collision":"Grid"})");
+
+        ComponentFactory::RegisterBuiltins();
+        CollisionSystem::RegisterComponentTypes();
+        TilemapRenderSystem::RegisterComponentTypes();
+        Scene::SetActive(&scene);
+
+        entity = scene.Get(scene.CreateEntity("Level"));
+        map    = static_cast<TilemapComponent*>(
+            entity->AddComponent(TilemapComponent::kTypeName));
+
+        spike = map->AddToPalette("tiles/spike.otile");
+        grass = map->AddToPalette("tiles/grass.otile");
+    }
+
+    ~ObjectSandbox() {
+        scene.Unload();
+        Scene::SetActive(nullptr);
+        TilemapRenderSystem::Clear();
+    }
+};
+
+} // namespace
+
+TEST_CASE("a tile carrying components reads them, and a plain one carries none") {
+    ObjectSandbox s("tileobj-read");
+    REQUIRE(s.spike != kEmptyTile);
+    REQUIRE(s.grass != kEmptyTile);
+
+    const TileAsset* spike = s.map->AssetFor(s.spike);
+    REQUIRE(spike != nullptr);
+    REQUIRE(spike->HasComponents());
+    REQUIRE(spike->Components().size() == 1);
+
+    const Json* collider = spike->FindComponent("BoxColliderComponent");
+    REQUIRE(collider != nullptr);
+    CHECK(ReadString(*collider, "layer", "") == "Hazard");
+
+    const TileAsset* grass = s.map->AssetFor(s.grass);
+    REQUIRE(grass != nullptr);
+    CHECK_FALSE(grass->HasComponents());
+    CHECK(grass->FindComponent("BoxColliderComponent") == nullptr);
+}
+
+TEST_CASE("a componented tile gets one object per painted cell, and a plain one none") {
+    ObjectSandbox s("tileobj-spawn");
+
+    s.map->SetTile(0, 0, s.spike);
+    s.map->SetTile(1, 0, s.spike);
+    s.map->SetTile(2, 0, s.grass);   // carries nothing, so costs nothing
+
+    s.map->SyncTileObjects();
+    CHECK(s.map->TileObjectCount() == 2);
+    CHECK(s.map->TileObjectAt(2, 0).IsNull());
+
+    // ---- and the object really is the tile ---------------------------------
+    const EntityId id     = s.map->TileObjectAt(1, 0);
+    Entity*        object = s.scene.Get(id);
+    REQUIRE(object != nullptr);
+
+    auto* collider = object->Find<BoxColliderComponent>();
+    REQUIRE(collider != nullptr);
+    CHECK(collider->IsTrigger());
+    CHECK(collider->Layer() == "Hazard");
+    CHECK(collider->Size().x == doctest::Approx(32.0f));
+    CHECK(collider->Size().y == doctest::Approx(8.0f));
+    CHECK(collider->Offset().y == doctest::Approx(-12.0f));
+
+    // ---- parented to the map, at the centre of its cell --------------------
+    CHECK(object->Transform().Parent() == &s.entity->Transform());
+    CHECK(object->Transform().LocalPosition().x == doctest::Approx(48.0f));
+    CHECK(object->Transform().LocalPosition().y == doctest::Approx(16.0f));
+
+    // CALLING IT AGAIN CHANGES NOTHING, which is what makes it safe to call
+    // every step: the revision has not moved, so nothing is rebuilt and the
+    // very same entity is still there.
+    s.map->SyncTileObjects();
+    CHECK(s.map->TileObjectCount() == 2);
+    CHECK(s.map->TileObjectAt(1, 0) == id);
+}
+
+TEST_CASE("erasing a cell takes its tile object with it") {
+    ObjectSandbox s("tileobj-erase");
+
+    s.map->SetTile(0, 0, s.spike);
+    s.map->SyncTileObjects();
+    const EntityId id = s.map->TileObjectAt(0, 0);
+    REQUIRE(s.scene.Get(id) != nullptr);
+
+    s.map->EraseTile(0, 0);
+    s.map->SyncTileObjects();
+
+    CHECK(s.map->TileObjectCount() == 0);
+    CHECK(s.map->TileObjectAt(0, 0).IsNull());
+
+    // GONE, not orphaned. An erased spike that left its trigger behind would
+    // be a hazard you cannot see and cannot delete.
+    CHECK(s.scene.Get(id) == nullptr);
+}
+
+TEST_CASE("repainting a cell with a plain tile takes the object away") {
+    ObjectSandbox s("tileobj-repaint");
+
+    s.map->SetTile(0, 0, s.spike);
+    s.map->SyncTileObjects();
+    const EntityId id = s.map->TileObjectAt(0, 0);
+    REQUIRE(!id.IsNull());
+
+    // THE CELL IS STILL OCCUPIED, which is the case comparing cells alone
+    // would get wrong: it is occupied before and after, so only remembering
+    // WHICH TILE the object was built for catches this.
+    s.map->SetTile(0, 0, s.grass);
+    s.map->SyncTileObjects();
+
+    CHECK(s.map->TileObjectCount() == 0);
+    CHECK(s.scene.Get(id) == nullptr);
+}
+
+TEST_CASE("editing a tile to carry components reaches the maps using it") {
+    ObjectSandbox s("tileobj-edit");
+
+    s.map->SetTile(0, 0, s.grass);
+    s.map->SyncTileObjects();
+    REQUIRE(s.map->TileObjectCount() == 0);
+
+    // The .otile changes under the map, which is what the editor does when
+    // somebody adds a component to a tile.
+    s.box.Write("tiles/grass.otile",
+                R"({"tileSize":32,"collision":"Grid","components":[)"
+                R"({"type":"BoxColliderComponent","size":[32,32]}]})");
+
+    std::string error;
+    REQUIRE(TileLibrary::Reload("tiles/grass.otile", error));
+    s.map->RefreshPalette();
+
+    // NOT ONE CELL HAS MOVED, and the map still has to notice: RefreshPalette
+    // bumps the revision for exactly this.
+    s.map->SyncTileObjects();
+    CHECK(s.map->TileObjectCount() == 1);
+    REQUIRE(s.scene.Get(s.map->TileObjectAt(0, 0)) != nullptr);
+}
+
+TEST_CASE("tile objects are not written into the scene file") {
+    ObjectSandbox s("tileobj-save");
+
+    s.map->SetTile(0, 0, s.spike);
+    s.map->SetTile(5, 3, s.spike);
+    s.map->SyncTileObjects();
+    REQUIRE(s.map->TileObjectCount() == 2);
+
+    std::string text;
+    std::string error;
+    REQUIRE(s.scene.SaveToString(text, error));
+
+    // ======================================================================
+    //  THE WHOLE BARGAIN. Writing them out would freeze a copy of the spike's
+    //  components into this scene, so editing spike.otile would stop reaching
+    //  it - and loading would produce every object twice, once from the file
+    //  and once from the map.
+    // ======================================================================
+    CHECK(text.find("Level tile") == std::string::npos);
+    CHECK(text.find("BoxColliderComponent") == std::string::npos);
+
+    // The map itself is of course still there.
+    CHECK(text.find("TilemapComponent") != std::string::npos);
+    CHECK(text.find("tiles/spike.otile") != std::string::npos);
+}
+
+TEST_CASE("taking the map off the entity takes its tile objects too") {
+    ObjectSandbox s("tileobj-detach");
+
+    s.map->SetTile(0, 0, s.spike);
+    s.map->SyncTileObjects();
+    const EntityId id = s.map->TileObjectAt(0, 0);
+    REQUIRE(s.scene.Get(id) != nullptr);
+
+    s.entity->RemoveComponent(TilemapComponent::kTypeName);
+    s.map = nullptr;
+
+    // QUEUED, not immediate - OnDetach can be running inside the destruction
+    // of the entity these are children of. So the object is still there until
+    // the queue is drained, and gone afterwards.
+    DeferredOps::Apply(s.scene);
+    CHECK(s.scene.Get(id) == nullptr);
+}
+
+TEST_CASE("a tile keeps its components exactly as written") {
+    // ======================================================================
+    //  WHAT THE INSPECTOR'S COMPONENT LIST RESTS ON.
+    //
+    //  The editor holds a LIVE component per entry so that the Inspector's
+    //  own widgets can edit it, and writes one back only when a widget
+    //  actually moved - never merely for having been looked at. That is only
+    //  worth doing if the asset itself keeps a sparse entry sparse, so this
+    //  is the half of the bargain the engine owes: what was written is what
+    //  comes back, and saving writes the same thing again.
+    // ======================================================================
+    std::string error;
+    TileAsset   tile;
+
+    Json node = ParseJson(
+        R"({"tileSize":32,"components":[)"
+        R"({"type":"BoxColliderComponent","size":[32,8],"_note":"shin height"}]})",
+        error);
+    REQUIRE(error.empty());
+    REQUIRE(tile.Deserialize(node, error));
+
+    REQUIRE(tile.Components().size() == 1);
+    const Json& kept = tile.Components().front();
+
+    // NOT EXPANDED. Nothing has filled in the fields the file did not name.
+    CHECK(kept.size() == 3);
+    CHECK(ReadString(kept, "type", "") == "BoxColliderComponent");
+    CHECK(ReadString(kept, "_note", "") == "shin height");
+    CHECK_FALSE(HasKey(kept, "trigger"));
+
+    Json saved;
+    REQUIRE(tile.Serialize(saved));
+    REQUIRE(HasKey(saved, "components"));
+    CHECK(saved.at("components") == node.at("components"));
+}
+
+TEST_CASE("a component type nothing defines is kept rather than dropped") {
+    // A .otile is read by things that load no game code at all - the asset
+    // browser, a build tool, this test binary. Refusing would make a tile
+    // carrying a game's own script component unopenable in exactly the places
+    // that most need to open it, and DROPPING it would delete somebody's work
+    // the next time the file was saved.
+    std::string error;
+    TileAsset   tile;
+
+    Json node = ParseJson(
+        R"({"tileSize":32,"components":[{"type":"NoSuchComponent","damage":3}]})",
+        error);
+    REQUIRE(error.empty());
+
+    REQUIRE(tile.Deserialize(node, error));
+    CHECK(error.empty());
+    REQUIRE(tile.Components().size() == 1);
+    CHECK(ReadString(tile.Components().front(), "type", "") == "NoSuchComponent");
+
+    Json saved;
+    REQUIRE(tile.Serialize(saved));
+    CHECK(saved.at("components") == node.at("components"));
+}
+
+TEST_CASE("a components list that is not a list of components is refused") {
+    // STRUCTURE IS CHECKED HARD, unlike meaning: nothing downstream can do
+    // anything sensible with an entry that is not an object or has no type,
+    // and a silent skip would lose it on the next save.
+    std::string error;
+
+    TileAsset notAList;
+    Json      a = ParseJson(R"({"tileSize":32,"components":"BoxCollider"})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(notAList.Deserialize(a, error));
+    CHECK(error.find("components") != std::string::npos);
+
+    TileAsset notObjects;
+    Json      b = ParseJson(R"({"tileSize":32,"components":["BoxCollider"]})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(notObjects.Deserialize(b, error));
+
+    TileAsset noType;
+    Json      c = ParseJson(R"({"tileSize":32,"components":[{"size":[8,8]}]})", error);
+    REQUIRE(error.empty());
+    CHECK_FALSE(noType.Deserialize(c, error));
+    CHECK(error.find("type") != std::string::npos);
+}
+
+TEST_CASE("what Add component writes is a component a tile object rebuilds") {
+    // ======================================================================
+    //  THE EDITOR'S "Add component..." IN ENGINE TERMS.
+    //
+    //  It asks the factory for one, serializes it, stamps the type, and puts
+    //  that in the file - so that an entry starts as a complete and valid
+    //  description rather than as a bare "type" every reader has to guess the
+    //  rest of. This is that round trip, end to end: factory -> file -> tile
+    //  -> a painted cell's object.
+    // ======================================================================
+    TileSandbox box("tileobj-addcomponent");
+
+    ComponentFactory::RegisterBuiltins();
+    CollisionSystem::RegisterComponentTypes();
+    TilemapRenderSystem::RegisterComponentTypes();
+
+    std::unique_ptr<Component> made =
+        ComponentFactory::Create(BoxColliderComponent::kTypeName);
+    REQUIRE(made != nullptr);
+
+    auto& asBox = static_cast<BoxColliderComponent&>(*made);
+    asBox.SetSize(Vec2{20.0f, 6.0f});
+    asBox.SetTrigger(true);
+
+    Json entry = Json::object();
+    REQUIRE(made->Serialize(entry));
+    entry["type"] = made->TypeName();
+
+    Json file          = Json::object();
+    file["tileSize"]   = 32;
+    file["collision"]  = "None";
+    file["components"] = Json::array({entry});
+    box.Write("tiles/added.otile", file.dump(2));
+
+    Scene scene;
+    Scene::SetActive(&scene);
+
+    Entity* entity = scene.Get(scene.CreateEntity("Level"));
+    auto*   map    = static_cast<TilemapComponent*>(
+        entity->AddComponent(TilemapComponent::kTypeName));
+    REQUIRE(map != nullptr);
+
+    const TileId added = map->AddToPalette("tiles/added.otile");
+    REQUIRE(added != kEmptyTile);
+
+    map->SetTile(0, 0, added);
+    map->SyncTileObjects();
+    REQUIRE(map->TileObjectCount() == 1);
+
+    Entity* object = scene.Get(map->TileObjectAt(0, 0));
+    REQUIRE(object != nullptr);
+
+    auto* rebuilt = object->Find<BoxColliderComponent>();
+    REQUIRE(rebuilt != nullptr);
+    CHECK(rebuilt->IsTrigger());
+    CHECK(rebuilt->Size().x == doctest::Approx(20.0f));
+    CHECK(rebuilt->Size().y == doctest::Approx(6.0f));
+
+    scene.Unload();
+    Scene::SetActive(nullptr);
+    TilemapRenderSystem::Clear();
 }

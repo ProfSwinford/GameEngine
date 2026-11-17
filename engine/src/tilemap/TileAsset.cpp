@@ -4,6 +4,7 @@
 #include <engine/fs/FileSystem.h>
 #include <engine/resource/ImportSettings.h>   // to refuse a sliced spritesheet
 #include <engine/resource/ResourceManager.h>
+#include <engine/scene/Component.h>           // to check a tile's components
 
 #include <algorithm>
 #include <cmath>
@@ -232,6 +233,28 @@ TileArtShape CheckTileArtShape(TileArt art, int tileSize, int imageWidth,
     return out;
 }
 
+namespace {
+
+// Reads "collision". SHARED BY BOTH PATHS through Deserialize - a tile with
+// art and a tile without - because a tile with nothing to draw is solid or not
+// for exactly the same reasons as any other one. Two readings of one key would
+// be two places for the answer to drift apart.
+bool ReadCollisionField(const Json& node, TileCollision& inOut,
+                        std::string& outError) {
+    const std::string name =
+        ReadString(node, "collision", TileCollisionName(inOut), "TileAsset");
+    bool recognized = false;
+    inOut           = ParseTileCollision(name, recognized);
+    if (!recognized) {
+        outError = "TileAsset.collision must be \"None\" or \"Grid\" (got \"" +
+                   name + "\")";
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 bool TileAsset::Deserialize(const Json& node, std::string& outError) {
     if (!node.is_object()) {
         outError = "a tile asset must be a JSON object";
@@ -259,24 +282,56 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
     m_art       = hasImageKey ? TileArt::Image : TileArt::AutoTile;
     m_artPath = ReadString(node, hasImageKey ? "image" : "sheet", "", "TileAsset");
 
-    if (m_artPath.empty() && !m_connector) {
-        // BOTH KEYS NAMED, because somebody writing their first .otile does
-        // not yet know there are two kinds, and "sheet is required" sent them
-        // to point it at whatever picture they had.
-        outError = "a tile needs art: either \"sheet\", the five-band sheet that is "
-                   "assembled from its neighbours (see AutoTile.h), or \"image\", "
-                   "one picture drawn whole in every cell. An ordinary picture is "
-                   "\"image\". (Only a \"connector\" tile may omit both, because a "
-                   "connector is invisible.)";
+    // ---- a key that is present and empty is a typo, not a decision --------
+    //
+    // ART IS OPTIONAL, but "sheet": "" is nobody's way of saying so; leaving
+    // the key out is. Accepting an empty one would turn a deleted path into a
+    // tile that quietly draws nothing, which is the hardest kind of wrong to
+    // look at - the map is full of cells and the screen is empty.
+    if (m_artPath.empty() && (hasSheetKey || hasImageKey)) {
+        outError = std::string("TileAsset.") +
+                   (hasImageKey ? "image" : "sheet") +
+                   " is empty. Point it at a picture, or remove the key "
+                   "altogether - a tile with no art at all is allowed, and is "
+                   "then whatever its collision and its components make it.";
         return false;
     }
 
-    // A connector draws nothing, so it needs a tile size and no art at all.
+    // ======================================================================
+    //  A TILE WITH NOTHING TO DRAW, which is an ordinary material and not an
+    //  error.
+    //
+    //  IT USED TO BE REFUSED UNLESS THE FILE ALSO SAID "connector", and that
+    //  tied together two questions that have nothing to do with each other.
+    //  "connector" means JOINS EVERYTHING - it is about what the neighbours
+    //  believe - and invisibility is a consequence of what it is for, not the
+    //  definition of it. Having no art is its own fact, and the way to say it
+    //  is to say nothing.
+    //
+    //  WHAT ONE IS FOR: an invisible wall (no art, collision "Grid"), a
+    //  trigger or a spawn marker, or a tile whose whole job is the components
+    //  on it. Each is a material of the map like any other - it fills a cell,
+    //  it is its own thing to its neighbours, and it sits in the palette.
+    //
+    //  THE EDITOR STILL SHOWS IT, as a block of its editor tint, which is
+    //  defaulted in DeserializeConnections for exactly this reason: something
+    //  invisible to the player had better not be invisible to the person
+    //  placing it.
+    //
+    //  Frames are columns of an image, so with no image there is nothing to
+    //  read and nothing to check: one frame, Single, whatever the file says.
+    // ======================================================================
     if (m_artPath.empty()) {
         m_tileSize   = std::max(ReadInt(node, "tileSize", 16, "TileAsset"), 2);
         m_frameCount = 1;
         m_frameMode  = TileFrameMode::Single;
-        m_collision  = TileCollision::None;
+
+        // READ, not forced to None. A connector is still made non-solid, but
+        // that happens in DeserializeConnections, where it applies to every
+        // connector rather than only to the ones that have no art.
+        if (!ReadCollisionField(node, m_collision, outError)) {
+            return false;
+        }
         return DeserializeConnections(node, outError);
     }
 
@@ -418,18 +473,100 @@ bool TileAsset::Deserialize(const Json& node, std::string& outError) {
     }
 
     // ---- collision ---------------------------------------------------------
-    const std::string collisionName =
-        ReadString(node, "collision", TileCollisionName(m_collision), "TileAsset");
-    m_collision = ParseTileCollision(collisionName, recognized);
-    if (!recognized) {
-        outError = "TileAsset.collision must be \"None\" or \"Grid\" (got \"" +
-                   collisionName + "\")";
+    if (!ReadCollisionField(node, m_collision, outError)) {
         return false;
     }
 
     return DeserializeConnections(node, outError);
 }
 
+const Json* TileAsset::FindComponent(std::string_view typeName) const {
+    for (const Json& entry : m_components) {
+        if (ReadString(entry, "type", "") == typeName) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+// ===========================================================================
+//  "components"
+//
+//  STRUCTURE IS CHECKED HARD AND MEANING IS CHECKED SOFTLY, which is the
+//  split that matters here.
+//
+//  A list that is not a list, an entry that is not an object, or an entry
+//  with no "type" is a mistake in the file and nothing downstream can do
+//  anything sensible with it, so it is refused and the tile does not load.
+//
+//  AN UNRECOGNISED TYPE IS ONLY A WARNING. Which components exist depends on
+//  which game code is loaded, and a .otile is read by things that load none
+//  of it - the asset browser, a build tool, the tests. Refusing would mean a
+//  tile carrying a game's own script component became unopenable in exactly
+//  the places that most need to open it. The entry is kept verbatim, so
+//  saving the file again does not quietly delete it either.
+// ===========================================================================
+bool TileAsset::DeserializeComponents(const Json& node, std::string& outError) {
+    m_components.clear();
+    if (!HasKey(node, "components")) {
+        return true;
+    }
+
+    const Json& list = node.at("components");
+    if (!list.is_array()) {
+        outError = "TileAsset.components must be a list, holding the same kind of "
+                   "entry an entity's components are: "
+                   "[ { \"type\": \"BoxCollider2DComponent\", ... } ]";
+        return false;
+    }
+
+    const std::string& who = m_path.empty() ? m_artPath : m_path;
+
+    for (const Json& entry : list) {
+        if (!entry.is_object()) {
+            outError = "TileAsset.components entries must each be an object with a "
+                       "\"type\" in it";
+            return false;
+        }
+
+        const std::string typeName = ReadString(entry, "type", "");
+        if (typeName.empty()) {
+            outError = "a TileAsset.components entry has no \"type\", which is the "
+                       "one key it cannot do without: it says which component the "
+                       "entry is";
+            return false;
+        }
+
+        if (!ComponentFactory::IsRegistered(typeName)) {
+            ENGINE_LOG_WARN(Channels::kTilemap,
+                            "tile '{}' carries a component of type '{}', which "
+                            "nothing has registered. It is kept as written and "
+                            "will come back if the code that defines it is loaded, "
+                            "but nothing will be built from it meanwhile.",
+                            who, typeName);
+        } else if (std::unique_ptr<Component> probe =
+                       ComponentFactory::Create(typeName)) {
+            // READ INTO A THROWAWAY, purely to find out whether it reads. The
+            // asset keeps the JSON; this exists so that a bad field is
+            // reported against the .otile that holds it rather than much
+            // later, against whatever built something out of it.
+            std::string whyNot;
+            if (!probe->Deserialize(entry, whyNot)) {
+                ENGINE_LOG_WARN(Channels::kTilemap,
+                                "tile '{}' has a '{}' that does not read: {}. It is "
+                                "kept as written; fix it in the Inspector.",
+                                who, typeName, whyNot);
+            }
+        }
+
+        m_components.push_back(entry);
+    }
+
+    return true;
+}
+
+// The part a connector shares with an ordinary tile. Everything above this is
+// about art, and a connector has none.
 // The part a connector shares with an ordinary tile. Everything above this is
 // about art, and a connector has none.
 bool TileAsset::DeserializeConnections(const Json& node, std::string& outError) {
@@ -470,24 +607,38 @@ bool TileAsset::DeserializeConnections(const Json& node, std::string& outError) 
 
     // A connector is invisible and has no presence; giving it a collider would
     // put an invisible wall along the very seam it was added to hide.
+    //
+    // THE WARNING IS ONLY FOR A FILE THAT ASKED FOR IT. Collision defaults to
+    // "Grid", so a connector that says nothing about collision arrives here
+    // solid and would otherwise be told off for a setting it never wrote.
     if (m_connector && m_collision != TileCollision::None) {
-        ENGINE_LOG_WARN(Channels::kTilemap,
-                        "tile '{}' is a connector, so its \"collision\" setting is "
-                        "ignored: a connector exists only to be seen by its "
-                        "neighbours, and a solid one would be an invisible wall",
-                        m_path.empty() ? m_artPath : m_path);
+        if (HasKey(node, "collision")) {
+            ENGINE_LOG_WARN(Channels::kTilemap,
+                            "tile '{}' is a connector, so its \"collision\" setting "
+                            "is ignored: a connector exists only to be seen by its "
+                            "neighbours, and a solid one would be an invisible wall "
+                            "along the seam it was added to hide. For an invisible "
+                            "wall, leave \"connector\" out and give the tile no art.",
+                            m_path.empty() ? m_artPath : m_path);
+        }
         m_collision = TileCollision::None;
     }
 
-    // Nothing marks a connector out on screen, so without a tint it is
-    // genuinely invisible in the editor too - and an invisible thing that
-    // changes how its neighbours look is a bad half-hour. Default it to a
-    // faint magenta rather than leaving it unfindable.
-    if (m_connector && m_editorTint.a == 0) {
-        m_editorTint = Color{245, 66, 233, 90};
+    // Nothing marks a tile with no art out on screen, so without a tint it is
+    // genuinely invisible in the editor too - and something you have to paint
+    // accurately while being unable to see it is a bad half-hour. Default one
+    // rather than leaving it unfindable.
+    //
+    // TWO COLOURS, because the two are different things and the difference is
+    // worth seeing at a glance while looking at a map: magenta joins up with
+    // everything around it, teal is a material of its own that happens to have
+    // nothing to draw.
+    if (!HasArt() && m_editorTint.a == 0) {
+        m_editorTint = m_connector ? Color{245, 66, 233, 90}
+                                   : Color{64, 200, 190, 90};
     }
 
-    return true;
+    return DeserializeComponents(node, outError);
 }
 
 bool TileAsset::Serialize(Json& out) const {
@@ -522,6 +673,13 @@ bool TileAsset::Serialize(Json& out) const {
     }
 
     out["collision"] = TileCollisionName(m_collision);
+
+    // VERBATIM, including anything in them this build does not understand.
+    // A tile carrying a game's script component must survive being opened by
+    // a tool that has never heard of that script.
+    if (!m_components.empty()) {
+        out["components"] = m_components;
+    }
 
     if (m_editorTint.a != 0) {
         out["editorTint"] = Json::array({m_editorTint.r, m_editorTint.g,

@@ -771,6 +771,55 @@ TEST_CASE("one-sided interest is not enough") {
     CHECK(eng::CollisionSystem::ActivePairCount() == 0);
 }
 
+TEST_CASE("an All collides-with does not override the other side's narrow list") {
+    // THE SHAPE OF A REAL BUG: a tile asset's collider is left on the default
+    // layer with the default collides-with of "All", and the player it is
+    // meant to stop names only the one layer it expects scenery to be on. The
+    // tile is interested in the player, the player is not interested in the
+    // tile, and because BOTH sides have to be interested the pair is dropped
+    // in the broad phase - so the obstacle is simply not there.
+    //
+    // "All" is a wildcard on the side that NAMES it and nothing more; it does
+    // not widen the other side's list. That asymmetry is what this pins.
+    SceneFixture fixture;
+
+    eng::Entity*               player = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    eng::BoxColliderComponent* box    = AddBox(*player, eng::Vec2{12.0f, 24.0f});
+    box->SetLayer("Player");
+    box->SetCollidesWith({"World"});
+
+    eng::Rigidbody2DComponent* body = AddBody(*player);
+    body->SetBodyType(eng::RigidbodyType::Kinematic);
+    body->SetFreezeRotation(true);
+
+    // Overlapping the player, on the default layer, interested in everything.
+    eng::Entity* fence  = fixture.Add("Fence", eng::Vec2{6.0f, 0.0f});
+    auto*        circle = static_cast<eng::CircleColliderComponent*>(
+        fence->AddComponent(eng::CircleColliderComponent::kTypeName));
+    circle->SetRadius(7.0f);
+    circle->SetLayer("Default");
+    circle->SetCollidesWith({eng::kCollisionLayerAll});
+
+    REQUIRE(circle->CaresAbout("Player"));    // the fence wants the player...
+    REQUIRE(!box->CaresAbout("Default"));     // ...and the player does not want it
+
+    Step();
+
+    // No contact at all, though the shapes plainly overlap.
+    CHECK(eng::CollisionSystem::ActivePairCount() == 0);
+    CHECK(eng::CollisionSystem::FindContact(player->Id(), fence->Id()) == nullptr);
+    CHECK(player->Transform().WorldPosition().x == doctest::Approx(0.0f));
+
+    // Naming the fence's layer on the player is the whole fix - and the
+    // kinematic player, against a collider with no rigidbody, IS the side
+    // that gives way. See SolverMasses.
+    box->SetCollidesWith({"World", "Default"});
+    Step();
+
+    CHECK(eng::CollisionSystem::ActivePairCount() == 1);
+    CHECK(player->Transform().WorldPosition().x < -0.5f);
+}
+
 TEST_CASE("the broad phase skips pairs that are nowhere near each other") {
     // Spread far apart on x, so the sweep's early exit should reject every
     // pair before the shape test is reached.

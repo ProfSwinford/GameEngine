@@ -455,6 +455,31 @@ public:
     // Which entity of the asset this is. 0 when it belongs to no instance.
     int PrefabLocalIdOf(EntityId id) const;
 
+    // ---- entities this scene file does not describe -----------------------
+    //
+    // A DERIVED ENTITY IS BUILT FROM SOMETHING ELSE, and the save skips it at
+    // the same point and for the same reason it skips a prefab instance's
+    // members: writing it out would freeze a copy of whatever built it into
+    // this scene file, so editing that thing would stop reaching the scenes
+    // using it, and loading would produce the entity twice over.
+    //
+    // WHAT BUILDS THEM TODAY: a tilemap, for every painted cell whose tile
+    // carries components - see TilemapComponent::SyncTileObjects. There is no
+    // record to write for one, because the map's cells and the tile's .otile
+    // already say everything there is to say about it.
+    //
+    // UNLIKE A PREFAB INSTANCE there are no overrides, because there is
+    // nothing to override: a tile is a kind of thing and every cell painted
+    // with it is the same thing. Something that needs to differ per placement
+    // is an entity, or a prefab, and not a tile.
+    //
+    // The flag lives in the SLOT rather than in the Entity, for exactly the
+    // reason the prefab link does: it is something the scene knows about an
+    // entity rather than something the entity is, and the slot is cleared by
+    // the same code that frees it - so a reused slot cannot inherit it.
+    void SetDerived(EntityId id, bool derived);
+    bool IsDerived(EntityId id) const;
+
     // The root of the instance this entity belongs to, or a null id.
     //
     // FOUND BY WALKING UP rather than by asking the asset which id is the
@@ -556,6 +581,10 @@ private:
         // cannot inherit the last occupant's instance.
         PrefabInstance* prefab        = nullptr;
         int             prefabLocalId = 0;
+
+        // Built from something else and not written when the scene is saved.
+        // See SetDerived above.
+        bool derived = false;
     };
 
     void ResolveParents(const Json& entitiesArray);
