@@ -30,6 +30,9 @@ set(EDITOR_SOURCES
     src/ScriptIde.cpp                    # tells an IDE what a script compiles with
     src/AssetDragDrop.cpp                # what happens when you drag a file onto something
     src/TilePaint.cpp                    # the tile brush, shared by the Scene view and the Inspector
+    src/ColliderHandles.cpp              # dragging a collider's shape in the Scene view
+    src/AssetRefs.cpp                    # following an asset when it is renamed or moved
+    src/GameViewLayout.cpp               # the Game view aspect, resolution and scale
     src/TileAssetEditor.cpp              # editing one .otile, in the Inspector
     src/EditorSession.cpp                # remembers where you were when you closed it
     src/GameExport.cpp                   # File -> Build Game...

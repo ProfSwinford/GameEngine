@@ -696,6 +696,30 @@ public:
     EntityId Instantiate(const PrefabRef& prefab) const;
     EntityId Instantiate(const PrefabRef& prefab, const SpawnOptions& placement) const;
 
+    // ======================================================================
+    //  AND THE ONE THAT TAKES EITHER KIND.
+    //
+    //  An eng::GameObjectRef - Unity's `public GameObject` - holds a prefab
+    //  OR something already in the scene, decided by what was dragged onto it
+    //  in the Inspector rather than by the type written in the script.
+    //
+    //  A PREFAB IS BUILT FROM ITS FILE. A SCENE OBJECT IS CLONED, which is
+    //  Unity's behaviour for Instantiate(someSceneObject) and the thing that
+    //  makes the two interchangeable here. Handing back the original instead
+    //  would mean a spawner quietly moving the thing it was asked to copy -
+    //  the same object would appear to teleport on the second shot.
+    //
+    //  The clone goes through Scene::DuplicateEntity, so it brings its
+    //  children, its components and its script variables, and is named
+    //  uniquely rather than sharing a name with what it came from.
+    //
+    //  A reference nobody has set does nothing and says so once, exactly as
+    //  the PrefabRef pair above does.
+    // ======================================================================
+    EntityId Instantiate(const GameObjectRef& thing) const;
+    EntityId Instantiate(const GameObjectRef& thing,
+                         const SpawnOptions&  placement) const;
+
     // An empty entity, named uniquely - Unity's `new GameObject("name")`.
     // Goes through Scene::CreateEntityUniquelyNamed, so calling it fifty times
     // with "Spark" gives fifty distinct names rather than fifty things all
@@ -715,6 +739,67 @@ public:
     // kind of thing that reads as a mistake at a call site.
     void DestroySelf() const;
     void Destroy(EntityId id) const;
+
+    // ======================================================================
+    //  SURVIVING A SCENE CHANGE - Unity's DontDestroyOnLoad.
+    //
+    //      void OnStart() { DontDestroyOnLoad(); }
+    //
+    //  This entity, its components, its scripts WITH WHATEVER THEY WERE
+    //  HOLDING, and its children all stay as they are while the scene around
+    //  them is replaced. Not rebuilt from a file on the other side - the same
+    //  objects, the same behaviour instance, the same EntityId. A counter goes
+    //  on counting; a coroutine goes on running.
+    //
+    //  WHAT THIS REPLACES. The engine could not do it, and
+    //  assets/scripts/GameController.cpp carries the workaround it forced: the
+    //  entity died and its state was parked in file-statics for the next
+    //  scene's copy to adopt. That works for three floats and not for anything
+    //  with a position, a child or a coroutine.
+    //
+    //  ==========================================================================
+    //  ONLY A SCENE CHANGE CARRIES IT, which is narrower than it sounds.
+    //  Pressing Stop in the editor destroys it, starting a new scene destroys
+    //  it, and closing the project destroys it. Scene::SetPersistent has the
+    //  whole list and the reason for each.
+    //
+    //  A SINGLETON STILL NEEDS THE USUAL CHECK. Load a scene that has its own
+    //  copy of this manager and there are now two, exactly as in Unity. The
+    //  name goes on meaning the one that survived, so the newcomer can find it
+    //  and stand down:
+    //
+    //      void OnStart() {
+    //          if (FindEntity("Manager") != gameObject) { DestroySelf(); return; }
+    //          DontDestroyOnLoad();
+    //      }
+    //
+    //  CALLING IT TWICE IS HARMLESS.
+    //
+    //  ==========================================================================
+    //  A SCENE CHANGE IS A HARD BOUNDARY FOR QUEUES, which is worth knowing
+    //  because it is not what you would guess. The deferred queue and the
+    //  message queue are both emptied as part of changing scene - see
+    //  DeferredOps::Clear and MessageBus::ClearQueue in Engine::Simulate - so
+    //  a survivor arrives in the new scene with:
+    //
+    //    NO QUEUED DESTROY. Ask to be destroyed and change scene in the same
+    //      frame and the destroy is dropped; the object lives.
+    //    NO RUNNING FUSE. A DestroySelfAfter(5) does not continue counting.
+    //    NO UNDELIVERED MESSAGES, and no collision or trigger EXIT for the
+    //      colliders that have just gone - so the usual "every enter has a
+    //      matching exit" does not hold across a load.
+    //
+    //  Those are properties of the queues rather than of persistence, and
+    //  they were there before this existed. They are written down here
+    //  because a surviving object is the first thing that can notice.
+    // ==========================================================================
+    void DontDestroyOnLoad() const;
+    void DontDestroyOnLoad(EntityId id) const;
+
+    // The other direction, for a manager that should stop surviving - a
+    // tutorial controller that is done, say. Harmless on something that was
+    // never marked.
+    void DestroyOnLoad(EntityId id) const;
     void Destroy(Entity& entity) const;
 
     // ======================================================================

@@ -249,6 +249,11 @@ bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
     switch (ClassifyAsset(virtualPath)) {
         case AssetKind::Texture: {
             auto* sprite = entity->Find<eng::SpriteComponent>();
+
+            // Whether the sprite is NEW decides whether its size is ours to
+            // choose. Dropping a different picture onto an entity somebody
+            // already sized is not an invitation to resize it back.
+            const bool freshSprite = sprite == nullptr;
             if (sprite == nullptr) {
                 // Adds the component rather than refusing. Dropping an image
                 // onto an entity that has no sprite obviously means "give it
@@ -262,6 +267,11 @@ bool ApplyAssetToEntity(eng::EntityId target, std::string_view virtualPath,
                 return false;
             }
             sprite->SetTexture(virtualPath);
+            if (freshSprite) {
+                // AFTER SetTexture, which is what gives it proportions to
+                // keep. See SpriteComponent::FitToWorldUnit.
+                sprite->FitToWorldUnit();
+            }
             GiveAnimationIfItIsOne(*entity, virtualPath);
             EditorState::Get().MarkDirty();
             outMessage = entity->Name() + " now uses " + std::string(virtualPath);
@@ -524,6 +534,12 @@ eng::EntityId CreateEntityForAsset(std::string_view virtualPath, eng::Vec2 world
         return id;
     }
     sprite->SetTexture(virtualPath);
+
+    // ONE WORLD UNIT, whatever the PNG happens to be. See
+    // SpriteComponent::FitToWorldUnit - and note it keeps the proportions, so
+    // dropping a tall character in does not square it off.
+    sprite->FitToWorldUnit();
+
     GiveAnimationIfItIsOne(*entity, virtualPath);
 
     EditorState::Get().MarkDirty();

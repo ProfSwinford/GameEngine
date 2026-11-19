@@ -6,6 +6,7 @@
 #include "panels/ScenePanel.h"
 
 #include "AssetDragDrop.h"
+#include "ColliderHandles.h"
 #include "EditorApp.h"
 #include "TilePaint.h"
 
@@ -269,12 +270,34 @@ void ScenePanel::Draw() {
     // Painting comes first of all: while a brush is chosen the mouse belongs
     // to it, and the handles and picking must not also act on the same click.
     const bool painting = HandleTilePainting(m_imageOrigin);
-    if (!painting) {
+
+    // ========================================================================
+    //  COLLIDER HANDLES COME BEFORE THE MOVE GIZMO, and before picking.
+    //
+    //  Before picking for the reason spelled out below it: picking's guard
+    //  reads state these passes produce, so it has to run second.
+    //
+    //  Before the MOVE GIZMO because the two can overlap, and when they do,
+    //  the collider handle is the one that would otherwise be unreachable.
+    //  Turning handles on is a deliberate act - see ColliderHandles.h - and
+    //  having done it, a click near a collider's edge means the collider. The
+    //  move gizmo is still right there and its arms reach sixty pixels; the
+    //  handle is ten pixels across and sits exactly where you put it. The
+    //  file's own rule, from the centre square at the base of both arms, is
+    //  to test the thing that would otherwise be unreachable first.
+    // ========================================================================
+    const bool reshaping =
+        !painting && UpdateColliderHandles(m_camera, m_imageOrigin);
+
+    if (!painting && !reshaping) {
         UpdateGizmo(m_imageOrigin);
     }
-    HandlePicking(m_imageOrigin, painting);
-    if (!painting) {
+    HandlePicking(m_imageOrigin, painting, reshaping);
+    if (!painting && !reshaping) {
         DrawGizmo(m_imageOrigin);
+    }
+    if (!painting) {
+        DrawColliderHandles(m_camera, m_imageOrigin);
     }
 
     DrawTileOverlay(m_imageOrigin);
@@ -733,7 +756,13 @@ void ScenePanel::DrawOverlay() {
     ImGui::EndGroup();
 }
 
-void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting) {
+// `reshaping` is kept apart from `painting` on purpose. Painting owns the
+// whole mouse, including the right button, because right-drag is its erase.
+// Collider handles only own the LEFT button, and they report true merely for
+// hovering one - so folding the two together would stop the right-drag pan
+// dead every time the cursor crossed a handle.
+void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting,
+                               bool reshaping) {
     ImGuiIO& io = ImGui::GetIO();
 
     if (!m_hovered && m_dragAxis == GizmoAxis::None) {
@@ -800,7 +829,7 @@ void ScenePanel::HandlePicking(const ImVec2& imageOrigin, bool painting) {
     // ---- left click selects ------------------------------------------------
     // Only when a handle is not being dragged, and on the press rather than
     // the release, so click-and-drag on a handle never also reselects.
-    if (m_hovered && !painting && m_dragAxis == GizmoAxis::None &&
+    if (m_hovered && !painting && !reshaping && m_dragAxis == GizmoAxis::None &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const eng::Vec2 screen{io.MousePos.x - imageOrigin.x,
                                io.MousePos.y - imageOrigin.y};

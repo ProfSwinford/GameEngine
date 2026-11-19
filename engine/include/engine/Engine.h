@@ -155,9 +155,29 @@
 typedef eng::ScriptBehaviour MyScriptBehaviour;
 typedef eng::Vec2 Vector2;
 
-// Unity's name for an entity. A pointer, like the component aliases below:
-// `GameObject self = Owner();`
-typedef eng::Entity* GameObject;
+// ============================================================================
+//  UNITY'S NAME FOR A THING, AND IT TAKES EITHER KIND OF THING.
+//
+//  `GameObject self = Owner();` still means what it meant - the type converts
+//  to Entity* implicitly and has operator-> - but it is no longer a bare
+//  pointer, and that change is what makes it usable as a VARIABLE.
+//
+//  A pointer is the one thing the Inspector cannot draw: an address has
+//  nothing to put in a box, so the variable exposer skipped it and said so.
+//  `GameObject target;` was therefore a field you could declare and never
+//  see. As a value it is a slot you drag onto - and it accepts a scene object
+//  from the Hierarchy OR a prefab from the Assets panel, which is what
+//  Unity's GameObject field does and the reason prefabs and scene objects no
+//  longer need to be referenced through two different types.
+//
+//  THE COMPONENT ALIASES BELOW MADE THIS SAME MOVE FIRST, from pointer
+//  typedefs to eng::ComponentRef, for the same reason and with the same
+//  conversion kept. The note under them has the full argument.
+//
+//  See scene/GameObjectRef.h for what a prefab one resolves to - nothing,
+//  until you Instantiate it - and why that is the honest answer.
+// ============================================================================
+using GameObject = eng::GameObjectRef;
 
 // ============================================================================
 //  UNITY'S COMPONENT NAMES, AND THEY ARE REFERENCES
@@ -302,8 +322,6 @@ typedef eng::ComponentRef<eng::UISliderComponent> UISliderRef;
 typedef eng::ColliderComponent* Collider2D;
 
 typedef eng::InputMap Input;
-//using GameObject = eng::Entity;
-//using GameObject = eng::PrefabRef;
 
 using namespace eng;
 namespace eng {
@@ -483,6 +501,12 @@ private:
     // records them - nothing runs until Init calls SubsystemStack::InitAll.
     void RegisterBuiltinSubsystems(const Options& options);
 
+    // Puts the loaded scene's framing on the camera, whichever of the two
+    // ways it was written - a zoom or a frame height. Two call sites, loading
+    // a scene and leaving play mode, which were already two copies of the
+    // position-and-zoom pair. See render/Camera.h.
+    void ApplySceneCamera();
+
     // ------------------------------------------------------------------
     //  FIVE SUBSYSTEMS THAT BELONG TO THE ENGINE ITSELF.
     //
@@ -577,6 +601,11 @@ private:
     EventPump m_events;
     Camera    m_camera;
     GameClock m_clock;
+
+    // Where the game is drawn when its shape is pinned, before being placed
+    // on the window with black around it. Never created at all while the
+    // presentation is Free, which is the default - see RenderFrame.
+    RenderTarget m_presentTarget;
 
     double m_lastFrameTicks = 0.0;
     int    m_stepsThisFrame = 0;

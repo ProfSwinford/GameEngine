@@ -336,6 +336,69 @@ EntityId ScriptBehaviour::Instantiate(const PrefabRef&    prefab,
     return Instantiate(prefab.Path(), placement);
 }
 
+EntityId ScriptBehaviour::Instantiate(const GameObjectRef& thing) const {
+    return Instantiate(thing, SpawnOptions{});
+}
+
+EntityId ScriptBehaviour::Instantiate(const GameObjectRef& thing,
+                                      const SpawnOptions&  placement) const {
+    if (!thing.IsSet()) {
+        // The same once-per-component message the PrefabRef pair above gives,
+        // and it shares the flag deliberately: a script with both kinds of
+        // reference unset has one mistake, not two, and saying it twice would
+        // start the Console-flooding this guard exists to stop.
+        if (m_component != nullptr && !m_component->m_warnedAboutUnsetPrefab) {
+            m_component->m_warnedAboutUnsetPrefab = true;
+            ENGINE_LOG_ERROR(Channels::kGame,
+                             "the script '{}' on '{}' was asked to spawn, but its "
+                             "GameObject variable has not been set - drag a prefab or "
+                             "a scene object onto it in the Inspector. Nothing has "
+                             "been spawned, and this is reported once rather than on "
+                             "every attempt",
+                             m_component->ScriptName(),
+                             Name().empty() ? "<a destroyed entity>" : Name());
+        }
+        return EntityId{};
+    }
+
+    if (thing.IsPrefab()) {
+        return Instantiate(thing.PrefabPath(), placement);
+    }
+
+    // ======================================================================
+    //  A SCENE OBJECT IS CLONED, which is Unity's rule and the one that makes
+    //  the two halves interchangeable at the call site. See the note on the
+    //  declaration for why handing back the original would be worse.
+    // ======================================================================
+    Scene* world = GetScene();
+    if (world == nullptr) {
+        return EntityId{};
+    }
+
+    Entity* source = thing.Target();
+    if (source == nullptr) {
+        // NAMED, AND EVERY TIME. Unlike the unset case this is not a thing
+        // somebody forgot to do once - it is a reference to an object that
+        // has been renamed or destroyed, and which call it was matters for
+        // working out when it went.
+        ENGINE_LOG_ERROR(Channels::kGame,
+                         "the script '{}' on '{}' was asked to clone '{}', but "
+                         "nothing in the scene answers to that name",
+                         m_component != nullptr ? m_component->ScriptName() : "?",
+                         Name().empty() ? "<a destroyed entity>" : Name(),
+                         thing.Name());
+        return EntityId{};
+    }
+
+    std::string    error;
+    const EntityId copy = world->DuplicateEntity(source->Id(), placement, error);
+    if (copy.IsNull()) {
+        ENGINE_LOG_ERROR(Channels::kGame, "could not clone '{}': {}", thing.Name(),
+                         error);
+    }
+    return copy;
+}
+
 EntityId ScriptBehaviour::CreateEntity(std::string_view baseName) const {
     Scene* world = GetScene();
     return world != nullptr ? world->CreateEntityUniquelyNamed(baseName) : EntityId{};
@@ -366,6 +429,38 @@ void ScriptBehaviour::DestroySelfAfter(float delaySeconds) const {
 
 void ScriptBehaviour::DestroyAfter(EntityId id, float delaySeconds) const {
     DeferredOps::QueueDestroyAfter(id, delaySeconds);
+}
+
+void ScriptBehaviour::DontDestroyOnLoad() const {
+    DontDestroyOnLoad(OwnerId());
+}
+
+void ScriptBehaviour::DontDestroyOnLoad(EntityId id) const {
+    // ======================================================================
+    //  IMMEDIATE, NOT QUEUED, unlike every Destroy above it.
+    //
+    //  Destroying is queued because it removes something other systems may be
+    //  walking this very step - that is the whole argument in DeferredOps.h.
+    //  Marking does none of that: it sets a bool on a slot, nothing is added
+    //  or removed, and no iteration is disturbed.
+    //
+    //  And it HAS to be immediate. A script asking for this in OnStart on the
+    //  same frame that something else asks for a scene change would otherwise
+    //  have the mark applied after the unload it was meant to survive.
+    // ======================================================================
+    Scene* world = GetScene();
+    if (world == nullptr) {
+        return;
+    }
+    world->SetPersistent(id, true);
+}
+
+void ScriptBehaviour::DestroyOnLoad(EntityId id) const {
+    Scene* world = GetScene();
+    if (world == nullptr) {
+        return;
+    }
+    world->SetPersistent(id, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1539,12 +1634,32 @@ std::size_t ScriptComponent::RetargetReferences(std::string_view oldName,
 
     std::size_t moved = 0;
     for (const ScriptField& field : m_fields.All()) {
-        EntityRef* ref = field.AsEntityRef();
-        if (ref == nullptr || ref->TargetName() != oldName) {
+        // ==================================================================
+        //  TWO KINDS OF REFERENCE HOLD AN ENTITY'S NAME, not one.
+        //
+        //  An eng::EntityRef always does. An eng::GameObjectRef does WHEN IT
+        //  IS HOLDING A SCENE OBJECT - and must be left alone when it is
+        //  holding a prefab, whose path is not a name and whose text would
+        //  otherwise be rewritten by an entity rename that happened to match
+        //  it.
+        //
+        //  Missing the second would make renaming an entity in the Hierarchy
+        //  silently break every GameObject variable pointing at it - the
+        //  exact failure this function exists to prevent, reintroduced by a
+        //  new type rather than by a new bug.
+        // ==================================================================
+        EntityRef*     ref  = field.AsEntityRef();
+        GameObjectRef* link = field.AsGameObjectRef();
+
+        if (ref != nullptr && ref->TargetName() == oldName) {
+            ref->Set(newName);
+        } else if (link != nullptr && link->IsSceneObject() &&
+                   link->Name() == oldName) {
+            link->SetSceneObject(newName);
+        } else {
             continue;
         }
 
-        ref->Set(newName);
         ++moved;
 
         // ==================================================================

@@ -247,9 +247,60 @@ public:
     int                Layer() const { return m_layer; }
     Vec2               PixelSize() const { return m_pixelSize; }
 
+    // ======================================================================
+    //  HOW BIG THIS SPRITE ACTUALLY DRAWS, in pixels, before the entity's
+    //  scale.
+    //
+    //  PixelSize() above is the AUTHORED size and is {0,0} when the answer is
+    //  "whatever the picture is" - which is the common case and is not a size
+    //  anybody can use. Resolving that to the texture's own width and height
+    //  is two lines, and those two lines were about to exist in a second
+    //  place: the collider needs this number to know what its scale is a
+    //  fraction of. The render loop's own comment a few files away says why
+    //  that is not allowed to happen - "there is deliberately no second piece
+    //  of code working out where a sprite goes, because two such pieces would
+    //  eventually disagree" - and how big it is deserves the same rule.
+    //
+    //  {0,0} WHEN THERE IS NO PICTURE AT ALL, which the caller must expect: a
+    //  sprite whose texture failed to load is not an error here, it is just a
+    //  component with nothing to measure.
+    // ======================================================================
+    Vec2               RenderedSize() const;
+
     void SetTint(Color tint);
     void SetLayer(int layer);
     void SetTexture(std::string_view virtualPath);
+
+    // How big to draw it, in pixels, whatever size the picture is. {0,0} puts
+    // it back to "whatever the picture is", which is what a scene file with
+    // no "size" means.
+    //
+    // THE EDITOR SETS THIS ON EVERY SPRITE IT CREATES, to one world unit -
+    // see core/WorldUnit.h. A new object being the size of its source PNG
+    // means a 512-pixel concept sketch and a 16-pixel icon land in the scene
+    // thirty-two times different from each other, and every one of them has
+    // to be resized by hand before the scene means anything.
+    void SetPixelSize(Vec2 size) { m_pixelSize = size; }
+
+    // ======================================================================
+    //  SIZES THIS SPRITE TO ONE WORLD UNIT, KEEPING ITS PROPORTIONS.
+    //
+    //  WHAT THE EDITOR CALLS ON EVERY SPRITE IT CREATES. A new object is
+    //  then one ordinary thing big, whatever its picture happens to be, and
+    //  a scene built from a 512-pixel concept sketch and a 16-pixel icon does
+    //  not come out thirty-two times out of proportion with itself.
+    //
+    //  IT FITS INSIDE THE UNIT RATHER THAN FILLING IT, which is the part
+    //  worth being deliberate about. Forcing a 24x48 character into a 32x32
+    //  square would squash it, and nobody asked for the art to be distorted;
+    //  the longer side becomes one unit and the shorter one keeps its ratio,
+    //  so that character comes out 16x32. A square picture does land on
+    //  exactly 32x32.
+    //
+    //  WITH NO PICTURE it is a unit square, because there are no proportions
+    //  to keep.
+    // ======================================================================
+    void FitToWorldUnit();
 
     // ======================================================================
     //  THE SAME THING, GIVEN THE TYPE A SCRIPT HOLDS.

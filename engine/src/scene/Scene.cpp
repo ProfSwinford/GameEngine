@@ -93,9 +93,11 @@ EntityId Scene::CreateEntity(std::string_view name) {
     //  losing an entity. The fix is named in the message because "duplicate
     //  name" on its own does not tell anybody what to do.
     // ======================================================================
-    if (const auto existing = m_byName.find(std::string(name));
-        existing != m_byName.end() && IsValid(existing->second) &&
-        existing->second != slot.entity->m_id) {
+    const auto existing = m_byName.find(std::string(name));
+    const bool collides = existing != m_byName.end() && IsValid(existing->second) &&
+                          existing->second != slot.entity->m_id;
+
+    if (collides) {
         ENGINE_LOG_ERROR(Channels::kScene,
                          "two entities are now called '{}', and a name is an identity "
                          "here - parents and entity references are both recorded by "
@@ -106,6 +108,18 @@ EntityId Scene::CreateEntity(std::string_view name) {
                          name);
     }
 
+    // THE NEWCOMER WINS THE INDEX HERE, EVEN AGAINST A SURVIVOR.
+    //
+    // That is not the final answer - a persistent entity gets its name back
+    // once the build is finished, in ReclaimCarriedNames - and the order
+    // matters. A scene's own file resolves its PARENTS by name
+    // (ResolveParents), so if a survivor held the name throughout the build,
+    // the new scene's child of "Manager" would be parented to the SURVIVOR
+    // instead of to the Manager in its own file. The collision would quietly
+    // rewrite the hierarchy of the scene being loaded.
+    //
+    // So the newcomer owns the name while the file is being read, and the
+    // survivor takes it afterwards.
     m_byName[std::string(name)] = slot.entity->m_id;
     ++m_liveCount;
 
@@ -221,7 +235,15 @@ void Scene::DestroyEntityImmediate(EntityId id) {
     }
 
     if (slot.entity != nullptr) {
-        m_byName.erase(slot.entity->Name());
+        // ONLY WHEN THE INDEX STILL MEANS THIS ENTITY. With two entities
+        // sharing a name - which a scene change onto a persistent manager
+        // produces, and which the create path reports - an unconditional
+        // erase would take the OTHER one's entry out and leave a live object
+        // that no reference by name could reach.
+        const auto named = m_byName.find(slot.entity->Name());
+        if (named != m_byName.end() && named->second == id) {
+            m_byName.erase(named);
+        }
         slot.entity->DestroyInternal();
     }
     slot.entity.reset();
@@ -237,6 +259,13 @@ void Scene::DestroyEntityImmediate(EntityId id) {
     // new entity in a reused slot would otherwise be silently left out of
     // every save.
     slot.derived = false;
+
+    // AND "THIS SURVIVES A SCENE CHANGE", which is the same trap a third
+    // time and the worst of the three: a new entity in a reused slot would
+    // inherit persistence it never asked for, outlive a scene change nobody
+    // meant it to, AND be left out of every save - so it would also vanish
+    // the next time the project opened. See SetPersistent.
+    slot.persistent = false;
 
     // The generation goes up LAST. From this moment every EntityId still
     // referring to this slot can be recognised as out of date, which is what
@@ -516,6 +545,26 @@ bool Scene::BuildFromDocument(std::string& outError) {
     if (camera.is_object()) {
         m_cameraPosition = ReadVec2(camera, "position", Vec2{0.0f, 0.0f}, "camera");
         m_cameraZoom     = ReadFloat(camera, "zoom", 1.0f, "camera");
+
+        // ==============================================================
+        //  "frameHeight" WINS WHEN IT IS THERE, and is absent from every
+        //  scene written before it existed - which is what makes this
+        //  backwards compatible rather than merely compatible-looking: a
+        //  file with only a zoom reads exactly as it always did, down to
+        //  the default.
+        //
+        //  Both keys present is not an error. The height is the newer and
+        //  more specific statement, so it is obeyed and the zoom is left as
+        //  the fallback the engine uses if the height is ever cleared.
+        // ==============================================================
+        m_cameraFrameHeight = ReadFloat(camera, "frameHeight", 0.0f, "camera");
+        if (m_cameraFrameHeight < 0.0f) {
+            ENGINE_LOG_WARN(Channels::kScene,
+                            "the scene's camera frameHeight is {}, which is not a "
+                            "height - framing by zoom instead",
+                            m_cameraFrameHeight);
+            m_cameraFrameHeight = 0.0f;
+        }
     }
 
     const Json& entities  = Field(m_document, "entities");
@@ -560,13 +609,20 @@ bool Scene::BuildFromDocument(std::string& outError) {
         ResolveParents(entities);
     }
 
+    // AFTER ResolveParents, which is the whole reason this is a separate step
+    // rather than something CreateEntity decides. See ReclaimCarriedNames.
+    ReclaimCarriedNames();
+
     SetActive(this);
     outError.clear();
     return true;
 }
 
 bool Scene::Load(std::string_view virtualPath, std::string& outError) {
-    Unload();
+    // KEEPS THE PERSISTENT ONES. This is the scene CHANGE - the one call
+    // that DontDestroyOnLoad is about. See Scene::SetPersistent for why no
+    // other unload does.
+    Unload(UnloadScope::KeepPersistent);
 
     std::string text;
     if (!FileSystem::ReadTextFile(virtualPath, text, outError)) {
@@ -605,12 +661,33 @@ namespace {
 // "entities" are regenerated. A tool that silently drops the parts of a file
 // it did not understand is a tool people stop trusting with their files.
 Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraPosition,
-                        float cameraZoom, std::size_t& outSkipped, const Json& existing) {
+                        float cameraZoom, float cameraFrameHeight,
+                        std::size_t& outSkipped, const Json& existing) {
     Json root = existing.is_object() ? existing : Json::object();
 
     root["name"] = sceneName.empty() ? std::string("Untitled") : sceneName;
     root["camera"]["position"] = Json::array({cameraPosition.x, cameraPosition.y});
-    root["camera"]["zoom"]     = cameraZoom;
+
+    // ======================================================================
+    //  EXACTLY ONE OF THE TWO KEYS, and the other is REMOVED.
+    //
+    //  A scene is framed one way or the other. Writing both would make the
+    //  file ambiguous and make a round trip depend on which key the reader
+    //  happened to prefer - and leaving a stale "zoom" behind after switching
+    //  to a frame height is the version of that which bites later, when
+    //  somebody hand-edits the zoom and nothing changes.
+    //
+    //  The erase matters because this document may be an EXISTING one being
+    //  updated in place - see the note above this function about not dropping
+    //  what the file already had.
+    // ======================================================================
+    if (cameraFrameHeight > 0.0f) {
+        root["camera"]["frameHeight"] = cameraFrameHeight;
+        root["camera"].erase("zoom");
+    } else {
+        root["camera"]["zoom"] = cameraZoom;
+        root["camera"].erase("frameHeight");
+    }
 
     // Parent/child relationships are read from the LIVE transform tree, not
     // from whatever the original file said, so an entity reparented in the
@@ -646,6 +723,21 @@ Json BuildSceneDocument(Scene& scene, const std::string& sceneName, Vec2 cameraP
         // duplicate them and freeze the tile's components into this file.
         // See Scene::SetDerived.
         if (scene.IsDerived(entity.Id())) {
+            return;
+        }
+
+        // ==================================================================
+        //  AND NEITHER IS SOMETHING THAT CAME FROM A DIFFERENT SCENE.
+        //
+        //  An entity marked DontDestroyOnLoad is not part of this scene's
+        //  description - it arrived from whichever scene created it. Writing
+        //  it here would put a copy in the file, and then every load of this
+        //  scene would produce one more of it: the manager that exists to be
+        //  a singleton, duplicated once per visit.
+        //
+        //  See Scene::SetPersistent.
+        // ==================================================================
+        if (scene.IsPersistent(entity.Id())) {
             return;
         }
 
@@ -745,7 +837,7 @@ bool Scene::Save(std::string_view virtualPath, std::string& outError) {
     }
 
     std::size_t skipped = 0;
-    const Json  root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom,
+    const Json  root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom, m_cameraFrameHeight,
                                           skipped, m_document);
 
     // dump(2) turns the document back into text, indented by two spaces so a
@@ -775,7 +867,7 @@ bool Scene::Save(std::string_view virtualPath, std::string& outError) {
 
 bool Scene::SaveToString(std::string& outText, std::string& outError) {
     std::size_t skipped = 0;
-    const Json  root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom,
+    const Json  root = BuildSceneDocument(*this, m_name, m_cameraPosition, m_cameraZoom, m_cameraFrameHeight,
                                           skipped, m_document);
 
     // A skipped component makes this FAIL, where Save() only warns, and the
@@ -811,33 +903,197 @@ bool Scene::LoadFromString(std::string_view text, std::string& outError) {
     return BuildFromDocument(outError);
 }
 
-void Scene::Unload() {
+void Scene::Unload(UnloadScope scope) {
     if (m_slots.empty()) {
         return;
     }
 
-    // Destroying every entity detaches every component, which lets go of every
-    // texture. Anything no longer used unloads itself at that point.
-    for (Slot& slot : m_slots) {
-        if (slot.occupied && slot.entity != nullptr) {
-            slot.entity->DestroyInternal();
-            slot.entity.reset();
-            slot.occupied = false;
+    // ======================================================================
+    //  WHO IS STAYING, worked out in full BEFORE anything is destroyed.
+    //
+    //  A persistent entity's CHILDREN come with it, and they are not marked -
+    //  so the set has to be closed over descendants first. Doing it as we go
+    //  would destroy a child before reaching the parent that was keeping it,
+    //  which is the sort of order-dependent bug that shows up as one surviving
+    //  object with half its hierarchy missing.
+    // ======================================================================
+    std::vector<bool> staying(m_slots.size(), false);
+    std::size_t       stayingCount = 0;
+
+    if (scope == UnloadScope::KeepPersistent) {
+        // The marked ones...
+        for (std::size_t i = 0; i < m_slots.size(); ++i) {
+            const Slot& slot = m_slots[i];
+            if (slot.occupied && slot.persistent && slot.entity != nullptr) {
+                staying[i] = true;
+                ++stayingCount;
+            }
+        }
+
+        // ...and everything underneath them. Walked by descending from each
+        // marked entity rather than by asking each entity for its ancestors,
+        // because Transform2D knows its children and an Entity does not know
+        // which entity owns a transform without a lookup.
+        if (stayingCount > 0) {
+            std::vector<EntityId> frontier;
+            for (std::size_t i = 0; i < m_slots.size(); ++i) {
+                if (staying[i] && m_slots[i].entity != nullptr) {
+                    frontier.push_back(m_slots[i].entity->Id());
+                }
+            }
+
+            while (!frontier.empty()) {
+                const EntityId id = frontier.back();
+                frontier.pop_back();
+
+                Entity* entity = Get(id);
+                if (entity == nullptr) {
+                    continue;
+                }
+                for (Transform2D* child : entity->Transform().Children()) {
+                    Entity* childEntity = EntityOf(*child);
+                    if (childEntity == nullptr) {
+                        continue;
+                    }
+                    const std::size_t index =
+                        static_cast<std::size_t>(childEntity->Id().index);
+                    if (index >= staying.size() || staying[index]) {
+                        continue;
+                    }
+                    staying[index] = true;
+                    ++stayingCount;
+                    frontier.push_back(childEntity->Id());
+                }
+            }
         }
     }
 
-    m_slots.clear();
-    m_freeIndices.clear();
-    m_byName.clear();
-    m_liveCount = 0;
+    // ======================================================================
+    //  A SURVIVOR WHOSE PARENT IS NOT ONE IS DETACHED, not orphaned.
+    //
+    //  Its parent's Transform2D is about to be freed, and a child still
+    //  pointing at it would read freed memory on the first frame of the new
+    //  scene - as a position, so the symptom is an object somewhere absurd
+    //  rather than a crash.
+    //
+    //  Unity avoids the question by only honouring DontDestroyOnLoad on a
+    //  root. Detaching says the same thing out loud and keeps the object,
+    //  which is what the caller asked for.
+    // ======================================================================
+    for (std::size_t i = 0; i < m_slots.size(); ++i) {
+        if (!staying[i] || m_slots[i].entity == nullptr) {
+            continue;
+        }
+        Transform2D& transform = m_slots[i].entity->Transform();
+        Transform2D* parent    = transform.Parent();
+        if (parent == nullptr) {
+            continue;
+        }
+
+        const Entity* parentEntity = EntityOf(*parent);
+        const bool    parentStays =
+            parentEntity != nullptr &&
+            static_cast<std::size_t>(parentEntity->Id().index) < staying.size() &&
+            staying[static_cast<std::size_t>(parentEntity->Id().index)];
+
+        if (!parentStays) {
+            ENGINE_LOG_WARN(Channels::kScene,
+                            "'{}' survives the scene change but its parent '{}' does "
+                            "not, so it has been detached and is now a root",
+                            m_slots[i].entity->Name(),
+                            parentEntity != nullptr ? parentEntity->Name() : "?");
+
+            // KEEPS ITS WORLD POSITION. Detaching is bookkeeping, not a move:
+            // an object that jumped across the level on a scene change would
+            // be far harder to explain than the warning above.
+            transform.SetParent(nullptr, /*keepWorldTransform=*/true);
+        }
+    }
+
+    // Destroying every entity detaches every component, which lets go of every
+    // texture. Anything no longer used unloads itself at that point.
+    for (std::size_t i = 0; i < m_slots.size(); ++i) {
+        Slot& slot = m_slots[i];
+        if (staying[i]) {
+            // THE PREFAB LINK GOES, because m_prefabInstances is cleared
+            // below and a surviving slot pointing into it would be a dangling
+            // pointer that every save and every revert walks. The entity is
+            // no longer a member of an instance in a scene that has gone.
+            slot.prefab        = nullptr;
+            slot.prefabLocalId = 0;
+
+            // AND SO DOES "BUILT FROM AN ASSET". A tile object is rebuilt
+            // from its map's cells, and the map it belonged to has gone - so
+            // a survivor carrying this flag would be an entity nothing
+            // rebuilds and nothing saves.
+            slot.derived = false;
+            continue;
+        }
+        if (slot.occupied && slot.entity != nullptr) {
+            m_byName.erase(slot.entity->Name());
+            slot.entity->DestroyInternal();
+            slot.entity.reset();
+            slot.occupied = false;
+
+            // The generation goes up, exactly as freeing one slot does, so an
+            // EntityId held across the load is recognised as out of date
+            // rather than matching whatever the next scene puts here.
+            ++slot.generation;
+        }
+    }
+
+    if (stayingCount == 0) {
+        m_slots.clear();
+        m_freeIndices.clear();
+        m_byName.clear();
+        m_liveCount = 0;
+    } else {
+        // ==================================================================
+        //  THE SLOTS STAY WHERE THEY ARE, which is the whole mechanism.
+        //
+        //  An EntityId is an index plus a generation. Compacting the vector
+        //  would move a survivor to a different index and silently invalidate
+        //  every id a script was holding - including the one its own
+        //  behaviour uses to find itself. So the vector keeps its length and
+        //  the emptied slots go back on the free list instead.
+        // ==================================================================
+        m_freeIndices.clear();
+        for (std::size_t i = m_slots.size(); i > 0; --i) {
+            if (!m_slots[i - 1].occupied) {
+                m_freeIndices.push_back(static_cast<int>(i - 1));
+            }
+        }
+        m_liveCount = stayingCount;
+
+        // The names they hold, to be taken back once the incoming scene has
+        // been built - see ReclaimCarriedNames for why not before.
+        m_carriedNames.clear();
+        for (const Slot& slot : m_slots) {
+            if (slot.occupied && slot.entity != nullptr) {
+                m_carriedNames.emplace_back(slot.entity->Name(), slot.entity->Id());
+            }
+        }
+
+        ENGINE_LOG_INFO(Channels::kScene,
+                        "{} entity(s) carried into the next scene", stayingCount);
+    }
 
     // Also after the slots: every TransformComponent's OnDetach above took its
-    // own entry out, so by now this should already be empty. Cleared anyway,
+    // own entry out, so by now only the survivors' entries are left - which is
+    // why this is no longer an unconditional clear. Cleared outright when
+    // nothing stayed, for the reason that follows,
     // because an entry left behind would be a pointer to a freed Transform2D
     // that the next EntityOf could match against a newly allocated one at the
     // same address - and a reverse lookup that answers with the wrong entity
     // is worse than one that answers with none.
-    m_transformOwners.clear();
+    // ...and NOT when somebody stayed: a survivor's transform is still live
+    // and still has to be findable from its Transform2D. EntityOf is how a
+    // collision, a parent lookup and the editor's picking all get from a
+    // transform back to its entity, so clearing this would leave every
+    // surviving object unreachable through half the engine.
+    if (stayingCount == 0) {
+        m_transformOwners.clear();
+    }
 
     // AFTER the slots, not before. Every member's slot holds a pointer to its
     // instance, and freeing the records while slots still pointed at them
@@ -877,6 +1133,7 @@ void Scene::StartNewScene() {
     // does not inherit the last one's framing.
     m_cameraPosition = Vec2{};
     m_cameraZoom     = 1.0f;
+    m_cameraFrameHeight = 0.0f;
 
     ENGINE_LOG_INFO(Channels::kScene, "new scene started; it has no file yet");
 }
@@ -953,6 +1210,15 @@ bool Scene::RenameEntity(EntityId id, std::string_view newName) {
                         oldName, newName, moved);
     }
     return true;
+}
+
+EntityId Scene::DuplicateEntity(EntityId id, const SpawnOptions& placement,
+                                std::string& outError) {
+    const EntityId copy = DuplicateEntity(id, outError);
+    if (!copy.IsNull()) {
+        ApplyPlacement(copy, placement);
+    }
+    return copy;
 }
 
 EntityId Scene::DuplicateEntity(EntityId id, std::string& outError) {
@@ -1065,6 +1331,63 @@ bool Scene::IsDerived(EntityId id) const {
         return false;
     }
     return m_slots[static_cast<std::size_t>(id.index)].derived;
+}
+
+void Scene::SetPersistent(EntityId id, bool persistent) {
+    if (!IsValid(id)) {
+        return;
+    }
+    Slot& slot = m_slots[static_cast<std::size_t>(id.index)];
+    if (slot.persistent == persistent) {
+        return;   // calling it twice is harmless and says nothing
+    }
+    slot.persistent = persistent;
+
+    if (persistent && slot.entity != nullptr) {
+        ENGINE_LOG_INFO(Channels::kScene,
+                        "'{}' will survive a scene change", slot.entity->Name());
+    }
+}
+
+bool Scene::IsPersistent(EntityId id) const {
+    if (!IsValid(id)) {
+        return false;
+    }
+    return m_slots[static_cast<std::size_t>(id.index)].persistent;
+}
+
+void Scene::ReclaimCarriedNames() {
+    if (m_carriedNames.empty()) {
+        return;
+    }
+
+    for (const auto& [name, id] : m_carriedNames) {
+        if (!IsValid(id)) {
+            continue;   // destroyed during the build, which is allowed
+        }
+
+        const auto held = m_byName.find(name);
+        if (held != m_byName.end() && held->second != id) {
+            ENGINE_LOG_WARN(Channels::kScene,
+                            "'{}' survives from an earlier scene and the scene just "
+                            "loaded has one too, so the name goes on meaning the "
+                            "survivor. Destroy the newcomer in OnStart if it is meant "
+                            "to be a singleton",
+                            name);
+        }
+        m_byName[name] = id;
+    }
+    m_carriedNames.clear();
+}
+
+std::size_t Scene::PersistentCount() const {
+    std::size_t count = 0;
+    for (const Slot& slot : m_slots) {
+        if (slot.occupied && slot.persistent) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 bool Scene::IsPrefabRoot(EntityId id) const {

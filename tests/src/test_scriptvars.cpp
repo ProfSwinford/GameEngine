@@ -2742,3 +2742,94 @@ TEST_CASE("a path with no generator assumes a script may have handlers") {
     // refused `class PauseMenu` whose one method was OnPause().
     CHECK(ENGINE_SCRIPT_MAYBE_ACTIONS);
 }
+
+// ===========================================================================
+//  GameObject: the alias that used to be a pointer.
+//
+//  It was `typedef eng::Entity*`, so the exposer's pointer test rejected it
+//  and `GameObject target;` was a variable you could declare and never see.
+//  It is an eng::GameObjectRef now - a value - and these cases pin both the
+//  acceptance and the ONE exception it forced on the pointer test.
+// ===========================================================================
+
+TEST_CASE("a GameObject variable is exposed, and takes either kind of thing") {
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    GameObject target;"));
+
+    const ScriptVarDecl* var = Var(info, "target");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::GameObject);
+
+    // NO CONSTRAINT, deliberately: the whole point is that it accepts a scene
+    // object or a prefab, so narrowing it to entities carrying some component
+    // would rule out half of what it is for.
+    CHECK(var->requiredType.empty());
+    CHECK(Skipped(info, "target") == nullptr);
+}
+
+TEST_CASE("the long spellings of GameObject are exposed too") {
+    SUBCASE("GameObjectRef") {
+        const ScriptSourceInfo info =
+            ScanScriptSource(Wrap("    GameObjectRef thing;"));
+        const ScriptVarDecl* var = Var(info, "thing");
+        REQUIRE(var != nullptr);
+        CHECK(var->fieldType == ScriptFieldType::GameObject);
+    }
+
+    SUBCASE("eng::GameObjectRef") {
+        const ScriptSourceInfo info =
+            ScanScriptSource(Wrap("    eng::GameObjectRef thing;"));
+        const ScriptVarDecl* var = Var(info, "thing");
+        REQUIRE(var != nullptr);
+        CHECK(var->fieldType == ScriptFieldType::GameObject);
+    }
+}
+
+TEST_CASE("GameObject = nullptr is a value, not a pointer") {
+    // ======================================================================
+    //  THE ONE EXCEPTION TO THE nullptr TEST, and the reason it is worth a
+    //  case of its own.
+    //
+    //  The exposer decides "this is a pointer" partly from `= nullptr`, on
+    //  the stated grounds that initialising from nullptr is the one thing a
+    //  value cannot do. GameObjectRef accepts nullptr ON PURPOSE, so that
+    //  every line written against the old pointer typedef goes on compiling -
+    //  which makes that premise false for exactly this type.
+    //
+    //  And this is the spelling somebody will write out of habit. Being told
+    //  it is a pointer and watching the field vanish from the Inspector is
+    //  the worst outcome available.
+    // ======================================================================
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    GameObject target = nullptr;"));
+
+    const ScriptVarDecl* var = Var(info, "target");
+    REQUIRE(var != nullptr);
+    CHECK(var->fieldType == ScriptFieldType::GameObject);
+
+    const ScriptVarSkipped* skipped = Skipped(info, "target");
+    CHECK(skipped == nullptr);
+}
+
+TEST_CASE("the nullptr test still works for everything that IS a pointer") {
+    // The exception above must not have widened into a hole. A real pointer
+    // initialised from nullptr is still a pointer, and still says so.
+    const ScriptSourceInfo info =
+        ScanScriptSource(Wrap("    eng::SpriteComponent* art = nullptr;"));
+
+    CHECK(Var(info, "art") == nullptr);
+
+    const ScriptVarSkipped* skipped = Skipped(info, "art");
+    REQUIRE(skipped != nullptr);
+    CHECK(skipped->reason.find("pointer") != std::string::npos);
+}
+
+TEST_CASE("a GameObject with a star is still a pointer") {
+    // `GameObject* p;` is a pointer TO the reference type, which is not a
+    // field - and the star is read before any of the value reasoning, so this
+    // is rejected for the ordinary reason rather than slipping through on the
+    // name.
+    const ScriptSourceInfo info = ScanScriptSource(Wrap("    GameObject* p;"));
+
+    CHECK(Var(info, "p") == nullptr);
+    REQUIRE(Skipped(info, "p") != nullptr);
+}

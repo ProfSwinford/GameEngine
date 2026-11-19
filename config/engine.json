@@ -21,6 +21,16 @@
     "gizmoCircleSegments": 24
   },
 
+  "units": {
+    "_note": "pixelsPerUnit is how big ONE of something is - one tile, one character's width, one grid square. Collider sizes are written as fractions of it, so a collider scale of [1,1] is 'the size of the thing it is on' and [0.5,1] is 'half as wide, full height'. Change this and every scene keeps meaning what it meant, which typing pixel counts everywhere does not.",
+    "pixelsPerUnit": 32
+  },
+
+  "presentation": {
+    "_note": "What shape the finished game is. \"free\" lets it fill the window, so a wider monitor sees MORE OF THE LEVEL - fine while building, wrong for shipping. A ratio like \"16:9\" pins the shape; a size like \"1920x1080\" pins the exact pixels. Whatever space is left over is filled with BLACK, which is what makes full screen work on a differently-shaped display. The Game view's dropdown in the editor is the same idea, for looking at it before you commit.",
+    "mode": "free"
+  },
+
   "physics": {
     "_note": "gravity is in the units your game uses. Unity's -9.81 is metres per second squared; this project works in PIXELS, so -981 is the same real-world gravity at roughly 100 pixels to the metre. Set gravity to [0,0] for a top-down game. solverIterations is how many passes the contact solver makes - raise it if stacked objects sink into each other.",
     "gravity": [0.0, -981.0],

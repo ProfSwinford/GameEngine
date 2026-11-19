@@ -7,7 +7,9 @@
 // ============================================================================
 
 #include <engine/Engine.h>
+#include <engine/core/WorldUnit.h>
 #include <engine/input/InputActions.h>
+#include <engine/render/Presentation.h>
 
 #include <SDL3/SDL.h>
 
@@ -347,6 +349,53 @@ bool Engine::Init(const Options& options) {
     CollisionSystem::SetSolverIterations(m_config.solverIterations);
     m_clock.SetMaxStepsPerFrame(m_config.maxStepsPerFrame);
 
+    // BEFORE ANY SCENE IS LOADED, and that is the whole reason it is here
+    // rather than wherever it is first read. Every collider measures its
+    // authored scale against this number, so a scene deserialized against the
+    // default and then re-measured against the project's value would be two
+    // different scenes depending on when you looked. See core/WorldUnit.h.
+    WorldUnit::SetPixels(m_config.worldUnitPixels);
+
+    // ======================================================================
+    //  WHAT SHAPE THE GAME IS, and black in whatever is left over.
+    //
+    //  REPORTED RATHER THAN REFUSED when the text makes no sense. A settings
+    //  file is edited by people, and a mistyped aspect should cost you the
+    //  aspect - not the ability to start the game - which is the rule the
+    //  whole of Config.h states for every other key.
+    // ======================================================================
+    {
+        Presentation::Mode mode = Presentation::Mode::Free;
+        int                x    = 0;
+        int                y    = 0;
+        std::string        why;
+        if (!Presentation::ParseSpec(m_config.presentation, mode, x, y, why)) {
+            ENGINE_LOG_WARN(Channels::kRender,
+                            "presentation.mode '{}' was not understood ({}), so the "
+                            "game fills the window",
+                            m_config.presentation, why);
+        } else if (mode == Presentation::Mode::Aspect) {
+            Presentation::SetAspect(x, y);
+            ENGINE_LOG_INFO(Channels::kRender,
+                            "the game is presented at {}:{}, with black in the margins",
+                            x, y);
+        } else if (mode == Presentation::Mode::Resolution) {
+            Presentation::SetResolution(x, y);
+            ENGINE_LOG_INFO(Channels::kRender,
+                            "the game is rendered at {}x{} and scaled to the window, "
+                            "with black in the margins",
+                            x, y);
+        } else {
+            Presentation::SetFree();
+        }
+    }
+
+    // AFTER the renderer exists, because entering full screen changes the
+    // window's size and anything that cached it would be a frame behind.
+    if (m_config.fullscreen) {
+        m_window.SetFullscreen(true);
+    }
+
     SystemScheduler::LogOrder();
 
     // WHICH SCENE THE GAME OPENS WITH, decided in this order:
@@ -523,9 +572,36 @@ bool Engine::LoadScene(std::string_view virtualPath, std::string& outError) {
     // ForgetTheOldScene.
     ForgetTheOldScene();
 
-    m_camera.SetPosition(m_scene->InitialCameraPosition());
-    m_camera.SetZoom(m_scene->InitialCameraZoom());
+    ApplySceneCamera();
     return true;
+}
+
+// ===========================================================================
+//  PUTS A SCENE'S FRAMING ON THE CAMERA, whichever of the two ways it was
+//  written.
+//
+//  ONE FUNCTION BECAUSE THERE ARE TWO CALL SITES - loading a scene and
+//  leaving play mode - and they were already two copies of the position-and-
+//  zoom pair. A third thing to remember at both would eventually be
+//  remembered at one.
+// ===========================================================================
+void Engine::ApplySceneCamera() {
+    if (m_scene == nullptr) {
+        return;
+    }
+
+    m_camera.SetPosition(m_scene->InitialCameraPosition());
+
+    const float height = m_scene->InitialCameraFrameHeight();
+    if (height > 0.0f) {
+        // SetFrameHeight derives the zoom from the viewport, so the amount of
+        // world in shot is the same on every display - see render/Camera.h.
+        m_camera.SetFrameHeight(height);
+    } else {
+        // Every scene written before frameHeight existed takes this branch,
+        // and it is the line that was always here.
+        m_camera.SetZoom(m_scene->InitialCameraZoom());
+    }
 }
 
 bool Engine::SaveScene(std::string_view virtualPath, std::string& outError) {
@@ -544,7 +620,15 @@ bool Engine::SaveScene(std::string_view virtualPath, std::string& outError) {
     // The live camera goes in FIRST, so that framing a shot in the editor and
     // pressing save keeps the framing. Doing it here rather than inside
     // Scene::Save means the scene does not have to know a camera exists.
-    m_scene->SetCameraState(m_camera.Position(), m_camera.Zoom());
+    // WHICHEVER WAY THIS CAMERA IS FRAMED. A scene framed by height has to
+    // save as a height, or the next load would turn it back into a zoom and
+    // the framing would quietly start following the window again.
+    if (m_camera.CurrentFraming() == Camera::Framing::Height) {
+        m_scene->SetCameraFrameHeight(m_camera.Position(), m_camera.FrameHeight(),
+                                      m_camera.Zoom());
+    } else {
+        m_scene->SetCameraState(m_camera.Position(), m_camera.Zoom());
+    }
 
     return m_scene->Save(target, outError);
 }
@@ -623,8 +707,7 @@ void Engine::ExitPlayMode() {
         // first frame of the NEXT play session. See ForgetTheOldScene.
         ForgetTheOldScene();
 
-        m_camera.SetPosition(m_scene->InitialCameraPosition());
-        m_camera.SetZoom(m_scene->InitialCameraZoom());
+        ApplySceneCamera();
     }
     m_playModeSnapshot.clear();
 }
@@ -717,8 +800,36 @@ void Engine::Simulate() {
         // that happened before this step, not after it - otherwise every
         // button would respond one step late. See scene/UI.h.
         if (m_scene != nullptr) {
+            // ==============================================================
+            //  THE MOUSE IS IN WINDOW PIXELS AND THE GAME MAY NOT BE.
+            //
+            //  With a pinned aspect the game sits in a centred rectangle with
+            //  black either side, so a window position has to have the bar
+            //  offset taken off it and then be scaled into the render - the
+            //  same two steps the editor's Game view does for the same
+            //  reason. Without this every UI hit and every world-space
+            //  pointer query is wrong by the width of one bar, silently: the
+            //  buttons simply stop lining up with where they are drawn.
+            //
+            //  Free costs nothing: the plan is the whole window, the offset
+            //  is zero and the scale is one.
+            // ==============================================================
+            const Vec2 output = Renderer::OutputSize();
+            const Presentation::Plan plan = Presentation::PlanFor(
+                static_cast<int>(output.x), static_cast<int>(output.y));
+
+            const float intoRenderX =
+                plan.width > 0.0f ? static_cast<float>(plan.renderWidth) / plan.width
+                                  : 1.0f;
+            const float intoRenderY =
+                plan.height > 0.0f ? static_cast<float>(plan.renderHeight) / plan.height
+                                   : 1.0f;
+
             UISystem::UpdateWindowPointer(
-                Vec2{m_events.MouseX(), m_events.MouseY()}, Renderer::OutputSize(),
+                Vec2{(m_events.MouseX() - plan.x) * intoRenderX,
+                     (m_events.MouseY() - plan.y) * intoRenderY},
+                Vec2{static_cast<float>(plan.renderWidth),
+                     static_cast<float>(plan.renderHeight)},
                 m_events.MouseLeftDown());
             UISystem::Update(*m_scene, m_camera);
         }
@@ -897,7 +1008,61 @@ void Engine::RenderWorld(Camera& camera, bool includeGizmos, bool editorTints) {
 }
 
 void Engine::RenderFrame() {
+    // ======================================================================
+    //  FREE IS THE PATH THIS ALWAYS TOOK, and it is kept exactly as it was.
+    //
+    //  A project that never asks for a shape renders straight onto the window
+    //  with no off-screen target, no extra copy and nothing to clear - so the
+    //  feature costs those projects nothing, which is the only honest way to
+    //  add a presentation step to an engine that did not have one.
+    // ======================================================================
+    if (Presentation::IsFree()) {
+        RenderWorld(m_camera, /*includeGizmos=*/true);
+        Gizmos::EndFrame(m_clock.RealDeltaSeconds());
+        return;
+    }
+
+    const Vec2 output = Renderer::OutputSize();
+    const Presentation::Plan plan = Presentation::PlanFor(
+        static_cast<int>(output.x), static_cast<int>(output.y));
+
+    // Resized rather than recreated when the window changes, which is what
+    // RenderTarget::Resize already does - it keeps the texture when the size
+    // has not moved, so this is free on the overwhelming majority of frames.
+    if (!m_presentTarget.Resize(plan.renderWidth, plan.renderHeight)) {
+        // COULD NOT MAKE ONE, so the game is drawn the old way rather than
+        // not at all. A letterbox that fails should cost the black bars, not
+        // the picture.
+        ENGINE_LOG_ERROR(Channels::kRender,
+                         "could not create the {}x{} presentation target, so the "
+                         "game is drawn without one",
+                         plan.renderWidth, plan.renderHeight);
+        RenderWorld(m_camera, /*includeGizmos=*/true);
+        Gizmos::EndFrame(m_clock.RealDeltaSeconds());
+        return;
+    }
+
+    // ---- the game, at its own shape, off-screen --------------------------
+    //
+    // RenderWorld takes the camera's viewport from Renderer::OutputSize(),
+    // which follows the bound target - so pinning the target's size is what
+    // pins how much world the camera sees. That is the whole mechanism; see
+    // render/Presentation.h.
+    Renderer::SetRenderTarget(&m_presentTarget);
     RenderWorld(m_camera, /*includeGizmos=*/true);
+    Renderer::SetRenderTarget(nullptr);
+
+    // ---- and onto the window, with black in the margins ------------------
+    //
+    // CLEARED FIRST, and only when there is something to clear. Black rather
+    // than the engine's usual dark grey: the margins are not part of the
+    // game, and a player should not be able to tell them from the edge of a
+    // dark level by their colour.
+    if (plan.letterboxed) {
+        Renderer::Clear(Color{0, 0, 0, 255});
+    }
+    Renderer::DrawRenderTarget(m_presentTarget, Vec2{plan.x, plan.y},
+                               Vec2{plan.x + plan.width, plan.y + plan.height});
 
     // The standalone game has exactly one view, so it also ages the gizmo
     // queue here. The editor does this itself, after BOTH of its views have

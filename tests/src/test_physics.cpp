@@ -367,10 +367,15 @@ void Step(float dt = 1.0f / 60.0f) {
 }
 
 // Attaching a collider and setting its size, which every case below wants.
+//
+// STILL TAKES HALF-EXTENTS, because sixty-odd cases below are written in them
+// and what those cases are about is contacts, mass and solver behaviour - not
+// how a size is spelled. SetSize is the full width and height, so the one
+// doubling lives here instead of in every call.
 eng::BoxColliderComponent* AddBox(eng::Entity& entity, eng::Vec2 halfExtents) {
     auto* box = static_cast<eng::BoxColliderComponent*>(
         entity.AddComponent(eng::BoxColliderComponent::kTypeName));
-    box->SetHalfExtents(halfExtents);
+    box->SetSize(halfExtents * 2.0f);
     return box;
 }
 
@@ -2983,4 +2988,481 @@ TEST_CASE("a corner hit reports a radial normal however small the radius") {
     // the crossing is at x = -2.4 and the normal is (-0.8, -0.6).
     CHECK(bigHit.normal.x == doctest::Approx(-0.8f).epsilon(0.01));
     CHECK(bigHit.normal.y == doctest::Approx(-0.6f).epsilon(0.01));
+}
+
+// ===========================================================================
+//  A COLLIDER'S OWN SCALE: a fraction of the thing it is on.
+//
+//  The size a collider is authored with is no longer pixels. It is a fraction
+//  of its entity's sprite - or of one world unit when there is no sprite -
+//  and every shape reads it the same way. See physics/Collider.h.
+//
+//  Two things these cases are really guarding. First, that the five shapes do
+//  not drift apart about what a scale means, which is the failure a shared
+//  ScaledSize() exists to prevent. Second, that the eighty-odd pixel-spelled
+//  colliders already written into this project's scenes still load and still
+//  mean the same shape - a migration nobody will notice going wrong, because
+//  a collider that is quietly the wrong size still collides.
+// ===========================================================================
+
+namespace {
+
+// A sprite of a stated size, with no texture: RenderedSize() takes the
+// authored pixel size and never looks for an image, which is what lets these
+// cases run without a renderer.
+eng::SpriteComponent* AddSizedSprite(eng::Entity& entity, eng::Vec2 size) {
+    auto* sprite = static_cast<eng::SpriteComponent*>(
+        entity.AddComponent(eng::SpriteComponent::kTypeName));
+
+    eng::Json    node;
+    node["texture"] = "textures/none.png";
+    node["size"]    = eng::Json::array({size.x, size.y});
+    std::string error;
+    sprite->Deserialize(node, error);
+    return sprite;
+}
+
+template <typename T>
+T* AddCollider(eng::Entity& entity) {
+    return static_cast<T*>(entity.AddComponent(T::kTypeName));
+}
+
+// Deserializes one collider from literal JSON, the way a scene file reaches
+// it - which is the only path the old pixel spellings travel.
+template <typename T>
+T* AddFromJson(eng::Entity& entity, const eng::Json& node) {
+    T*          collider = AddCollider<T>(entity);
+    std::string error;
+    REQUIRE_MESSAGE(collider->Deserialize(node, error), error);
+    return collider;
+}
+
+} // namespace
+
+TEST_CASE("a collider with no sprite is one world unit across") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Marker", eng::Vec2{0.0f, 0.0f});
+
+    // A trigger volume, a region marker, a bullet's hitbox - all perfectly
+    // ordinary colliders on entities with no picture. One unit is the size
+    // they get, and it is the same promise the editor makes when it creates
+    // an object.
+    auto* box = AddCollider<eng::BoxColliderComponent>(*entity);
+
+    CHECK(box->Scale().x == doctest::Approx(1.0f));
+    CHECK(box->Scale().y == doctest::Approx(1.0f));
+    CHECK(box->ReferenceSize().x == doctest::Approx(eng::WorldUnit::Pixels()));
+    CHECK(box->Size().x == doctest::Approx(32.0f));
+    CHECK(box->Size().y == doctest::Approx(32.0f));
+}
+
+TEST_CASE("a collider is a fraction of the sprite it shares an entity with") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+
+    auto* box = AddCollider<eng::BoxColliderComponent>(*entity);
+
+    // {1,1} is the sprite, exactly. That is the only answer that is not a
+    // surprise to somebody looking at the Scene view.
+    CHECK(box->Size().x == doctest::Approx(24.0f));
+    CHECK(box->Size().y == doctest::Approx(48.0f));
+
+    box->SetScale(eng::Vec2{0.5f, 1.0f});
+    CHECK(box->Size().x == doctest::Approx(12.0f));
+    CHECK(box->Size().y == doctest::Approx(48.0f));
+}
+
+TEST_CASE("resizing the sprite moves the collider with it") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    eng::SpriteComponent* sprite = AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+
+    auto* box = AddCollider<eng::BoxColliderComponent>(*entity);
+    REQUIRE(box->Size().x == doctest::Approx(24.0f));
+
+    // THE WHOLE POINT OF A FRACTION. Redraw the art at twice the size and the
+    // collider still matches it, with nothing retyped and nothing to forget.
+    // A cached pixel size is the one thing able to disagree here, which is
+    // why there is not one.
+    eng::Json    node;
+    node["texture"] = "textures/none.png";
+    node["size"]    = eng::Json::array({48.0f, 96.0f});
+    std::string error;
+    REQUIRE(sprite->Deserialize(node, error));
+
+    CHECK(box->Size().x == doctest::Approx(48.0f));
+    CHECK(box->Size().y == doctest::Approx(96.0f));
+}
+
+TEST_CASE("a sprite with no picture at all is not a size") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Broken", eng::Vec2{0.0f, 0.0f});
+
+    // A texture that failed to load, or a sprite added a second before its
+    // path was typed, measures nothing. Falling through to zero would make
+    // the collider collide with nothing, silently - the worst way for a
+    // missing file to announce itself.
+    auto* sprite = static_cast<eng::SpriteComponent*>(
+        entity->AddComponent(eng::SpriteComponent::kTypeName));
+    REQUIRE(sprite->RenderedSize().x == doctest::Approx(0.0f));
+
+    auto* box = AddCollider<eng::BoxColliderComponent>(*entity);
+    CHECK(box->Size().x == doctest::Approx(eng::WorldUnit::Pixels()));
+    CHECK(box->Size().y == doctest::Approx(eng::WorldUnit::Pixels()));
+}
+
+TEST_CASE("every shape reads one scale the same way") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Thing", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{40.0f, 20.0f});
+
+    SUBCASE("a box is the scaled box") {
+        auto* box = AddCollider<eng::BoxColliderComponent>(*entity);
+        box->SetScale(eng::Vec2{0.5f, 2.0f});
+        CHECK(box->Size().x == doctest::Approx(20.0f));
+        CHECK(box->Size().y == doctest::Approx(40.0f));
+    }
+
+    SUBCASE("a circle takes the longer side, because there is no ellipse test") {
+        auto* circle = AddCollider<eng::CircleColliderComponent>(*entity);
+        // 40 x 20 at {1,1}: the diameter is 40, so the radius is 20.
+        CHECK(circle->Radius() == doctest::Approx(20.0f));
+        circle->SetScale(eng::Vec2{0.5f, 0.5f});
+        CHECK(circle->Radius() == doctest::Approx(10.0f));
+    }
+
+    SUBCASE("a capsule starts half as wide as it is tall") {
+        auto* capsule = AddCollider<eng::CapsuleColliderComponent>(*entity);
+        // The one default that is not {1,1}, and the exception is the point:
+        // a capsule the full size of the sprite both ways IS a circle.
+        CHECK(capsule->Scale().x == doctest::Approx(0.5f));
+        CHECK(capsule->Scale().y == doctest::Approx(1.0f));
+        CHECK(capsule->Size().x == doctest::Approx(20.0f));
+        CHECK(capsule->Size().y == doctest::Approx(20.0f));
+    }
+
+    SUBCASE("a polygon's points are fractions of the same box") {
+        auto* poly = AddCollider<eng::PolygonColliderComponent>(*entity);
+        REQUIRE(poly->Points().size() == 4);
+
+        // A unit square in fractions, which is the sprite in pixels.
+        CHECK(poly->Points()[0].x == doctest::Approx(-0.5f));
+        CHECK(poly->LocalSize().x == doctest::Approx(40.0f));
+        CHECK(poly->LocalSize().y == doctest::Approx(20.0f));
+
+        poly->SetScale(eng::Vec2{0.5f, 1.0f});
+        CHECK(poly->LocalSize().x == doctest::Approx(20.0f));
+        CHECK(poly->LocalSize().y == doctest::Approx(20.0f));
+    }
+
+    SUBCASE("an edge spans the same box") {
+        auto* edge = AddCollider<eng::EdgeColliderComponent>(*entity);
+        REQUIRE(edge->Points().size() == 2);
+        CHECK(edge->LocalSize().x == doctest::Approx(40.0f));
+
+        // THE SHAPE THAT BENEFITS MOST. A hillside drawn as a dozen points is
+        // retuned by one number instead of twenty-four.
+        edge->SetScale(eng::Vec2{2.0f, 1.0f});
+        CHECK(edge->LocalSize().x == doctest::Approx(80.0f));
+    }
+}
+
+TEST_CASE("the collider's scale and the entity's scale multiply") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+    entity->Transform().SetLocalScale(eng::Vec2{2.0f, 0.5f});
+
+    auto* box = AddCollider<eng::BoxColliderComponent>(*entity);
+    box->SetScale(eng::Vec2{0.5f, 1.0f});
+
+    // The two are different statements and neither replaces the other. The
+    // collider's scale says how it relates to the picture - half as wide. The
+    // transform's says how big the whole entity is drawn.
+    const eng::AABB bounds = box->WorldBounds();
+    CHECK((bounds.max.x - bounds.min.x) == doctest::Approx(12.0f * 2.0f));
+    CHECK((bounds.max.y - bounds.min.y) == doctest::Approx(48.0f * 0.5f));
+}
+
+TEST_CASE("the world unit is what a collider falls back to, and it is a setting") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Marker", eng::Vec2{0.0f, 0.0f});
+    auto*        box    = AddCollider<eng::BoxColliderComponent>(*entity);
+
+    const float original = eng::WorldUnit::Pixels();
+    eng::WorldUnit::SetPixels(16.0f);
+    CHECK(box->Size().x == doctest::Approx(16.0f));
+
+    // CLAMPED, not trusted. Everything that uses a world unit divides by it,
+    // and this one is read from a file a person edits.
+    eng::WorldUnit::SetPixels(0.0f);
+    CHECK(eng::WorldUnit::Pixels() >= 1.0f);
+
+    eng::WorldUnit::SetPixels(original);
+}
+
+// ---------------------------------------------------------------------------
+//  THE OLD PIXEL SPELLINGS, which this project's own scenes are full of.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a box written in half-extents still loads, and means the same shape") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+
+    eng::Json node;
+    node["halfExtents"] = eng::Json::array({12.0f, 24.0f});
+    auto* box = AddFromJson<eng::BoxColliderComponent>(*entity, node);
+
+    // 12 x 24 half-extents on a 24 x 48 sprite is exactly the sprite, so the
+    // conversion lands on {1,1} - which is also the clearest possible
+    // demonstration of what the new spelling is for.
+    CHECK(box->Size().x == doctest::Approx(24.0f));
+    CHECK(box->Size().y == doctest::Approx(48.0f));
+    CHECK(box->Scale().x == doctest::Approx(1.0f));
+    CHECK(box->Scale().y == doctest::Approx(1.0f));
+}
+
+TEST_CASE("the conversion waits for an entity whole enough to measure") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+
+    // THE ORDER IN THE FILE MUST NOT MATTER. A scene lists components in
+    // whatever order they were written, and a collider is routinely read
+    // BEFORE the sprite beside it has a size. Converting inside Deserialize
+    // would measure this collider against an entity that is still half-built
+    // and the answer would depend on two lines' order.
+    eng::Json node;
+    node["halfExtents"] = eng::Json::array({12.0f, 24.0f});
+    auto* box = AddFromJson<eng::BoxColliderComponent>(*entity, node);
+
+    // The sprite arrives afterwards, as it would from a scene file.
+    AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+
+    CHECK(box->Size().x == doctest::Approx(24.0f));
+    CHECK(box->Size().y == doctest::Approx(48.0f));
+}
+
+TEST_CASE("the Unity size spelling still loads too") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Bullet", eng::Vec2{0.0f, 0.0f});
+
+    eng::Json node;
+    node["size"] = eng::Json::array({12.0f, 6.0f});
+    auto* box = AddFromJson<eng::BoxColliderComponent>(*entity, node);
+
+    // No sprite, so the reference is one unit: 12 x 6 pixels is 0.375 x
+    // 0.1875 of a 32 x 32 unit, and comes back out as the same pixels.
+    CHECK(box->Size().x == doctest::Approx(12.0f));
+    CHECK(box->Size().y == doctest::Approx(6.0f));
+}
+
+TEST_CASE("a scale in the file beats a stale pixel size beside it") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Thing", eng::Vec2{0.0f, 0.0f});
+
+    // A file with a scale is a current one, so its pixels - left behind by
+    // some older tool - are stale. The two must not fight over which
+    // describes the collider.
+    eng::Json node;
+    node["scale"]       = eng::Json::array({2.0f, 2.0f});
+    node["halfExtents"] = eng::Json::array({4.0f, 4.0f});
+    auto* box = AddFromJson<eng::BoxColliderComponent>(*entity, node);
+
+    CHECK(box->Size().x == doctest::Approx(64.0f));
+}
+
+TEST_CASE("a circle written as a radius still loads") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Fence", eng::Vec2{0.0f, 0.0f});
+
+    eng::Json node;
+    node["radius"] = 7.0f;
+    auto* circle = AddFromJson<eng::CircleColliderComponent>(*entity, node);
+
+    CHECK(circle->Radius() == doctest::Approx(7.0f));
+}
+
+TEST_CASE("a negative radius is still refused, as it always was") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Bad", eng::Vec2{0.0f, 0.0f});
+    auto* circle = AddCollider<eng::CircleColliderComponent>(*entity);
+
+    // It was a refusal when the radius was the only size a circle had.
+    // Quietly accepting it now would make a file that used to be rejected
+    // load as a collider of nothing.
+    eng::Json node;
+    node["radius"] = -1.0f;
+    std::string error;
+    CHECK_FALSE(circle->Deserialize(node, error));
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("a capsule written in pixels still loads") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Hero", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{32.0f, 64.0f});
+
+    eng::Json node;
+    node["size"] = eng::Json::array({16.0f, 64.0f});
+    auto* capsule = AddFromJson<eng::CapsuleColliderComponent>(*entity, node);
+
+    CHECK(capsule->Size().x == doctest::Approx(16.0f));
+    CHECK(capsule->Size().y == doctest::Approx(64.0f));
+    CHECK(capsule->Scale().x == doctest::Approx(0.5f));
+}
+
+TEST_CASE("a point list written in pixels still loads") {
+    SceneFixture fixture;
+
+    SUBCASE("a polygon") {
+        eng::Entity* entity = fixture.Add("Ramp", eng::Vec2{0.0f, 0.0f});
+        AddSizedSprite(*entity, eng::Vec2{64.0f, 32.0f});
+
+        eng::Json node;
+        node["points"] = eng::Json::array({eng::Json::array({-32.0f, -16.0f}),
+                                           eng::Json::array({32.0f, -16.0f}),
+                                           eng::Json::array({32.0f, 16.0f})});
+        auto* poly = AddFromJson<eng::PolygonColliderComponent>(*entity, node);
+
+        // Divided by the 64 x 32 reference: the corners become +/- 0.5.
+        CHECK(poly->Points()[0].x == doctest::Approx(-0.5f));
+        CHECK(poly->Points()[0].y == doctest::Approx(-0.5f));
+        CHECK(poly->LocalSize().x == doctest::Approx(64.0f));
+    }
+
+    SUBCASE("an edge") {
+        eng::Entity* entity = fixture.Add("Ground", eng::Vec2{0.0f, 0.0f});
+
+        eng::Json node;
+        node["points"] = eng::Json::array({eng::Json::array({-32.0f, 0.0f}),
+                                           eng::Json::array({32.0f, 0.0f})});
+        auto* edge = AddFromJson<eng::EdgeColliderComponent>(*entity, node);
+
+        // No sprite: 32 pixels is one unit, so the span is 2 units wide and
+        // still 64 pixels long.
+        CHECK(edge->Points()[0].x == doctest::Approx(-1.0f));
+        CHECK(edge->LocalSize().x == doctest::Approx(64.0f));
+    }
+}
+
+TEST_CASE("setting a size on a collider still holding old pixels does not lose it") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Thing", eng::Vec2{0.0f, 0.0f});
+
+    eng::Json node;
+    node["halfExtents"] = eng::Json::array({4.0f, 4.0f});
+    auto* box = AddFromJson<eng::BoxColliderComponent>(*entity, node);
+
+    // The conversion is still pending here. Without resolving first, it would
+    // fire on the next read and overwrite what was just set.
+    box->SetScale(eng::Vec2{3.0f, 3.0f});
+    CHECK(box->Size().x == doctest::Approx(96.0f));
+    CHECK(box->Scale().x == doctest::Approx(3.0f));
+}
+
+// ---------------------------------------------------------------------------
+//  WHAT GETS WRITTEN BACK OUT
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a collider saves its scale and not its pixels") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Player", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+
+    eng::Json loaded;
+    loaded["halfExtents"] = eng::Json::array({12.0f, 24.0f});
+    auto* box = AddFromJson<eng::BoxColliderComponent>(*entity, loaded);
+
+    eng::Json saved;
+    REQUIRE(box->Serialize(saved));
+
+    CHECK(saved.contains("scale"));
+    CHECK_FALSE(saved.contains("halfExtents"));
+    CHECK_FALSE(saved.contains("size"));
+    CHECK(saved["scale"][0].get<float>() == doctest::Approx(1.0f));
+}
+
+TEST_CASE("a circle saves its scale and not its radius") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Ball", eng::Vec2{0.0f, 0.0f});
+    auto*        circle = AddCollider<eng::CircleColliderComponent>(*entity);
+    circle->SetRadius(8.0f);
+
+    eng::Json saved;
+    REQUIRE(circle->Serialize(saved));
+    CHECK(saved.contains("scale"));
+    CHECK_FALSE(saved.contains("radius"));
+}
+
+TEST_CASE("the scale is written even when it is the default") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Ramp", eng::Vec2{0.0f, 0.0f});
+    auto*        poly   = AddCollider<eng::PolygonColliderComponent>(*entity);
+
+    // ITS ABSENCE IS WHAT MEANS OLD FILE. A polygon whose scale happened to
+    // be {1,1} and so had the key omitted would be read back as pixels and
+    // have its outline divided by the reference a second time - shrinking by
+    // a factor of 32 every time the scene was saved and loaded.
+    eng::Json saved;
+    REQUIRE(poly->Serialize(saved));
+    REQUIRE(saved.contains("scale"));
+
+    eng::Entity* copy = fixture.Add("Copy", eng::Vec2{0.0f, 0.0f});
+    auto*        back = AddFromJson<eng::PolygonColliderComponent>(*copy, saved);
+
+    CHECK(back->Points()[0].x == doctest::Approx(-0.5f));
+    CHECK(back->LocalSize().x == doctest::Approx(32.0f));
+}
+
+TEST_CASE("a save and load round trip is stable across every shape") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Thing", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*entity, eng::Vec2{24.0f, 48.0f});
+
+    eng::Entity* copy = fixture.Add("Copy", eng::Vec2{0.0f, 0.0f});
+    AddSizedSprite(*copy, eng::Vec2{24.0f, 48.0f});
+
+    SUBCASE("box") {
+        auto* original = AddCollider<eng::BoxColliderComponent>(*entity);
+        original->SetScale(eng::Vec2{0.75f, 0.25f});
+        eng::Json saved;
+        REQUIRE(original->Serialize(saved));
+        auto* back = AddFromJson<eng::BoxColliderComponent>(*copy, saved);
+        CHECK(back->Size().x == doctest::Approx(original->Size().x));
+        CHECK(back->Size().y == doctest::Approx(original->Size().y));
+    }
+
+    SUBCASE("capsule keeps its half-width default through the trip") {
+        auto* original = AddCollider<eng::CapsuleColliderComponent>(*entity);
+        eng::Json saved;
+        REQUIRE(original->Serialize(saved));
+        auto* back = AddFromJson<eng::CapsuleColliderComponent>(*copy, saved);
+        CHECK(back->Scale().x == doctest::Approx(0.5f));
+        CHECK(back->Size().x == doctest::Approx(12.0f));
+    }
+
+    SUBCASE("edge") {
+        auto* original = AddCollider<eng::EdgeColliderComponent>(*entity);
+        original->SetScale(eng::Vec2{2.0f, 1.0f});
+        eng::Json saved;
+        REQUIRE(original->Serialize(saved));
+        auto* back = AddFromJson<eng::EdgeColliderComponent>(*copy, saved);
+        CHECK(back->Points()[0].x == doctest::Approx(-0.5f));
+        CHECK(back->LocalSize().x == doctest::Approx(48.0f));
+    }
+}
+
+TEST_CASE("a polygon's mass comes out in pixels, not in fractions") {
+    SceneFixture fixture;
+    eng::Entity* entity = fixture.Add("Ramp", eng::Vec2{0.0f, 0.0f});
+    auto*        poly   = AddCollider<eng::PolygonColliderComponent>(*entity);
+
+    // THE ONE PLACE A WRONG CONVERSION WOULD NOT LOOK WRONG. The outline is
+    // in fractions, so its raw area is in fractions SQUARED - a unit square
+    // measures 1. Forgetting to multiply by the scaled box both ways gives an
+    // auto-mass body a thousandth of the weight it should have, and the shape
+    // on screen stays exactly right while it happens.
+    CHECK(poly->Area() == doctest::Approx(32.0f * 32.0f));
 }

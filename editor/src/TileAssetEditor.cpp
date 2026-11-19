@@ -4,6 +4,8 @@
 #include "EditorApp.h"
 #include "TilePaint.h"
 
+#include <engine/core/WorldUnit.h>
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -446,8 +448,27 @@ void TileAssetEditor::DrawCellPreview(const eng::TileAsset& asset) {
     // The cell's own edge.
     draw->AddRect(topLeft, bottomRight, IM_COL32(130, 130, 140, 220));
 
-    const float tileSize = static_cast<float>(std::max(asset.TileSize(), 1));
-    const float scale    = kSize / tileSize;
+    // =======================================================================
+    //  THE SQUARE IS ONE CELL, AND A CELL IS NOT THE ART'S PIXEL SIZE.
+    //
+    //  This used to divide by TileAsset::TileSize(), which is how many pixels
+    //  across the PICTURE is - and a 16-pixel autotile sheet is routinely
+    //  painted on a 32-pixel map, stretched to fill the cell, exactly as it
+    //  is stretched to fill this square a few lines above. Meanwhile a
+    //  collider's LocalSize() is a fraction of a cell, not of the art. So a
+    //  16-pixel tile drew its collider at twice the size it really is, and
+    //  the two were only ever in agreement because most sheets here happen to
+    //  be 32.
+    //
+    //  ONE WORLD UNIT IS THE CELL THIS ASSUMES, and the legend says so,
+    //  because a .otile does not know which map it will be painted on - a
+    //  TilemapComponent's cellSize belongs to the map. The SIZE drawn is
+    //  right whatever that turns out to be, since it is a fraction of the
+    //  cell either way; only an OFFSET, which is in pixels, is read against
+    //  this assumption.
+    // =======================================================================
+    const float cellPixels = eng::WorldUnit::Pixels();
+    const float scale      = kSize / cellPixels;
     const ImVec2 centre(topLeft.x + kSize * 0.5f, topLeft.y + kSize * 0.5f);
 
     // ---- what "collision": "Grid" does, which is the whole cell ------------
@@ -498,8 +519,26 @@ void TileAssetEditor::DrawCellPreview(const eng::TileAsset& asset) {
     ImGui::Dummy(ImVec2(kSize, kSize));
 
     // ---- the legend --------------------------------------------------------
-    ImGui::TextDisabled("one cell at %dpx, drawn %.0fx", asset.TileSize(),
-                        static_cast<double>(scale));
+    // NAMES BOTH NUMBERS, because they are different numbers and conflating
+    // them is what made this preview wrong. The cell is what a collider is a
+    // fraction of; the art is how many pixels the picture has.
+    ImGui::TextDisabled("one cell at %.0fpx (one world unit)",
+                        static_cast<double>(cellPixels));
+    if (asset.HasArt() && asset.TileSize() > 0) {
+        const float art = static_cast<float>(asset.TileSize());
+        ImGui::SameLine();
+        if (art == cellPixels) {
+            ImGui::TextDisabled("- the art is %dpx, so one tile is one cell",
+                                asset.TileSize());
+        } else {
+            ImGui::TextDisabled("- the art is %dpx, stretched %.2gx to fill it",
+                                asset.TileSize(),
+                                static_cast<double>(cellPixels / art));
+        }
+    }
+    ImGui::TextDisabled("a map with its own cellSize scales all of this "
+                        "together - the collider stays the same fraction of "
+                        "the cell");
 
     if (asset.IsSolid()) {
         ImGui::TextColored(ImVec4(0.35f, 0.67f, 1.0f, 1.0f),

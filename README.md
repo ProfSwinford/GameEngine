@@ -181,7 +181,7 @@ components:
   "components": [
     { "type": "TransformComponent", "position": [0, 0] },
     { "type": "SpriteComponent", "texture": "textures/checker_green.bmp" },
-    { "type": "BoxColliderComponent", "halfExtents": [16, 16],
+    { "type": "BoxColliderComponent", "scale": [1, 1],
       "layer": "Player", "collidesWith": ["Pickup", "World"] }
   ]
 }
@@ -381,6 +381,43 @@ properly by its entity's transform:
 | `CapsuleColliderComponent` | a rectangle with round ends — what a character usually wants, because a box catches on every seam in the floor |
 | `PolygonColliderComponent` | up to 8 points, convex |
 | `EdgeColliderComponent` | a chain of segments — ground with no underside to clip through |
+
+### A collider is a fraction of the thing it is on
+
+Every shape is sized by one field, **`scale`**, and it is not pixels:
+
+```json
+{ "type": "CapsuleColliderComponent", "scale": [0.5, 1] }
+```
+
+**1 means the size of the sprite on the entity.** So `[0.5, 1]` is half as
+wide and full height, which is a character capsule, and `[1, 0.25]` is a floor
+strip. You can tell what those are without opening the scene — which "12" and
+"24" never told anybody.
+
+It is also the only spelling that stays true. A collider written in pixels
+stops matching the moment the art is redrawn at a different resolution or the
+sprite is resized in the Inspector, silently, because the collider was never
+really about the pixels. A fraction follows.
+
+**With no sprite on the entity, 1 is one world unit** — 32 pixels, set by
+`units.pixelsPerUnit` in `config/engine.json`. A trigger volume or a bullet's
+hitbox is an ordinary collider on an entity with no picture, and falling back
+to nothing would make it collide with nothing.
+
+Each shape reads the same number its own way: a box is that rectangle; a circle
+takes the **longer** axis as its diameter, because there is no ellipse test; a
+capsule is that size, with its round ends off the short side; and a polygon's
+or an edge's `points` are themselves fractions of it, so `-0.5` is its left
+edge and `0.5` its right. One number resizes a whole twelve-point hillside.
+
+Scenes written before this still load: `halfExtents`, `size`, `radius` and a
+`points` list in pixels are all read, converted once the entity is whole enough
+to measure, and written back as a `scale` the next time the scene is saved.
+
+The entity's own transform scale still applies on top, and the two are
+different statements: the collider's says how it relates to the picture, the
+transform's says how big the whole entity is drawn.
 
 Internally they all become the same thing: a **`ConvexShape`**, which is up to
 eight points plus a radius. A circle is one point with a radius, a capsule is

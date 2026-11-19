@@ -35,9 +35,13 @@
 // ============================================================================
 
 #include "EditorGui.h"
+#include "GameViewLayout.h"
 #include "Panel.h"
 
 #include <engine/Engine.h>
+
+#include <cstddef>
+#include <vector>
 
 namespace editor {
 
@@ -63,9 +67,46 @@ public:
 
     bool HasFocus() const { return m_focused; }
 
+    // ======================================================================
+    //  WHAT SHAPE THE GAME IS RENDERED AT, and how big it is shown.
+    //
+    //  Public because EditorSession writes it down: which aspect you were
+    //  looking through is a fact about the person, like where the Scene view
+    //  was pointing, and resetting it to Free Aspect on every launch would
+    //  make it a setting nobody uses twice. The custom entries especially -
+    //  retyping "1366:768" each session is worse than not having it.
+    //
+    //  See GameViewLayout.h for what the three kinds mean and why the scale
+    //  is a separate number from the resolution.
+    // ======================================================================
+    const std::vector<GameViewMode>& Modes() const { return m_modes; }
+    std::size_t ChosenMode() const { return m_chosen; }
+    void        ChooseMode(std::size_t index);
+    float       Scale() const { return m_scale; }
+    void        SetScale(float scale) { m_scale = scale; }
+
+    // How many of Modes() are built in. Everything at or past it is custom
+    // and can be removed.
+    std::size_t BuiltInCount() const { return m_builtInCount; }
+    void        AddCustomMode(const GameViewMode& mode);
+
 private:
+    // The toolbar row above the picture: the camera, the aspect dropdown and
+    // the scale. Split out because Draw was already the longest function in
+    // the panel and this doubled it.
+    void DrawControls();
+
     eng::RenderTarget m_target;
     bool              m_focused = false;
+
+    std::vector<GameViewMode> m_modes        = BuiltInGameViewModes();
+    std::size_t               m_builtInCount = m_modes.size();
+    std::size_t               m_chosen       = 0;   // Free Aspect
+    float                     m_scale        = kFitScale;
+
+    // What the custom-entry box holds while it is being typed into.
+    char m_customText[32] = "";
+    char m_customError[96] = "";
 };
 
 } // namespace editor

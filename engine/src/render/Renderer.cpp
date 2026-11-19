@@ -151,6 +151,36 @@ RenderTarget* Renderer::CurrentRenderTarget() {
     return g_target;
 }
 
+void Renderer::DrawRenderTarget(const RenderTarget& target, Vec2 min, Vec2 max) {
+    if (g_renderer == nullptr || !target.IsValid()) {
+        return;
+    }
+
+    // ONTO ITSELF IS REFUSED. SDL's behaviour when the source and the
+    // destination are the same texture is undefined, and the way to arrive
+    // here is forgetting to unbind - which produces a picture that looks
+    // almost right on one driver and garbage on another.
+    if (g_target == &target) {
+        ENGINE_LOG_ERROR(Channels::kRender,
+                         "a render target cannot be drawn onto itself - unbind it "
+                         "first with SetRenderTarget(nullptr)");
+        return;
+    }
+
+    auto* texture = static_cast<SDL_Texture*>(target.NativeTexture());
+    if (texture == nullptr) {
+        return;
+    }
+
+    // The whole target, into the rectangle asked for. A null source rect is
+    // SDL's way of saying "all of it", which is what this always wants.
+    const SDL_FRect dst{min.x, min.y, max.x - min.x, max.y - min.y};
+    if (!SDL_RenderTexture(g_renderer, texture, nullptr, &dst)) {
+        ENGINE_LOG_ERROR(Channels::kRender, "could not draw a render target: {}",
+                         SDL_GetError());
+    }
+}
+
 // ---------------------------------------------------------------------------
 //  Shapes
 // ---------------------------------------------------------------------------

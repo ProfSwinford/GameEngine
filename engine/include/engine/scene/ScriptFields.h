@@ -110,6 +110,7 @@
 #include <engine/scene/AnimationRef.h>
 #include <engine/scene/ComponentRef.h>
 #include <engine/scene/EntityRef.h>
+#include <engine/scene/GameObjectRef.h>
 #include <engine/scene/ImageRef.h>
 #include <engine/scene/PrefabRef.h>
 #include <engine/scene/ScriptRef.h>
@@ -208,6 +209,29 @@ enum class ScriptFieldType {
     //
     // APPENDED, for the reason in the note above this enum.
     Image,
+
+    // EITHER OF THE TWO ABOVE IT, chosen by what you drag onto it.
+    //
+    // It is an eng::GameObjectRef, and it is the one field type that does not
+    // decide in C++ what it is pointing at: a thing already in the scene, or
+    // a .oprefab on disk. The Inspector draws one slot and accepts a drag
+    // from the Hierarchy OR from the Assets panel.
+    //
+    // WHY IT IS NOT JUST Entity-OR-Prefab AT THE CALL SITE. The distinction
+    // between "a template" and "a thing that exists" is real and the engine
+    // keeps both types - but it is a fact about STORAGE, and it was leaking
+    // into the script. "What to spawn when the player presses fire" had to
+    // commit in code to which of the two it would be, so changing your mind
+    // meant editing the script rather than dragging something different onto
+    // it. The Inspector is where that decision belongs.
+    //
+    // THIS IS WHAT Unity's `public GameObject` IS, and ScriptBehaviour's
+    // Instantiate takes one: a prefab is built from its file, a scene object
+    // is cloned. See scene/GameObjectRef.h for what a prefab one resolves to
+    // and why that is nothing.
+    //
+    // APPENDED, for the reason in the note above this enum.
+    GameObject,
 };
 
 // "float", "colour" - for error messages and the Inspector's tooltips.
@@ -412,8 +436,9 @@ struct ScriptField {
 
     // Longer than its neighbours, so these two break the column rather than
     // widening the eight above that were fine.
-    AnimationRef* AsAnimationRef() const;
-    ImageRef*     AsImageRef() const;
+    AnimationRef*  AsAnimationRef() const;
+    ImageRef*      AsImageRef() const;
+    GameObjectRef* AsGameObjectRef() const;
 };
 
 namespace fields {
@@ -457,6 +482,10 @@ template <> struct Traits<EntityRef> {
 template <> struct Traits<PrefabRef> {
     static constexpr bool            known = true;
     static constexpr ScriptFieldType type  = ScriptFieldType::Prefab;
+};
+template <> struct Traits<GameObjectRef> {
+    static constexpr bool            known = true;
+    static constexpr ScriptFieldType type  = ScriptFieldType::GameObject;
 };
 // ONE SPECIALIZATION FOR EVERY COMPONENT TYPE, which is why it is partial.
 //

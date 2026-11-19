@@ -2375,3 +2375,131 @@ TEST_CASE("what Add component writes is a component a tile object rebuilds") {
     Scene::SetActive(nullptr);
     TilemapRenderSystem::Clear();
 }
+
+// ===========================================================================
+//  A COLLIDER ON A TILE IS A FRACTION OF THE CELL, NOT OF A WORLD UNIT.
+//
+//  A tile object has no sprite - the map draws the art itself, in bulk - so
+//  ReferenceSize() would otherwise fall through to one world unit. That is
+//  the same number as the cell often enough to hide the difference and not
+//  often enough to rely on: a 16-pixel autotile sheet, or a map with an
+//  explicit cellSize, parts them straight away.
+// ===========================================================================
+
+TEST_CASE("a tile's collider is a fraction of the cell, whatever the cell is") {
+    TileSandbox box("tileobj-cellref");
+
+    // Scale rather than pixels, so the tile says "the full width of a cell,
+    // half its height" and means it at any cell size.
+    box.Write("tiles/ledge.otile",
+              R"({"tileSize":32,"collision":"None","components":[)"
+              R"({"type":"BoxColliderComponent","scale":[1,0.5]}]})");
+
+    ComponentFactory::RegisterBuiltins();
+    CollisionSystem::RegisterComponentTypes();
+    TilemapRenderSystem::RegisterComponentTypes();
+
+    Scene scene;
+    Scene::SetActive(&scene);
+
+    Entity* entity = scene.Get(scene.CreateEntity("Level"));
+    auto*   map    = static_cast<TilemapComponent*>(
+        entity->AddComponent(TilemapComponent::kTypeName));
+
+    const TileId ledge = map->AddToPalette("tiles/ledge.otile");
+    REQUIRE(ledge != kEmptyTile);
+
+    SUBCASE("a cell the size of a world unit") {
+        map->SetCellSize(Vec2{32.0f, 32.0f});
+        map->SetTile(0, 0, ledge);
+        map->SyncTileObjects();
+
+        Entity* object = scene.Get(map->TileObjectAt(0, 0));
+        REQUIRE(object != nullptr);
+        auto* collider = object->Find<BoxColliderComponent>();
+        REQUIRE(collider != nullptr);
+
+        CHECK(collider->Size().x == doctest::Approx(32.0f));
+        CHECK(collider->Size().y == doctest::Approx(16.0f));
+    }
+
+    SUBCASE("a cell that is NOT a world unit") {
+        // THE CASE THAT USED TO BE WRONG. With the reference falling through
+        // to the 32px world unit, this collider stayed 32x16 while its cell
+        // became 64x64 - half the width of the thing it was supposed to be
+        // the full width of.
+        map->SetCellSize(Vec2{64.0f, 64.0f});
+        map->SetTile(0, 0, ledge);
+        map->SyncTileObjects();
+
+        Entity* object = scene.Get(map->TileObjectAt(0, 0));
+        REQUIRE(object != nullptr);
+        auto* collider = object->Find<BoxColliderComponent>();
+        REQUIRE(collider != nullptr);
+
+        CHECK(collider->Size().x == doctest::Approx(64.0f));
+        CHECK(collider->Size().y == doctest::Approx(32.0f));
+    }
+
+    SUBCASE("a non-square cell is honoured per axis") {
+        map->SetCellSize(Vec2{48.0f, 16.0f});
+        map->SetTile(0, 0, ledge);
+        map->SyncTileObjects();
+
+        Entity* object = scene.Get(map->TileObjectAt(0, 0));
+        REQUIRE(object != nullptr);
+        auto* collider = object->Find<BoxColliderComponent>();
+        REQUIRE(collider != nullptr);
+
+        CHECK(collider->Size().x == doctest::Approx(48.0f));
+        CHECK(collider->Size().y == doctest::Approx(8.0f));
+    }
+
+    scene.Unload();
+    Scene::SetActive(nullptr);
+    TilemapRenderSystem::Clear();
+}
+
+TEST_CASE("an older tile written in pixels keeps the pixels it asked for") {
+    // THE MIGRATION MUST NOT BE MEASURED AGAINST THE CELL. A .otile written
+    // before the scale says "size: [32, 8]" and those pixels were authored
+    // against a world unit, not against whatever map the tile ends up on.
+    // Resolving them before the cell size is announced is what keeps a fence
+    // that worked yesterday the same size today.
+    TileSandbox box("tileobj-legacypx");
+    box.Write("tiles/old.otile",
+              R"({"tileSize":32,"collision":"None","components":[)"
+              R"({"type":"BoxColliderComponent","size":[32,8]}]})");
+
+    ComponentFactory::RegisterBuiltins();
+    CollisionSystem::RegisterComponentTypes();
+    TilemapRenderSystem::RegisterComponentTypes();
+
+    Scene scene;
+    Scene::SetActive(&scene);
+
+    Entity* entity = scene.Get(scene.CreateEntity("Level"));
+    auto*   map    = static_cast<TilemapComponent*>(
+        entity->AddComponent(TilemapComponent::kTypeName));
+
+    const TileId old = map->AddToPalette("tiles/old.otile");
+    REQUIRE(old != kEmptyTile);
+
+    map->SetCellSize(Vec2{64.0f, 64.0f});
+    map->SetTile(0, 0, old);
+    map->SyncTileObjects();
+
+    Entity* object = scene.Get(map->TileObjectAt(0, 0));
+    REQUIRE(object != nullptr);
+    auto* collider = object->Find<BoxColliderComponent>();
+    REQUIRE(collider != nullptr);
+
+    // Still 32 x 8 pixels, NOT 64 x 16: the pixels were pinned against the
+    // world unit they were written against, before the cell had its say.
+    CHECK(collider->Size().x == doctest::Approx(32.0f));
+    CHECK(collider->Size().y == doctest::Approx(8.0f));
+
+    scene.Unload();
+    Scene::SetActive(nullptr);
+    TilemapRenderSystem::Clear();
+}

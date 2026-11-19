@@ -5,6 +5,7 @@
 #include "EditorSession.h"
 
 #include "EditorApp.h"
+#include "panels/GamePanel.h"
 #include "panels/ScenePanel.h"
 
 #include <engine/Engine.h>
@@ -34,7 +35,7 @@ void ReadVec2(const eng::Json& node, const char* key, eng::Vec2& out) {
 
 } // namespace
 
-void EditorSession::Restore(ScenePanel* scenePanel) {
+void EditorSession::Restore(ScenePanel* scenePanel, GamePanel* gamePanel) {
     if (!eng::FileSystem::Exists(kVirtualPath)) {
         return;   // first run on this machine
     }
@@ -126,9 +127,71 @@ void EditorSession::Restore(ScenePanel* scenePanel) {
             }
         }
     }
+
+    // ---- what shape the Game view was rendering at ------------------------
+    if (gamePanel != nullptr) {
+        const auto view = document.find("gameView");
+        if (view != document.end() && view->is_object()) {
+            // ==============================================================
+            //  THE CUSTOM ENTRIES COME BACK FIRST, because the remembered
+            //  choice may BE one of them - and an index into a list that has
+            //  not been rebuilt yet would select the wrong row, or none.
+            //
+            //  Each is re-parsed from its text rather than restored from a
+            //  kind and two numbers, so there is one piece of code deciding
+            //  what "16:9" means and the file holds what somebody typed.
+            // ==============================================================
+            if (const auto custom = view->find("custom");
+                custom != view->end() && custom->is_array()) {
+                for (const eng::Json& entry : *custom) {
+                    if (!entry.is_string()) {
+                        continue;
+                    }
+                    GameViewMode made;
+                    std::string  why;
+                    if (ParseGameViewMode(entry.get<std::string>(), made, why)) {
+                        gamePanel->AddCustomMode(made);
+                    }
+                }
+            }
+
+            // ==============================================================
+            //  AND THE CHOICE BY LABEL, NOT BY INDEX.
+            //
+            //  An index is a position in a list this engine's own built-ins
+            //  occupy, so adding a preset in a later version would silently
+            //  shift every project's remembered choice by one - and the only
+            //  symptom would be the Game view opening on 4:3 when it used to
+            //  open on 16:9. The label survives that.
+            // ==============================================================
+            if (const auto chosen = view->find("mode");
+                chosen != view->end() && chosen->is_string()) {
+                const std::string label = chosen->get<std::string>();
+                const auto&       modes = gamePanel->Modes();
+                for (std::size_t i = 0; i < modes.size(); ++i) {
+                    if (modes[i].label == label) {
+                        gamePanel->ChooseMode(i);
+                        break;
+                    }
+                }
+            }
+
+            if (const auto scale = view->find("scale");
+                scale != view->end() && scale->is_number()) {
+                const float value = scale->get<float>();
+                // Negative would draw nothing; absurdly large would put the
+                // picture so far off the panel there is no way back to it
+                // except by editing this file. Zero IS meaningful - it is
+                // "fit" - so the floor is zero rather than something above it.
+                if (value >= 0.0f && value <= 8.0f) {
+                    gamePanel->SetScale(value);
+                }
+            }
+        }
+    }
 }
 
-void EditorSession::Save(ScenePanel* scenePanel) {
+void EditorSession::Save(ScenePanel* scenePanel, GamePanel* gamePanel) {
     eng::Json document = eng::Json::object();
     document["_comment"] =
         "Where the editor was when it last closed, so it can open there again. "
@@ -153,6 +216,29 @@ void EditorSession::Save(ScenePanel* scenePanel) {
         view["position"]         = {position.x, position.y};
         view["zoom"]             = scenePanel->Camera().Zoom();
         document["sceneView"]    = view;
+    }
+
+    if (gamePanel != nullptr) {
+        eng::Json view = eng::Json::object();
+
+        const auto& modes = gamePanel->Modes();
+        if (gamePanel->ChosenMode() < modes.size()) {
+            view["mode"] = modes[gamePanel->ChosenMode()].label;
+        }
+        view["scale"] = gamePanel->Scale();
+
+        // ONLY THE CUSTOM ONES. Writing the built-ins down would freeze this
+        // version's list into every project, so a preset added later would
+        // not appear in a project that had been opened once.
+        eng::Json custom = eng::Json::array();
+        for (std::size_t i = gamePanel->BuiltInCount(); i < modes.size(); ++i) {
+            custom.push_back(modes[i].label);
+        }
+        if (!custom.empty()) {
+            view["custom"] = std::move(custom);
+        }
+
+        document["gameView"] = std::move(view);
     }
 
     std::string error;

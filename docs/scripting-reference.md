@@ -158,7 +158,7 @@ The vocabulary is different in two places and the same everywhere else:
 
 | Unity | Here | Why |
 |---|---|---|
-| `GameObject` | `eng::Entity` | A name, an id and a bag of components - the same model, the older name for it. |
+| `GameObject` | `eng::GameObjectRef` | Unity's serialized `GameObject` field: a slot that takes a scene object **or** a prefab. Converts to `eng::Entity*`, so `GameObject self = Owner();` still works. The thing itself is an `eng::Entity`. |
 | `Transform` | `eng::Transform2D` | Two dimensions, so one rotation angle rather than a quaternion. |
 | `MonoBehaviour` | `eng::ScriptBehaviour` | You inherit it and write only the hooks you want. |
 | `GetComponent<T>()` | `Find<T>()` | House rule: a lookup that can come back empty is `Find`, never `Get`. |
@@ -1118,7 +1118,8 @@ One comment line, immediately above, starting with the bracket: a blank line or
 a banner line in between breaks it. A marker on the declaration's own line wins.
 
 Supported: `float`, `int`, `bool`, `std::string`, `eng::Vec2`, `eng::Color`,
-`eng::EntityRef`, `eng::PrefabRef`, `eng::AnimationRef`, `eng::ImageRef`, and
+`eng::EntityRef`, `eng::PrefabRef`, `GameObject`, `eng::AnimationRef`,
+`eng::ImageRef`, and
 the two typed references — `eng::ComponentRef<T>` for a component the engine
 defines and `eng::ScriptRef<T>` for another script — **or a fixed-size array of
 any of them**. Anything else is left out, and the Console says which and why.
@@ -1187,6 +1188,50 @@ a string, an `ImageRef`, an `AnimationRef`, an `[image]`/`[animation]` slot or a
 `PrefabRef`, and an entity from the Hierarchy onto an `EntityRef`. A plain
 string accepts **any** kind of asset, because nothing can know which kind it
 wanted.
+
+A `GameObject` slot is the only one that takes **both**: a prefab from the
+Assets panel or an object from the Hierarchy, whichever you drag onto it.
+
+### A GameObject is either kind of thing
+
+```cpp
+GameObject thing = nullptr;   // or: eng::GameObjectRef thing;
+```
+
+One slot, and what you drop on it decides what it is. `Instantiate(thing)`
+then does the right thing with whichever half it holds — **a prefab is built
+from its file, and a scene object is CLONED**, which is Unity's behaviour for
+`Instantiate(someSceneObject)` and what makes the two interchangeable at the
+call site.
+
+That is the whole point of the type. "What to spawn when the player presses
+fire" used to commit in C++ to being a prefab or an object already in the
+level, because `eng::PrefabRef` and `eng::EntityRef` are different types —
+so changing your mind meant editing the script rather than dragging something
+else on. The decision belongs in the Inspector.
+
+**`GameObject` used to be `typedef eng::Entity*`**, and a pointer is the one
+thing the Inspector cannot draw: an address has nothing to put in a box, so
+the exposer skipped it and said so. `GameObject target;` was a variable you
+could declare and never see. It is a value now, and old code is unaffected —
+it converts to `eng::Entity*` implicitly and has `operator->`, so
+`GameObject self = Owner();`, `self->Transform()` and `if (self != nullptr)`
+all mean what they meant.
+
+**A prefab one resolves to nothing.** `Target()` is null until you
+instantiate it, because a prefab is not in the scene — there is no transform
+to read and no position to ask for. `IsPrefab()` is there so a script that
+cares can ask. Pretending otherwise would mean silently building a copy every
+time somebody read a position.
+
+In a scene file it is written as `{ "entity": "Door" }` or
+`{ "prefab": "prefabs/bullet.oprefab" }`. The kind is written down rather than
+inferred: a rule like "does it end in .oprefab" would work until somebody
+named an entity after a file, and the failure would be a spawner that silently
+spawns nothing. A bare string is accepted on read as an entity name, which is
+what somebody hand-editing a scene will type.
+
+`assets/scripts/Spawner2.cpp` is the worked example.
 
 A **constrained** reference — a `ComponentRef<T>`, a `ScriptRef<T>`, a bare
 script name, or an `EntityRef` with a `[TypeName]` marker — only takes an
@@ -1862,6 +1907,70 @@ Debug::IsEditorAttached();
 
 ---
 
+## Surviving a scene change
+
+```cpp
+void OnStart() { DontDestroyOnLoad(); }
+```
+
+This entity, its components, its scripts **with whatever they were holding**,
+and its children all stay as they are while the scene around them is replaced.
+Not rebuilt from a file on the other side — the same objects, the same
+behaviour instance, the same `EntityId`. A counter goes on counting; a
+coroutine goes on running.
+
+```cpp
+DontDestroyOnLoad();            // this entity
+DontDestroyOnLoad(someId);      // another one
+DestroyOnLoad(someId);          // take it back
+```
+
+**Only a scene change carries it.** That is narrower than it sounds, and the
+list is the whole of it:
+
+| | |
+| --- | --- |
+| loading another scene | **keeps** it. This is what the feature is for |
+| pressing **Stop** in the editor | destroys it. Play mode puts the authored scene back, and an object outliving that would leave the editor holding something no scene file describes |
+| **New Scene** | destroys it. "New" means nothing carried |
+| closing the project, quitting | destroys it |
+
+**Children come too**, and only the root needs marking. A marked *child* of an
+unmarked parent is **detached** and survives as a root, keeping its world
+position — Unity sidesteps that case by only honouring the call on a root;
+this says it out loud in the Console instead of ignoring you.
+
+**A survivor is not written into the scene it arrives in.** It came from
+somewhere else, and saving it there would put a copy in that file — so every
+visit would produce one more of it.
+
+### A singleton still needs the usual check
+
+Load a scene that has its own copy of your manager and there are now two,
+exactly as in Unity. **The name goes on meaning the one that survived**, so
+the newcomer can find it and stand down:
+
+```cpp
+void OnStart() {
+    if (FindEntity("Manager") != gameObject) { DestroySelf(); return; }
+    DontDestroyOnLoad();
+}
+```
+
+Both are reported in the Console while they coexist, because two things with
+one identity is still a mistake worth fixing — a name is how parents and
+references are recorded here.
+
+### When statics are still the right answer
+
+`assets/scripts/GameController.cpp` carries three floats across a scene change
+in file-statics, and still does. Statics carry **state**; they cannot carry a
+position, a child, a coroutine, a collider, or a reference something else
+holds. A fade is a float. An inventory the player is carrying is not — that
+wants the entity to survive.
+
+---
+
 ## A worked example
 
 Shoot a bullet, destroy what it hits, and keep score. Three scripts, and
@@ -2103,7 +2212,7 @@ Said plainly, so that nobody spends an afternoon looking:
 | `LateUpdate` | None. Stage 700 already runs after all gameplay and movement; see `SystemOrder.h`. |
 | `Input.GetKey(KeyCode)` | Deliberately absent - use named actions. |
 | Gamepad, analog axes | Not wired up. `GetAxis` is currently Unity's `GetAxisRaw`. |
-| `DontDestroyOnLoad`, additive scenes | There is exactly one `Scene` in the process. Carry state in a file-static, or save it. |
+| additive scenes | There is exactly one `Scene` in the process. `DontDestroyOnLoad` IS supported — see below — but two scenes cannot be loaded at once. |
 | Object pooling | None. Spawn and destroy. |
 | Physics joints | None. Integrate one constraint by hand against `AddForce`. |
 | `PlayerPrefs` | None. |

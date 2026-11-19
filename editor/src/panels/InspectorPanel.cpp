@@ -10,6 +10,7 @@
 #include "panels/InspectorPanel.h"
 
 #include "AssetDragDrop.h"
+#include "ColliderHandles.h"
 #include "EditorApp.h"
 #include "panels/FieldRow.h"         // row::, which puts a field's name on the left
 #include "panels/HierarchyPanel.h"   // kPayloadEntity, for dropping an entity on a reference
@@ -596,8 +597,12 @@ void DrawPointList(T& collider, int maxPoints, int minPoints) {
     for (std::size_t i = 0; i < points.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
 
+        // 0.01 PER PIXEL OF MOUSE, not 0.5. These are fractions of the
+        // collider's scaled box now - the whole outline spans 1 - so the old
+        // speed moved a point half the shape's width per pixel dragged and
+        // nothing could be placed at all.
         float xy[2] = {points[i].x, points[i].y};
-        if (row::DragFloat2("##point", xy, 0.5f)) {
+        if (row::DragFloat2("##point", xy, 0.01f)) {
             points[i] = eng::Vec2{xy[0], xy[1]};
             changed    = true;
         }
@@ -619,12 +624,14 @@ void DrawPointList(T& collider, int maxPoints, int minPoints) {
         // Two points in the same place have no direction between them, and a
         // shape with a zero-length edge is one the maths has to special-case.
         const eng::Vec2 last = points.empty() ? eng::Vec2{0.0f, 0.0f} : points.back();
-        points.push_back(last + eng::Vec2{8.0f, 0.0f});
+        points.push_back(last + eng::Vec2{0.25f, 0.0f});
         changed = true;
     }
     ImGui::SameLine();
     ImGui::TextDisabled("%d of %d points (minimum %d)",
                         static_cast<int>(points.size()), maxPoints, minPoints);
+    ImGui::TextDisabled("in fractions of the scale above: -0.5 is its left edge, "
+                        "0.5 its right");
 
     if (changed) {
         collider.SetPoints(std::move(points));
@@ -1304,16 +1311,71 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
         EditorState::Get().MarkDirty();
     }
 
+    // =======================================================================
+    //  THE SWITCH FOR THE SCENE VIEW'S HANDLES.
+    //
+    //  ON THE COLLIDER rather than in a toolbar, because that is what it is
+    //  about - and because two colliders on one entity each need their own
+    //  answer. See ColliderHandles.h for why it is a mode at all instead of
+    //  being on whenever something is selected.
+    // =======================================================================
+    if (collider.Shape() != eng::ColliderShape::Tilemap) {
+        const bool editing = ColliderEdit::Get().IsEditing(collider);
+        if (ImGui::Button(editing ? "Done editing shape" : "Edit shape",
+                          ImVec2(150, 0))) {
+            ColliderEdit::Get().Toggle(collider);
+        }
+        ImGui::SameLine();
+        if (editing) {
+            ImGui::TextDisabled("drag the yellow handles in the Scene view");
+        } else {
+            ImGui::TextDisabled("(drag this shape in the Scene view)");
+        }
+    }
+
+    // =======================================================================
+    //  THE SIZE, FOR EVERY SHAPE, IN ONE ROW.
+    //
+    //  A tilemap collider is the exception and gets no row at all: it has no
+    //  shape of its own, it IS the TilemapComponent beside it, so a size
+    //  there would be a control that does nothing.
+    //
+    //  THE PIXELS ARE SHOWN BESIDE IT rather than being the thing typed. A
+    //  fraction is the right thing to author and the wrong thing to have to
+    //  do arithmetic on, so the arithmetic is done here: drag 0.5 and read
+    //  "12 x 48 px" without working out what half of the sprite is.
+    // =======================================================================
+    if (collider.Shape() != eng::ColliderShape::Tilemap) {
+        float scale[2] = {collider.Scale().x, collider.Scale().y};
+        if (row::DragFloat2("Scale", scale, 0.01f, 0.0f, 1000.0f)) {
+            collider.SetScale(eng::Vec2{scale[0], scale[1]});
+            EditorState::Get().MarkDirty();
+        }
+
+        const eng::Vec2 reference = collider.ReferenceSize();
+        const eng::Vec2 pixels    = collider.ScaledSize();
+        ImGui::TextDisabled("= %.0f x %.0f px", static_cast<double>(pixels.x),
+                            static_cast<double>(pixels.y));
+        ImGui::SameLine();
+
+        // NAMES WHAT IT IS A FRACTION OF, because "1" meaning two different
+        // sizes on two entities is exactly the confusion this row could
+        // otherwise cause. The sprite when there is one, one world unit when
+        // there is not.
+        const bool hasSprite =
+            collider.Owner() != nullptr &&
+            collider.Owner()->Find<eng::SpriteComponent>() != nullptr &&
+            collider.Owner()->Find<eng::SpriteComponent>()->RenderedSize().x > 0.0f;
+        ImGui::TextDisabled(hasSprite ? "(1 = the sprite, %.0f x %.0f)"
+                                      : "(no sprite, so 1 = one world unit, %.0f x %.0f)",
+                            static_cast<double>(reference.x),
+                            static_cast<double>(reference.y));
+    }
+
 // The shape-specific fields. Which ones depend on what this actually is.
     switch (collider.Shape()) {
         case eng::ColliderShape::Box: {
             auto& box = static_cast<eng::BoxColliderComponent&>(collider);
-            float half[2] = {box.HalfExtents().x, box.HalfExtents().y};
-            if (row::DragFloat2("Half size", half, 0.5f, 0.0f, 10000.0f)) {
-                box.SetHalfExtents(eng::Vec2{half[0], half[1]});
-                EditorState::Get().MarkDirty();
-            }
-            ImGui::TextDisabled("half the width and half the height");
 
             float edge = box.EdgeRadius();
             if (row::DragFloat("Edge radius", &edge, 0.1f, 0.0f, 1000.0f)) {
@@ -1327,21 +1389,21 @@ void DrawCollider(eng::ColliderComponent& collider, eng::Scene& scene) {
 
         case eng::ColliderShape::Circle: {
             auto& circle = static_cast<eng::CircleColliderComponent&>(collider);
-            float radius = circle.Radius();
-            if (row::DragFloat("Radius", &radius, 0.5f, 0.0f, 10000.0f)) {
-                circle.SetRadius(radius);
-                EditorState::Get().MarkDirty();
-            }
+
+            // SHOWN, NOT TYPED. The scale row above is the size; a radius
+            // field beside it would be a second control for the same number,
+            // and the two would disagree the moment the sprite was resized.
+            // What a circle does need said is that it cannot honour a
+            // non-square scale, because there is no ellipse test - so the
+            // number it actually used is worth printing.
+            ImGui::TextDisabled("radius %.1f px - the LARGER axis wins, because a "
+                                "circle cannot be an ellipse",
+                                static_cast<double>(circle.Radius()));
             break;
         }
 
         case eng::ColliderShape::Capsule: {
             auto& capsule = static_cast<eng::CapsuleColliderComponent&>(collider);
-            float size[2] = {capsule.Size().x, capsule.Size().y};
-            if (row::DragFloat2("Size", size, 0.5f, 0.0f, 10000.0f)) {
-                capsule.SetSize(eng::Vec2{size[0], size[1]});
-                EditorState::Get().MarkDirty();
-            }
 
             int direction = capsule.Direction() == eng::CapsuleDirection::Vertical ? 0 : 1;
             if (row::Combo("Direction", &direction, "Vertical\0Horizontal\0")) {
@@ -1560,15 +1622,53 @@ void DrawCamera(eng::CameraComponent& camera) {
                            active->Priority(), camera.Priority());
     }
 
-    float zoom = camera.Zoom();
-    ImGui::SetNextItemWidth(160.0f);
-    if (row::DragFloat("Zoom", &zoom, 0.01f, 0.01f, 50.0f, "%.2fx")) {
-        camera.SetZoom(zoom);
-        EditorState::Get().MarkDirty();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Bigger is closer in. This is the game's zoom - the Scene "
-                          "view has its own and is not affected.");
+    // =======================================================================
+    //  ZOOM OR FRAME HEIGHT - the same choice the Game view offers, on the
+    //  component that travels with the scene. A frame height of 0 means this
+    //  camera is framed by zoom, which is every camera written before the
+    //  option existed. See scene/CameraComponent.h.
+    // =======================================================================
+    const bool byHeight = camera.FrameHeight() > 0.0f;
+
+    if (byHeight) {
+        float height = camera.FrameHeight();
+        ImGui::SetNextItemWidth(160.0f);
+        if (row::DragFloat("Frame height", &height, 1.0f, 1.0f, 100000.0f,
+                           "%.0f units")) {
+            camera.SetFrameHeight(height);
+            EditorState::Get().MarkDirty();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How much world is visible top to bottom, whatever "
+                              "resolution it is played at. The width follows the "
+                              "aspect ratio.\n\nThis is the one to ship with: a zoom "
+                              "lets a bigger screen see more of the level.");
+        }
+        if (ImGui::SmallButton("frame by zoom instead")) {
+            camera.SetFrameHeight(0.0f);
+            EditorState::Get().MarkDirty();
+        }
+    } else {
+        float zoom = camera.Zoom();
+        ImGui::SetNextItemWidth(160.0f);
+        if (row::DragFloat("Zoom", &zoom, 0.01f, 0.01f, 50.0f, "%.2fx")) {
+            camera.SetZoom(zoom);
+            EditorState::Get().MarkDirty();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Bigger is closer in. This is the game's zoom - the "
+                              "Scene view has its own and is not affected.\n\nA "
+                              "BIGGER SCREEN SHOWS MORE WORLD with a zoom, so every "
+                              "player sees a different amount of the level.");
+        }
+        if (ImGui::SmallButton("frame by height instead")) {
+            // THE SHOT IS KEPT. The live camera already knows what height
+            // this zoom works out to at the current viewport, so asking it is
+            // better than recomputing - and better than picking a round
+            // number that moves the framing.
+            camera.SetFrameHeight(eng::Engine::Get().GetCamera().FrameHeight());
+            EditorState::Get().MarkDirty();
+        }
     }
 
     int priority = camera.Priority();
@@ -2523,6 +2623,123 @@ bool DrawEntityRefField(const eng::ScriptComponent& script,
 //  own type is that the breakage is visible while you are building the level
 //  rather than the first time the gun fires.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  ONE SLOT, EITHER KIND OF THING.
+//
+//  An eng::GameObjectRef holds a scene object OR a prefab, so this target
+//  accepts a drag from the Hierarchy AND a drag from the Assets panel, and
+//  says which it is currently holding. That is the whole feature: the choice
+//  between "a thing in the level" and "a template on disk" belongs here,
+//  where you can change your mind by dragging something else, rather than in
+//  the script's C++ type.
+//
+//  NO CONSTRAINT IS CHECKED, unlike the EntityRef slot below it. A typed
+//  reference refuses a drop that cannot satisfy it; this one is untyped by
+//  definition - it takes anything, because what it is FOR is being either.
+//
+//  THE KIND IS SHOWN BESIDE THE NAME, not left to be inferred from the text.
+//  "Door" and "bullet.oprefab" are distinguishable by eye most of the time
+//  and not always, and the difference decides whether Instantiate clones
+//  something or builds it from a file.
+// ---------------------------------------------------------------------------
+bool DrawGameObjectRefField(const eng::ScriptComponent& script,
+                            const eng::ScriptField&     field) {
+    eng::GameObjectRef* ref = field.AsGameObjectRef();
+    if (ref == nullptr) {
+        return false;
+    }
+
+    bool changed = false;
+
+    // A prefab that is not on disk, or a scene object nothing answers to.
+    // Two different ways of being broken, shown the same way, because the
+    // thing to do about them is the same: drag something else onto it.
+    const bool missing =
+        ref->IsSet() && (ref->IsPrefab() ? !eng::FileSystem::Exists(ref->PrefabPath())
+                                         : ref->Target() == nullptr);
+
+    std::string shown = "(none)";
+    if (ref->IsPrefab()) {
+        const std::string& path  = ref->PrefabPath();
+        const std::size_t  slash = path.find_last_of('/');
+        shown = slash == std::string::npos ? path : path.substr(slash + 1);
+    } else if (ref->IsSceneObject()) {
+        shown = ref->Name();
+    }
+
+    row::Label(FieldRowLabel(field).c_str());
+
+    if (missing) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    } else if (!ref->IsSet()) {
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    }
+
+    // A BUTTON, for the reason the prefab slot gives: it is a drop target,
+    // and dropping onto a word is fiddly in a way nobody blames on the widget.
+    const bool clear = ImGui::Button(shown.c_str(), ImVec2(row::ValueWidth(), 0.0f));
+
+    if (missing || !ref->IsSet()) {
+        ImGui::PopStyleColor();
+    }
+
+    DrawFieldTooltip(script, field);
+
+    if (ImGui::BeginDragDropTarget()) {
+        // THE HIERARCHY'S PAYLOAD IS AN ID, the Assets panel's is a path.
+        // Both are accepted here and nowhere else in this file does one
+        // target take two - which is exactly what makes this type worth
+        // having.
+        if (const ImGuiPayload* dropped =
+                ImGui::AcceptDragDropPayload(kPayloadEntity)) {
+            if (dropped->DataSize == static_cast<int>(sizeof(eng::EntityId))) {
+                eng::EntityId id{};
+                std::memcpy(&id, dropped->Data, sizeof(id));
+                if (eng::Scene* active = eng::Scene::Active()) {
+                    if (const eng::Entity* entity = active->Get(id)) {
+                        ref->SetSceneObject(entity->Name());
+                        changed = true;
+                    }
+                }
+            }
+        } else if (const ImGuiPayload* asset =
+                       ImGui::AcceptDragDropPayload(kPayloadPrefab)) {
+            // Trimmed at the first NUL: the payload is sized to include the
+            // terminator - the same note the prefab slot carries.
+            const std::string path(static_cast<const char*>(asset->Data),
+                                   static_cast<std::size_t>(asset->DataSize));
+            ref->SetPrefab(path.c_str());
+            changed = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (clear && ref->IsSet()) {
+        ref->Clear();
+        changed = true;
+    }
+
+    // WHICH KIND, in words. See the note above this function.
+    if (ref->IsPrefab()) {
+        ImGui::TextDisabled("a prefab - Instantiate builds a new one from the file");
+    } else if (ref->IsSceneObject()) {
+        ImGui::TextDisabled("an object in the scene - Instantiate clones it");
+    } else {
+        ImGui::TextDisabled("drag an object from the Hierarchy or a prefab from "
+                            "Assets");
+    }
+
+    if (missing) {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+                           ref->IsPrefab()
+                               ? "that file is not there any more"
+                               : "nothing in the scene answers to that name");
+    }
+
+    return changed;
+}
+
 bool DrawPrefabRefField(const eng::ScriptComponent& script,
                         const eng::ScriptField&     field) {
     eng::PrefabRef* ref = field.AsPrefabRef();
@@ -2768,6 +2985,9 @@ bool DrawFieldWidget(const eng::ScriptComponent& script,
 
         case eng::ScriptFieldType::Prefab:
             return DrawPrefabRefField(script, field);
+
+        case eng::ScriptFieldType::GameObject:
+            return DrawGameObjectRefField(script, field);
 
         case eng::ScriptFieldType::Animation:
             return DrawAnimationRefField(field);
@@ -3048,6 +3268,25 @@ bool FieldIsAtZero(const eng::ScriptField& field) {
             return part.is_number() && part.get<double>() == 0.0;
         });
     }
+
+    // ======================================================================
+    //  AN OBJECT, WHICH USED TO BE IMPOSSIBLE HERE.
+    //
+    //  The note above this function says "every type comes back as text, a
+    //  number, a boolean or an array of numbers", and that was true until a
+    //  GameObject field arrived: it writes { "entity": ... } or
+    //  { "prefab": ... }, because it is the one reference that cannot say
+    //  which half it is from the text alone.
+    //
+    //  Falling through to `return true` would call a field holding a real
+    //  prefab EMPTY - and this function's whole job is warning about an
+    //  element that is out of sight and still doing work. The empty object an
+    //  unset one writes is the genuinely empty case.
+    // ======================================================================
+    if (value.is_object()) {
+        return value.empty();
+    }
+
     return true;   // nothing recognisable in it, so nothing to warn about
 }
 
@@ -3069,6 +3308,13 @@ bool ClearFieldValue(eng::ScriptComponent& script, const eng::ScriptField& field
         for (eng::Json& part : zero) {
             part = 0;
         }
+    } else if (zero.is_object()) {
+        // A GameObject field - see the note in FieldIsAtZero. Emptying it is
+        // emptying the object, which is exactly what an unset one writes, so
+        // this clears to a value the loader already understands rather than
+        // to a null. A null would be read by a prefab instance as "erase this
+        // field" rather than "nothing chosen".
+        zero = eng::Json::object();
     } else {
         return false;
     }

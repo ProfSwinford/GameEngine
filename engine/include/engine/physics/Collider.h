@@ -83,6 +83,7 @@
 //  happens, naming the entity and the hook to use instead.
 // ============================================================================
 
+#include <engine/core/WorldUnit.h>
 #include <engine/math/Mat3.h>
 #include <engine/math/Overlap.h>
 #include <engine/physics/Contact.h>
@@ -246,6 +247,95 @@ public:
     Vec2 Offset() const { return m_offset; }
     void SetOffset(Vec2 offset) { m_offset = offset; }
 
+    // ======================================================================
+    //  HOW BIG THIS COLLIDER IS, AS A FRACTION OF THE THING IT IS ON.
+    //
+    //  1 means "the size of this object". 0.5 means half of it. Every shape
+    //  reads it the same way, and it is the ONLY size a collider has - there
+    //  is no half-extent, no pixel width, nothing to convert.
+    //
+    //  WHY A FRACTION AND NOT PIXELS. A collider is a statement about a
+    //  thing: a character's body is about as wide as the character. Written
+    //  as "12" that statement is invisible, and it is wrong the moment the
+    //  art is redrawn at a different resolution or the sprite is resized in
+    //  the Inspector - the collider silently stops matching and nothing says
+    //  so. Written as "0.5" it stays true, because it was never about the
+    //  pixels in the first place.
+    //
+    //  It also makes the numbers readable at a glance. {1, 1} is the sprite.
+    //  {0.5, 1} is half as wide and full height, which is a character
+    //  capsule. {1, 0.25} is a floor strip. You can tell what those are
+    //  without opening the scene.
+    //
+    //  WHAT IT IS A FRACTION OF is ReferenceSize() below.
+    //
+    //  THIS IS NOT THE ENTITY'S SCALE, and the two multiply rather than
+    //  compete. The transform's scale stretches everything the entity is -
+    //  its picture and its collider together. This one says how the collider
+    //  relates to the picture, and survives the entity being scaled.
+    //
+    //  NEGATIVE OR ZERO IS ALLOWED TO BE WRITTEN but means an empty shape;
+    //  see SetScale.
+    // ======================================================================
+    Vec2 Scale() const { EnsureResolved(); return m_scale; }
+    void SetScale(Vec2 scale);
+
+    // ======================================================================
+    //  THE SIZE Scale() IS A FRACTION OF: the sprite on this entity, or one
+    //  world unit square when there is no sprite to measure.
+    //
+    //  THE SPRITE, BECAUSE THAT IS WHAT "THIS OBJECT" MEANS to whoever is
+    //  looking at the Scene view. A collider on a 24x48 character at scale
+    //  {1, 1} is 24x48, which is the only answer that is not a surprise.
+    //
+    //  AND ONE UNIT WHEN THERE IS NOTHING TO MEASURE, because a trigger
+    //  volume, a bullet's hitbox and a region marker are all perfectly
+    //  ordinary colliders on entities with no picture at all. Falling back to
+    //  zero would make every one of them collide with nothing; falling back
+    //  to one unit makes a new collider the size of one ordinary thing, which
+    //  is the same promise the editor makes when it creates an object. See
+    //  core/WorldUnit.h.
+    //
+    //  LIVE, NOT CACHED. Resize the sprite and the collider follows. That is
+    //  the entire point of expressing the size as a fraction, and a cached
+    //  copy would be the one thing able to disagree with it.
+    // ======================================================================
+    Vec2 ReferenceSize() const;
+
+    // ======================================================================
+    //  FOR AN ENTITY THAT HAS NO SPRITE BUT IS STILL OBVIOUSLY A SIZE.
+    //
+    //  A TILE OBJECT is the case this exists for: one entity per painted
+    //  cell, built from a .otile, carrying whatever components that tile
+    //  carries. There is no SpriteComponent on it - the tilemap draws the
+    //  art itself, in bulk, without an entity per cell, which is the whole
+    //  reason a hundred-thousand-cell map is a hundred thousand numbers. So
+    //  ReferenceSize() would fall through to one world unit, and a collider
+    //  of scale {1,1} on a tile would be one world unit rather than ONE
+    //  CELL - which is what it obviously ought to mean, and what it only
+    //  accidentally was while the two happened to be 32 apiece.
+    //
+    //  THE TILEMAP PUSHES THE ANSWER DOWN rather than physics reaching up
+    //  for it. Walking from a collider to its owner's parent's
+    //  TilemapComponent would make the physics headers depend on the tilemap
+    //  ones for one lookup, on every collider in the game, to serve the
+    //  derived ones. The map already knows its cell size at the moment it
+    //  builds the object; it says so then, once.
+    //
+    //  NOT SERIALIZED, because it is not authored. It is a fact about the
+    //  thing the collider was attached to, re-established every time that
+    //  thing is built. A zero clears it.
+    // ======================================================================
+    void SetReferenceSizeOverride(Vec2 size);
+    Vec2 ReferenceSizeOverride() const { return m_referenceOverride; }
+
+    // Scale() times ReferenceSize(): the collider's own width and height in
+    // pixels, BEFORE the entity's transform scale is applied.
+    //
+    // Every shape is built from this one number, which is what stops the five
+    // of them drifting apart about what a scale means.
+    Vec2 ScaledSize() const;
+
     const PhysicsMaterial2D& Material() const { return m_material; }
     void SetMaterial(const PhysicsMaterial2D& material) { m_material = material; }
 
@@ -297,6 +387,49 @@ protected:
     // decide on their own what a mirrored scale means.
     Vec2 OwnerWorldScale() const;
 
+    // ======================================================================
+    //  OLDER SCENE FILES SAID IT IN PIXELS, and they still load.
+    //
+    //  "halfExtents": [12, 24], "radius": 7, a "points" list in pixels - all
+    //  of these are read, converted to a fraction of ReferenceSize(), and
+    //  written back out in the new spelling the next time the scene is saved.
+    //  There are eighty-odd of them across this project's own scenes alone,
+    //  so refusing them was never an option.
+    //
+    //  WHY IT CANNOT HAPPEN IN Deserialize. The conversion needs the sprite's
+    //  size, and a scene file lists components in whatever order they were
+    //  written: a collider is routinely read BEFORE the sprite beside it has
+    //  a texture or a size. Converting there would measure the collider
+    //  against an entity that is still half-built, and the answer would
+    //  depend on the order of two lines in a file.
+    //
+    //  SO IT HAPPENS ON FIRST USE instead, once, through EnsureResolved -
+    //  which every accessor and every shape builder calls before reading a
+    //  size. By then the entity is whole, whoever asked first.
+    // ======================================================================
+    void EnsureResolved() const {
+        if (m_legacyPending) {
+            m_legacyPending = false;   // first, so a re-entrant read cannot loop
+            ResolveLegacy();
+        }
+    }
+
+    // Turns whatever pixel-spelled fields this shape read into m_scale (and,
+    // for the point shapes, into fractions of the reference box). Shapes with
+    // nothing to convert do not override it.
+    virtual void ResolveLegacy() const {}
+
+    // MUTABLE because resolving an old file's pixels is not a change to the
+    // collider - it is the same shape, finally expressed the way the rest of
+    // the engine expects to read it. Making every size accessor non-const to
+    // say so would be a worse lie than this one.
+    mutable Vec2 m_scale{1.0f, 1.0f};
+    mutable bool m_legacyPending = false;
+
+    // (0,0) means "nobody said", which is the case for every collider that
+    // is not on a derived entity. See SetReferenceSizeOverride.
+    Vec2 m_referenceOverride{0.0f, 0.0f};
+
     std::string              m_layer = "Default";
     std::vector<std::string> m_collidesWith{kCollisionLayerAll};
     Vec2                     m_offset{0.0f, 0.0f};
@@ -322,23 +455,28 @@ public:
     ColliderShape Shape() const override    { return ColliderShape::Box; }
 
     // Extra scene file fields:
-    //   "halfExtents": [w, h]   half the width and half the height
-    //   "size":        [w, h]   the whole width and height - Unity's spelling,
-    //                           accepted on read as a convenience
-    //   "edgeRadius":  0        rounds the corners off, as Unity's does
+    //   "scale":      [1, 1]    the size, as a fraction of the sprite - see
+    //                           ColliderComponent::Scale
+    //   "edgeRadius": 0         rounds the corners off, as Unity's does
+    //
+    // Still READ, from scenes written before the scale: "halfExtents" (half
+    // the width and half the height, in pixels) and "size" (the whole width
+    // and height, in pixels). Both are converted on first use and written
+    // back as a scale. See ColliderComponent::EnsureResolved.
     bool  Deserialize(const Json& node, std::string& outError) override;
     bool  Serialize(Json& out) const override;
     int   WorldShapes(ConvexShape* out, int maxOut) const override;
     float Area() const override;
 
-    Vec2 HalfExtents() const { return m_halfExtents; }
-    void SetHalfExtents(Vec2 halfExtents) { m_halfExtents = halfExtents; }
-
-    // The same rectangle said Unity's way. Stored as half-extents because that
-    // is what the maths wants; offered both ways because that is what people
-    // type.
-    Vec2 Size() const { return m_halfExtents * 2.0f; }
-    void SetSize(Vec2 size) { m_halfExtents = size * 0.5f; }
+    // The rectangle in pixels, for code that genuinely wants pixels - a
+    // script sizing a hitbox to a number it computed, or the editor drawing
+    // one. SetSize divides by ReferenceSize(), so the collider still tracks
+    // the sprite afterwards rather than being pinned to the pixel count.
+    //
+    // THE AUTHORED FORM IS Scale(). This pair is the convenience, not the
+    // other way round, and a size set here is not what the scene file holds.
+    Vec2 Size() const { return ScaledSize(); }
+    void SetSize(Vec2 size);
 
     float EdgeRadius() const { return m_edgeRadius; }
     void  SetEdgeRadius(float radius);
@@ -346,31 +484,18 @@ public:
     // The rounding counts: a box with a large edgeRadius really is that much
     // wider, and the capsule it becomes at the limit says so too.
     Vec2 LocalSize() const override {
-        return (m_halfExtents + Vec2{m_edgeRadius, m_edgeRadius}) * 2.0f;
+        return ScaledSize() + Vec2{m_edgeRadius, m_edgeRadius} * 2.0f;
     }
 
+protected:
+    void ResolveLegacy() const override;
+
 private:
-    // ======================================================================
-    //  IN PIXELS, LIKE EVERYTHING ELSE HERE.
-    //
-    //  These were Unity's metre-scale figures - half-extents of 0.5, a radius
-    //  of 0.5, a capsule of 1x2 - in an engine whose units are pixels. So
-    //  "Add component -> BoxColliderComponent" on a 32x32 sprite gave a
-    //  collider ONE PIXEL across, a thousandth of the sprite's area, with the
-    //  Inspector offering to drag it in steps of half a pixel. It also
-    //  collapsed the entity's click box in the Scene view, because that box
-    //  comes from the collider when there is one.
-    //
-    //  config/engine.json already states the rule for this project - "Unity's
-    //  -9.81 is metres per second squared; this project works in PIXELS, so
-    //  -981 is the same real-world gravity at roughly 100 pixels to the
-    //  metre". Gravity was rescaled by that hundred and these were not.
-    //
-    //  32 pixels across, which is this project's tile and sprite size, so a
-    //  new collider lands roughly on the thing it was added to.
-    // ======================================================================
-    Vec2  m_halfExtents{16.0f, 16.0f};
     float m_edgeRadius = 0.0f;
+
+    // The pixel size an older scene file gave, waiting for an entity whole
+    // enough to measure it against. See ColliderComponent::EnsureResolved.
+    mutable Vec2 m_legacyHalfExtents{0.0f, 0.0f};
 };
 
 // The name this class used to have. Kept so that scripts and editor code
@@ -388,7 +513,9 @@ public:
     ColliderShape Shape() const override    { return ColliderShape::Circle; }
 
     // Extra scene file field:
-    //   "radius": 16
+    //   "scale": [1, 1]   the diameter, as a fraction of the sprite
+    //
+    // Still READ, from older scenes: "radius", in pixels.
     bool  Deserialize(const Json& node, std::string& outError) override;
     bool  Serialize(Json& out) const override;
     int   WorldShapes(ConvexShape* out, int maxOut) const override;
@@ -396,13 +523,34 @@ public:
 
     Circle WorldCircle() const;
 
-    float Radius() const { return m_radius; }
-    void  SetRadius(float radius) { m_radius = radius; }
+    // ======================================================================
+    //  A CIRCLE HAS ONE SIZE AND THE SCALE HAS TWO, so the LARGER wins.
+    //
+    //  There is no ellipse test in this engine - see the note at the top of
+    //  this file - and a circle is the one shape that cannot honour a
+    //  non-square scale. Taking the larger axis makes the circle slightly too
+    //  big rather than slightly too small, so contacts fire early, which is
+    //  the safe direction and is the same choice the transform scale already
+    //  makes a few lines further down.
+    //
+    //  A DEFAULT SCALE OF {1,1} IS THEREFORE A CIRCLE THAT COVERS THE SPRITE,
+    //  with its diameter the sprite's longer side. Use a capsule when you
+    //  wanted the shorter one, or set the scale and read Radius() to see what
+    //  you got.
+    // ======================================================================
+    float Radius() const;
+    void  SetRadius(float radius);
 
-    Vec2 LocalSize() const override { return Vec2{m_radius, m_radius} * 2.0f; }
+    Vec2 LocalSize() const override {
+        const float r = Radius();
+        return Vec2{r, r} * 2.0f;
+    }
+
+protected:
+    void ResolveLegacy() const override;
 
 private:
-    float m_radius = 16.0f;   // pixels; see the note on BoxCollider's default
+    mutable float m_legacyRadius = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -426,14 +574,18 @@ public:
     ColliderShape Shape() const override    { return ColliderShape::Capsule; }
 
     // Extra scene file fields:
-    //   "size":      [1, 2]
+    //   "scale":     [0.5, 1]     the size, as a fraction of the sprite
     //   "direction": "Vertical"   or "Horizontal"
+    //
+    // Still READ, from older scenes: "size", in pixels.
     bool  Deserialize(const Json& node, std::string& outError) override;
     bool  Serialize(Json& out) const override;
     int   WorldShapes(ConvexShape* out, int maxOut) const override;
     float Area() const override;
 
-    Vec2 Size() const { return m_size; }
+    // The capsule in pixels. As with the box, this is the convenience and
+    // Scale() is what the scene file holds.
+    Vec2 Size() const { return ScaledSize(); }
     void SetSize(Vec2 size);
 
     CapsuleDirection Direction() const { return m_direction; }
@@ -441,13 +593,32 @@ public:
 
     // Already a width and a height, which is the whole point of describing a
     // capsule Unity's way.
-    Vec2 LocalSize() const override { return m_size; }
+    Vec2 LocalSize() const override { return ScaledSize(); }
+
+    // ======================================================================
+    //  HALF AS WIDE AS IT IS TALL, which is what makes it a capsule and not a
+    //  circle.
+    //
+    //  The one shape whose default scale is not {1, 1}, and the exception is
+    //  the point: a capsule the full size of the sprite in both directions IS
+    //  a circle - the round ends meet and the straight core has zero length.
+    //  {0.5, 1} is the character shape the component exists for, and it is
+    //  Unity's default for the same reason.
+    // ======================================================================
+    static constexpr float kDefaultScaleX = 0.5f;
+    static constexpr float kDefaultScaleY = 1.0f;
+
+    CapsuleColliderComponent() {
+        m_scale = Vec2{kDefaultScaleX, kDefaultScaleY};
+    }
+
+protected:
+    void ResolveLegacy() const override;
 
 private:
-    // Pixels; see the note on BoxCollider's default. Taller than it is wide,
-    // which is the character shape a capsule is usually for.
-    Vec2             m_size{32.0f, 64.0f};
     CapsuleDirection m_direction = CapsuleDirection::Vertical;
+
+    mutable Vec2 m_legacySize{0.0f, 0.0f};
 };
 
 // ---------------------------------------------------------------------------
@@ -470,15 +641,36 @@ public:
     const char*   TypeName() const override { return kTypeName; }
     ColliderShape Shape() const override    { return ColliderShape::Polygon; }
 
-    // Extra scene file field:
-    //   "points": [[x,y], [x,y], ...]    in the entity's own space,
-    //                                    anticlockwise
+    // Extra scene file fields:
+    //   "scale":  [1, 1]                  the size, as a fraction of the sprite
+    //   "points": [[x,y], [x,y], ...]     the outline, anticlockwise, as
+    //                                     FRACTIONS of that scaled box - so
+    //                                     -0.5 is its left edge and 0.5 its
+    //                                     right
+    //
+    // Still READ, from older scenes: a "points" list in pixels, recognised by
+    // the absence of a "scale" and converted on first use.
     bool  Deserialize(const Json& node, std::string& outError) override;
     bool  Serialize(Json& out) const override;
     int   WorldShapes(ConvexShape* out, int maxOut) const override;
     float Area() const override;
 
-    const std::vector<Vec2>& Points() const { return m_points; }
+    // ======================================================================
+    //  THE OUTLINE, IN FRACTIONS OF THE SCALED BOX, not in pixels.
+    //
+    //  A point of {-0.5, -0.5} is the bottom-left corner of whatever the
+    //  collider's scale works out to, {0.5, 0.5} the top-right. So the
+    //  default square is exactly the sprite, a triangle drawn at those
+    //  numbers stays a triangle on a sprite of any size, and the scale
+    //  resizes the whole outline at once instead of thirty-two numbers
+    //  needing to be retyped together.
+    //
+    //  THE SAME RULE AS EVERY OTHER SHAPE, which is the reason for it. A
+    //  polygon whose points were pixels would be the one collider that
+    //  ignored its own scale and the one that stopped matching when the art
+    //  was redrawn.
+    // ======================================================================
+    const std::vector<Vec2>& Points() const { EnsureResolved(); return m_points; }
 
     // Replaces the outline. Points beyond ConvexShape::kMaxPoints are dropped
     // and reported.
@@ -491,12 +683,15 @@ public:
 
     Vec2 LocalSize() const override;
 
-    // A square, as a starting point for a new collider. A polygon collider
-    // with no points at all cannot be dragged into shape.
+    // A unit square, as a starting point for a new collider. A polygon
+    // collider with no points at all cannot be dragged into shape.
     static std::vector<Vec2> DefaultSquare();
 
+protected:
+    void ResolveLegacy() const override;
+
 private:
-    std::vector<Vec2> m_points = DefaultSquare();
+    mutable std::vector<Vec2> m_points = DefaultSquare();
 };
 
 // ---------------------------------------------------------------------------
@@ -527,16 +722,25 @@ public:
     ColliderShape Shape() const override    { return ColliderShape::Edge; }
 
     // Extra scene file fields:
-    //   "points":     [[x,y], ...]   in the entity's own space
-    //   "edgeRadius": 0              gives the line thickness
+    //   "scale":      [1, 1]         the size, as a fraction of the sprite
+    //   "points":     [[x,y], ...]   as FRACTIONS of that scaled box, exactly
+    //                                as a polygon's are
+    //   "edgeRadius": 0              gives the line thickness, in pixels
     //   "loop":       false          joins the last point back to the first
+    //
+    // Still READ, from older scenes: a "points" list in pixels, recognised by
+    // the absence of a "scale".
+    //
+    // AN EDGE HAS A SCALE TOO, and it is the shape that benefits most: a
+    // hillside drawn as a dozen points is retuned by one number instead of
+    // twenty-four.
     bool  Deserialize(const Json& node, std::string& outError) override;
     bool  Serialize(Json& out) const override;
     int   WorldShapes(ConvexShape* out, int maxOut) const override;
     int   WorldShapeCount() const override;
     float Area() const override;
 
-    const std::vector<Vec2>& Points() const { return m_points; }
+    const std::vector<Vec2>& Points() const { EnsureResolved(); return m_points; }
     void SetPoints(std::vector<Vec2> points);
 
     float EdgeRadius() const { return m_edgeRadius; }
@@ -549,10 +753,13 @@ public:
 
     static std::vector<Vec2> DefaultLine();
 
+protected:
+    void ResolveLegacy() const override;
+
 private:
-    std::vector<Vec2> m_points = DefaultLine();
-    float             m_edgeRadius = 0.0f;
-    bool              m_loop = false;
+    mutable std::vector<Vec2> m_points = DefaultLine();
+    float                     m_edgeRadius = 0.0f;
+    bool                      m_loop = false;
 };
 
 

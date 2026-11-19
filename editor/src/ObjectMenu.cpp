@@ -165,6 +165,15 @@ eng::EntityId CreateObject(std::string_view kind) {
         ApplyUIDefaults(chosen->name, *entity);
     }
 
+    // A NEW OBJECT IS ONE ORDINARY THING BIG. With no picture on it yet that
+    // is a unit square, and it is the size the collider added next will be a
+    // fraction of - so "+ Sprite, + BoxCollider" lands on something you can
+    // see rather than on whatever the first image dropped on it happens to
+    // be. See SpriteComponent::FitToWorldUnit and core/WorldUnit.h.
+    if (auto* sprite = entity->Find<eng::SpriteComponent>()) {
+        sprite->FitToWorldUnit();
+    }
+
     return created;
 }
 

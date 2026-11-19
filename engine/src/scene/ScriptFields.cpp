@@ -56,6 +56,7 @@ const char* ScriptFieldTypeName(ScriptFieldType type) {
         case ScriptFieldType::Prefab: return "prefab";
         case ScriptFieldType::Animation: return "animation";
         case ScriptFieldType::Image:     return "image";
+        case ScriptFieldType::GameObject: return "game object";
     }
     return "unknown";
 }
@@ -100,6 +101,11 @@ AnimationRef* ScriptField::AsAnimationRef() const {
 
 ImageRef* ScriptField::AsImageRef() const {
     return type == ScriptFieldType::Image ? static_cast<ImageRef*>(value) : nullptr;
+}
+
+GameObjectRef* ScriptField::AsGameObjectRef() const {
+    return type == ScriptFieldType::GameObject ? static_cast<GameObjectRef*>(value)
+                                               : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +374,35 @@ bool JsonFitsFieldType(ScriptFieldType type, const Json& value) {
             // an intended true, and guessing would hide the mistake.
             return value.is_boolean();
 
+        case ScriptFieldType::GameObject:
+            // ==============================================================
+            //  THE ONE FIELD WHOSE VALUE IS AN OBJECT.
+            //
+            //  { "entity": "Door" } or { "prefab": "prefabs/bullet.oprefab" },
+            //  because this is the one reference that cannot say which half
+            //  it is from the text alone. A bare string is accepted too and
+            //  read as an ENTITY NAME - that is what somebody hand-editing a
+            //  scene will type, and it is the harmless half to guess: a name
+            //  that resolves to nothing is visible in the Inspector, whereas
+            //  a path guessed wrong would be a spawner that silently spawns
+            //  nothing. See scene/GameObjectRef.h.
+            // ==============================================================
+            if (value.is_string()) {
+                return true;
+            }
+            if (!value.is_object()) {
+                return false;
+            }
+            // AN EMPTY OBJECT IS WHAT AN UNSET ONE WRITES, so it has to read
+            // back - otherwise a variable nobody filled in fails to load the
+            // moment it has been saved once. It means "nothing", which is
+            // exactly what it came from.
+            if (!value.contains("entity") && !value.contains("prefab")) {
+                return value.empty();
+            }
+            return (value.contains("entity") && value["entity"].is_string()) ||
+                   (value.contains("prefab") && value["prefab"].is_string());
+
         case ScriptFieldType::String:
         case ScriptFieldType::Entity:
         case ScriptFieldType::Prefab:
@@ -427,6 +462,10 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
                 outError += " written as the prefab's path, like "
                             "\"prefabs/bullet.oprefab\"";
                 break;
+            case ScriptFieldType::GameObject:
+                outError += " written as { \"entity\": \"Door\" } or "
+                            "{ \"prefab\": \"prefabs/bullet.oprefab\" }";
+                break;
             default:
                 break;
         }
@@ -482,6 +521,20 @@ bool ReadFieldFromJson(const ScriptField& field, const Json& value,
             case ScriptFieldType::Image:
                 field.AsImageRef()->Set(value.get<std::string>());
                 return true;
+
+            case ScriptFieldType::GameObject: {
+                GameObjectRef* ref = field.AsGameObjectRef();
+                if (value.is_string()) {
+                    ref->SetSceneObject(value.get<std::string>());
+                } else if (value.contains("prefab")) {
+                    ref->SetPrefab(value["prefab"].get<std::string>());
+                } else if (value.contains("entity")) {
+                    ref->SetSceneObject(value["entity"].get<std::string>());
+                } else {
+                    ref->Clear();
+                }
+                return true;
+            }
 
             case ScriptFieldType::Vec2:
                 *field.AsVec2() = Vec2{value[0].get<float>(), value[1].get<float>()};
@@ -548,6 +601,25 @@ Json FieldToJson(const ScriptField& field) {
             // somebody chose is written out as null, which a prefab instance
             // reads as "erase this field".
             return Json(field.AsImageRef()->Path());
+
+        case ScriptFieldType::GameObject: {
+            // THE KIND IS WRITTEN DOWN, not inferred on the way back in. A
+            // rule like "does it end in .oprefab" would work until somebody
+            // named an entity after a file, and the failure would be a
+            // spawner that silently spawns nothing.
+            //
+            // AND AN UNSET ONE IS AN EMPTY OBJECT, not a null. A null is read
+            // by a prefab instance as "erase this field" - see the warning on
+            // the two arms above, which this one would otherwise repeat.
+            const GameObjectRef* ref = field.AsGameObjectRef();
+            Json                 out = Json::object();
+            if (ref->IsPrefab()) {
+                out["prefab"] = ref->PrefabPath();
+            } else if (ref->IsSceneObject()) {
+                out["entity"] = ref->Name();
+            }
+            return out;
+        }
 
         case ScriptFieldType::Vec2: {
             const Vec2 v = *field.AsVec2();

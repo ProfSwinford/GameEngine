@@ -210,7 +210,23 @@ public:
     bool LoadFromString(std::string_view text, std::string& outError);
 
     // Destroys every entity, which releases every texture they were using.
-    void Unload();
+    // ======================================================================
+    //  WHAT AN UNLOAD IS ALLOWED TO LEAVE BEHIND.
+    //
+    //  Everything, by default - which is what every caller written before
+    //  persistence existed meant, and is why the parameter has a default
+    //  rather than every call site being revisited.
+    //
+    //  Only Scene::Load asks for KeepPersistent, because only a scene CHANGE
+    //  is the thing DontDestroyOnLoad is about. See SetPersistent for the
+    //  whole list and why each one is what it is.
+    // ======================================================================
+    enum class UnloadScope {
+        Everything,
+        KeepPersistent,
+    };
+
+    void Unload(UnloadScope scope = UnloadScope::Everything);
 
     // ---- starting a scene from nothing ------------------------------------
     //
@@ -234,6 +250,24 @@ public:
     // The file this scene was last loaded from. Deliberately survives Unload,
     // because "reload what I just unloaded" needs it.
     const std::string& SourcePath() const { return m_sourcePath; }
+
+    // ======================================================================
+    //  THE SAME SCENE, AT A DIFFERENT PATH.
+    //
+    //  FOR A RENAME OR A MOVE OF THE OPEN SCENE'S OWN FILE, and for nothing
+    //  else. The editor renames the file on disk; without this the scene in
+    //  memory goes on believing it came from the old name, so the next Ctrl+S
+    //  writes the file straight back under it - leaving two copies of the
+    //  level and a rename that appears to have undone itself.
+    //
+    //  IT DOES NOT LOAD, SAVE OR TOUCH THE CONTENTS. The entities are already
+    //  correct; only the name of the file they will be written to is wrong.
+    //  That is why this is a setter rather than a reload: a reload would throw
+    //  away unsaved work to fix a filename.
+    // ======================================================================
+    void SetSourcePath(std::string_view virtualPath) {
+        m_sourcePath = std::string(virtualPath);
+    }
 
     bool IsLoaded() const { return m_liveCount > 0; }
 
@@ -298,6 +332,14 @@ public:
     // Children are NOT copied; silently duplicating a whole subtree is rarely
     // what was meant.
     EntityId DuplicateEntity(EntityId id, std::string& outError);
+
+    // The same, placed - which is what Unity's Instantiate(someSceneObject,
+    // position, rotation) is. It exists so that a script cloning a scene
+    // object can place the copy through the SAME SpawnOptions that placing a
+    // prefab uses: two ways of saying "put it here" would eventually
+    // disagree about what a parent or a local position means.
+    EntityId DuplicateEntity(EntityId id, const SpawnOptions& placement,
+                             std::string& outError);
 
     // Adds a number to the end of a name until it is free. Clicking "Create
     // Entity" fifty times should not require inventing fifty names.
@@ -480,6 +522,48 @@ public:
     void SetDerived(EntityId id, bool derived);
     bool IsDerived(EntityId id) const;
 
+    // ======================================================================
+    //  SURVIVES A SCENE CHANGE. Unity's DontDestroyOnLoad.
+    //
+    //  The entity, its components, its scripts WITH THEIR RUNNING STATE, and
+    //  its children all stay exactly as they are while the scene around them
+    //  is replaced. Not re-created from a file afterwards - the same objects,
+    //  at the same addresses, with the same EntityId. That is the whole point:
+    //  a behaviour that has been counting something goes on counting.
+    //
+    //  ==========================================================================
+    //  ONLY A SCENE CHANGE CARRIES THEM, which is what the name says and is a
+    //  narrower promise than it first looks. Unload() destroys everything by
+    //  default; it is Load() that asks for them to be kept, and nothing else
+    //  does:
+    //
+    //    Load(path)        KEEPS them. This is a scene change - GoToScene,
+    //                      RequestScene, the thing the feature is for.
+    //    LoadFromString    destroys them. It is how play mode restores its
+    //                      snapshot, and a Stop that left objects behind would
+    //                      leave the editor holding something the scene file
+    //                      does not describe.
+    //    StartNewScene     destroys them. "New scene" means nothing carried.
+    //    ~Scene, Shutdown  destroy them. Nothing survives the process.
+    //
+    //  ==========================================================================
+    //  CHILDREN COME TOO, and a persistent child of a non-persistent parent is
+    //  DETACHED rather than orphaned - see the note in Unload. Unity solves
+    //  the same problem by only honouring this on a root; detaching says the
+    //  same thing out loud instead of ignoring the call.
+    //
+    //  ==========================================================================
+    //  AND THEY ARE NOT SAVED, for the reason a derived entity is not: an
+    //  entity that came from scene A is not part of scene B's description, and
+    //  writing it there would make a copy appear every time that scene loaded.
+    // ==========================================================================
+    void SetPersistent(EntityId id, bool persistent);
+    bool IsPersistent(EntityId id) const;
+
+    // How many entities are currently marked. For tests, and for anything
+    // that wants to report it rather than leaving survivors looking ordinary.
+    std::size_t PersistentCount() const;
+
     // The root of the instance this entity belongs to, or a null id.
     //
     // FOUND BY WALKING UP rather than by asking the asset which id is the
@@ -535,11 +619,39 @@ public:
     Vec2  InitialCameraPosition() const { return m_cameraPosition; }
     float InitialCameraZoom() const     { return m_cameraZoom; }
 
+    // ======================================================================
+    //  HOW MANY WORLD UNITS TALL THE SHOT IS, or ZERO when the file did not
+    //  say - which is every scene written before this existed.
+    //
+    //  ZERO AS "NOT SAID" rather than a second boolean beside it, because the
+    //  two can then never disagree: a frame height of zero is not a shot, so
+    //  there is no state in which the flag says yes and the number says
+    //  nothing. See render/Camera.h for what the two framings mean.
+    // ======================================================================
+    float InitialCameraFrameHeight() const { return m_cameraFrameHeight; }
+
     // Pushed back in before saving, so framing a shot in the editor and
     // pressing save keeps the framing.
+    //
+    // THE TWO SETTERS ARE EXCLUSIVE, and that is the point: a scene is framed
+    // one way or the other, and whichever one is called is the one the file
+    // gets. Writing both keys would make the file ambiguous and make a
+    // round trip depend on which the reader preferred.
     void SetCameraState(Vec2 position, float zoom) {
+        m_cameraPosition    = position;
+        m_cameraZoom        = zoom;
+        m_cameraFrameHeight = 0.0f;
+    }
+
+    void SetCameraFrameHeight(Vec2 position, float frameHeight, float effectiveZoom) {
         m_cameraPosition = position;
-        m_cameraZoom     = zoom;
+        m_cameraFrameHeight = frameHeight;
+
+        // KEPT IN STEP ANYWAY, even though it is not written to the file. The
+        // engine reads InitialCameraZoom when it has no frame height, and a
+        // stale value here would be the one the editor handed back after a
+        // Play session that never touched the camera.
+        m_cameraZoom = effectiveZoom;
     }
 
     // The scene the engine is currently running.
@@ -585,7 +697,29 @@ private:
         // Built from something else and not written when the scene is saved.
         // See SetDerived above.
         bool derived = false;
+
+        // Survives a scene CHANGE. See Scene::SetPersistent.
+        bool persistent = false;
     };
+
+    // ======================================================================
+    //  GIVES A SURVIVOR ITS NAME BACK, once the incoming scene is built.
+    //
+    //  During the build the newcomer owns the name, because a scene file
+    //  resolves its own parents by name and a survivor holding "Manager"
+    //  throughout would have the new scene's child of Manager parented to the
+    //  SURVIVOR - quietly rewriting the hierarchy of the scene being loaded.
+    //
+    //  Afterwards the survivor takes it, because the singleton check that
+    //  every Unity user writes looks for an existing one BY NAME, and a
+    //  survivor nothing can find is a survivor nothing can stand down to.
+    // ======================================================================
+    void ReclaimCarriedNames();
+
+    // The names survivors held when the last scene was unloaded, waiting for
+    // the build to finish. Empty except between an Unload(KeepPersistent) and
+    // the ReclaimCarriedNames that follows it.
+    std::vector<std::pair<std::string, EntityId>> m_carriedNames;
 
     void ResolveParents(const Json& entitiesArray);
 
@@ -661,6 +795,9 @@ private:
     std::string m_sourcePath;
     Vec2        m_cameraPosition{0.0f, 0.0f};
     float       m_cameraZoom = 1.0f;
+
+    // 0 means "the file framed by zoom" - see InitialCameraFrameHeight.
+    float       m_cameraFrameHeight = 0.0f;
 };
 
 // ===========================================================================

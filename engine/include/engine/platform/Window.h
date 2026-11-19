@@ -60,6 +60,27 @@ public:
     int  Height() const;
     void SetTitle(const char* title);
 
+    // ======================================================================
+    //  FULL SCREEN, which the engine could not do at all until now.
+    //
+    //  BORDERLESS FULL SCREEN - the window grows to the size of the display
+    //  it is on and keeps the desktop's own mode. The alternative, changing
+    //  the display's resolution, is slower to enter and leave, flickers every
+    //  other window on the machine, and is the wrong tool once a game can pin
+    //  its own render size: see render/Presentation.h, which is how a 640x360
+    //  game fills a 4K screen without asking the monitor to change.
+    //
+    //  AND LETTERBOXING IS WHAT MAKES IT USABLE. A pinned aspect in full
+    //  screen on a differently-shaped display is the one case with nowhere to
+    //  put the spare space, so Presentation fills it with black.
+    //
+    //  Returns false when the request could not be carried out, which is
+    //  reported rather than silent: a full-screen toggle that does nothing
+    //  looks like a dead key.
+    // ======================================================================
+    bool SetFullscreen(bool on);
+    bool IsFullscreen() const;
+
     // Fills the whole window with one colour. Each channel is 0-255, which is
     // why they are `unsigned char` - that type holds exactly 0 to 255.
     void Clear(unsigned char r, unsigned char g, unsigned char b);

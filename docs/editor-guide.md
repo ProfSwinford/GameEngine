@@ -794,6 +794,33 @@ The arrow appears the moment you press Slice - you do not have to press Refresh
 - and a sheet you have opened stays open while you work, including across
 navigating away and back.
 
+### Renaming and moving take the references with them
+
+Rename a file or drag it into another folder and **everything that pointed at
+it is updated to point at the new name** - every scene, prefab, tile, input
+asset and `build.json` under the project, plus the scene you have open,
+including its unsaved changes. The status line says how many references moved:
+*"renamed to tree.otile - 7 references in 2 files, and the open scene updated"*,
+or *"nothing referred to it"*.
+
+This matters more for some files than others, because **a broken reference does
+not announce itself**. A tilemap whose palette entry will not load keeps its
+cells - cells are numbers - and simply draws nothing where that tile was, with
+its components gone too. You get a level with holes in it some time later,
+with nothing connecting it to a rename.
+
+It matches by the **path itself**, not by a list of known fields. A script
+variable holding a prefab, a tile's sheet, a component nobody has written yet:
+they are all just the path, written down somewhere, and a list of fields is a
+thing to forget. Moving a *folder* takes everything inside it, and renaming a
+sheet takes its sliced frames (`hero.png#walk_1`) along too.
+
+Two things it does not do. A file that is not valid JSON is skipped rather than
+rewritten, and said so in the Console - a rename is not the moment to start
+refusing to proceed over a half-typed file. And **renaming a script only
+renames the file**: the class inside keeps its name, and the class is what
+scenes refer to. The dialog says so while you are still deciding.
+
 **A frame is not a file, and the panel is honest about that.** Rename and Delete
 are not offered on one, by key or by menu, because there is nothing on disk to
 rename: a frame's name and rectangle are edited in the Inspector's Frames list,
@@ -896,6 +923,93 @@ size of a simulation step - see `engine/include/engine/core/GameClock.h`.
 When you press Play, the Game view takes the keyboard and shows a green border
 to say so. Clicking any other panel gives it back, so you can keep using the
 editor while the game runs.
+
+**When you Stop, the keyboard goes back to the Scene view.** The next thing
+after a playtest is almost always to change the level and play again, and
+having to click a panel first to get there broke that cycle every single time.
+It happens whichever way the playtest ended — the Stop button, Ctrl+P, or the
+automatic stop when a script is rebuilt.
+
+### What shape the game renders at
+
+The dropdown beside the camera controls says what the Game view renders at.
+It defaults to **Free Aspect**, which is what the editor always did: the render
+follows the panel, so dragging the panel wider shows **more of the level**.
+That is convenient while building and it is the reason the other options
+exist — every judgement about framing, about what is just off-screen, about
+where the interface sits, is otherwise being made against a window size no
+player will have.
+
+| | |
+| --- | --- |
+| **Free Aspect** | the render follows the panel |
+| **An aspect**, 16:9 and friends | the shape is pinned, the size still follows the panel. How much world is visible depends on the panel; its proportions do not |
+| **A resolution**, 1920 x 1080 and friends | exactly that many pixels, whatever the panel is, scaled to fit. The only one that answers "what will a player actually see" |
+
+Type a ratio like `16:9` or a size like `1366x768` into the box at the bottom
+of the dropdown to **add your own**; the separator is how it knows which you
+meant. Custom entries get an **x** to remove them, and they are remembered per
+project along with which one you had chosen.
+
+**The scale slider is a separate number from the resolution**, and that is
+deliberate: scaling the render would change what the camera sees, which is the
+thing the dropdown exists to pin down. So it only changes how big the finished
+picture is **drawn**. **Fit** is as large as the panel allows and is the
+default; **1.00x** is one render pixel per screen pixel, which is the only
+honest way to look at pixel art — a 1920x1080 target in a small panel is then
+mostly off the edge, on purpose.
+
+Whatever space is left over is filled with **black**, because that is what a
+player sees. Grey bars would make the framing look as though it carried on
+past the edge of the picture.
+
+#### Zoom, or how much world is in shot
+
+Pinning the aspect ratio fixes the **shape** of what a player sees. It does not
+fix **how much** they see — with a zoom, the viewport decides how much world
+fits, so a player at 2560x1440 still saw further than one at 1280x720, up and
+down as well as sideways.
+
+The little button beside the camera's number switches between the two:
+
+| | |
+| --- | --- |
+| **a zoom**, `1.00x` | how many screen pixels one world unit covers. A bigger window shows **more world**. Right for the Scene view, where dragging a panel wider should reveal more of the level |
+| **a height**, `360 tall` | how many world units are visible top to bottom, **whatever the pixel size**. A bigger window draws the same slice larger. The width follows the aspect ratio |
+
+**Frame by height for anything you intend to ship.** It is the only one that
+makes "what I framed here is what a player sees" true. A 21:9 player then sees
+further sideways and no further up, which is the conventional bargain and the
+one every ultrawide player expects — it is what Unity's orthographic camera
+does, spelled as a full height rather than Unity's half-height
+`orthographicSize` because this engine's world is in pixels and "720 units
+tall" is the number you actually mean.
+
+Switching **keeps the shot**: the number it fills in is the one that means the
+same framing at the current size. And a camera on an entity has the same
+choice in its Inspector, since that is the camera a scene travels with.
+
+**Nothing already built is affected.** A camera is framed by zoom unless
+something says otherwise, every scene written before this existed says only a
+zoom, and those read exactly as they always did. A scene file carries one key
+or the other — `"zoom": 2.5` or `"frameHeight": 360` — never both, and
+saving removes the one that no longer applies so a stale number cannot sit
+there looking editable.
+
+#### And in the shipped game
+
+The same three choices exist for the real thing, in `config/engine.json`:
+
+```json
+"presentation": { "mode": "16:9" }
+```
+
+`"free"`, a ratio, or a size — the same spellings the dropdown takes, read by
+the same code. The game is rendered at that shape, centred in the window, with
+black in whatever is left over. **Full screen still works**: with
+`"window": { "fullscreen": true }` the window takes the whole display and the
+bars go where the display is the wrong shape, rather than the game stretching
+or showing more world than it was designed for.
 
 **Play is greyed out while the scripts are compiling**, and hovering it says
 so. A build unloads the script libraries for as long as it runs, so a game
@@ -1109,9 +1223,55 @@ Every one has:
 | **Enabled** | off, it takes part in nothing - no events, no pushing, invisible to queries. This is how a hitbox is live for three frames of an attack |
 | **Trigger** | reports overlaps, pushes nothing |
 | **Offset** | shifts the shape off the entity's origin, so a character's feet can be the part that collides |
+| **Scale** | how big it is, as a fraction of the sprite on the entity - 1 is the sprite, 0.5 is half of it. The row underneath shows what that works out to in pixels, and what the 1 is being measured against |
+| **Edit shape** | puts yellow handles on the collider in the Scene view, for dragging it into place by hand |
 | **Friction / Bounciness** | 0 friction is ice; 0 bounciness is a beanbag and 1 a superball |
 | **Density** | only used when a rigidbody has Auto mass ticked |
 | **Layer / Collides with** | what it is, and what it wants to hear about |
+
+#### Scale, not pixels
+
+A collider has no width in pixels. It has a **scale**, and 1 means the size of
+the sprite it shares an entity with - so `0.5, 1` is half as wide and full
+height, and the panel prints the pixels that works out to underneath. On an
+entity with no sprite, 1 is one world unit instead: 32 pixels, from
+`units.pixelsPerUnit` in `config/engine.json`.
+
+This is why resizing a sprite moves its collider with it, and why a collider
+set up against one piece of art still fits when the art is redrawn larger.
+
+A **Circle** has no scale row of its own - it uses the same one, taking the
+longer of the two axes as its diameter, and prints the radius that produced.
+There is no ellipse test in this engine, so a circle cannot honour a
+non-square scale; use a **Capsule** when that is what you wanted.
+
+A **Polygon's** and an **Edge's** points are fractions too: `-0.5` is the left
+edge of the scaled box and `0.5` is the right. Changing the scale resizes the
+whole outline at once instead of every point needing to be retyped together.
+
+#### Edit shape: dragging a collider in the Scene view
+
+Press **Edit shape** on a collider and yellow handles appear on it in the Scene
+view. Drag them:
+
+| | |
+| --- | --- |
+| **Box** | one handle per side. Each moves that side and pins the opposite one, so you can fit a collider to a character's feet without alternating between two fields |
+| **Circle** | one handle, because a circle has one number |
+| **Capsule** | two, one per axis, both resizing about the centre |
+| **Polygon** and **Edge** | one handle per point |
+
+It is a mode you turn on rather than something that happens whenever a
+collider is selected, and that is deliberate: handles sit on top of the move
+gizmo and on top of the entity itself, so always-on handles would make every
+click near a selected object a question of which thing you meant. While they
+are on they take the left button, and the move gizmo stands down - the right
+drag still pans. Press the button again, now reading **Done editing shape**, to
+put them away.
+
+The whole drag is **one undo step**, not one per frame, and adding or removing
+a point is still the Inspector's job: the handles move points, they do not
+create them.
 
 A **Polygon** collider whose outline is dented says so in red: it collides as
 the convex hull of those points rather than as drawn, so the shape on screen
@@ -1422,6 +1582,21 @@ configured: the art (or the editor tint), the cell's edge, the blue square a
 actually sit — green for a solid one, amber for a trigger. Typing an offset as
 a pair of numbers is unreadable; this is how you get a hitbox right without
 playing the game after every nudge.
+
+**A collider on a tile is a fraction of the CELL**, not of the tile's artwork.
+A tile object has no sprite — the map draws the art itself, in bulk, which is
+why a hundred-thousand-cell map costs nothing to draw — so the cell is what
+takes the sprite's usual place: a box at scale `1, 0.5` is the full width of
+the cell and half its height, on a 16-pixel map and a 64-pixel one alike.
+
+**The art's pixel size is a different number.** A 16-pixel autotile sheet
+painted on a 32-pixel map is stretched to fill the cell, exactly as it is
+stretched to fill this preview, and the legend names both so the two cannot be
+confused: *"one cell at 32px (one world unit) — the art is 16px, stretched 2x
+to fill it"*. A `.otile` does not know which map it will be painted on, so the
+preview assumes one world unit; the size it draws is right whatever the map's
+`cellSize` turns out to be, because the collider is the same fraction of the
+cell either way.
 
 #### What it costs
 

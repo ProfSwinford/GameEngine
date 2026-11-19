@@ -127,6 +127,24 @@ public:
     // or the whole interface would end up inside whichever panel's picture
     // happened to be bound last.
     static void          SetRenderTarget(RenderTarget* target);
+
+    // ======================================================================
+    //  DRAWS A RENDER TARGET ONTO WHATEVER IS CURRENTLY BOUND, stretched to
+    //  fill the rectangle given.
+    //
+    //  FOR LETTERBOXING, and that is the whole reason it exists: a game with
+    //  a pinned aspect is rendered off-screen at its own shape and then
+    //  placed, centred, in a window that is a different shape, with black
+    //  either side. See render/Presentation.h.
+    //
+    //  The editor never needed this - it hands the target's texture to ImGui,
+    //  which does the placing - so until now nothing in the engine could draw
+    //  one.
+    //
+    //  DRAWING A TARGET ONTO ITSELF is undefined and silently refused, which
+    //  is the one way to get this wrong: forgetting to unbind first.
+    // ======================================================================
+    static void DrawRenderTarget(const RenderTarget& target, Vec2 min, Vec2 max);
     static RenderTarget* CurrentRenderTarget();
 
     // ---- shapes, in screen pixels ----------------------------------------

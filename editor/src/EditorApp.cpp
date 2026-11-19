@@ -236,7 +236,7 @@ bool EditorApp::Init(const std::string& projectRoot) {
 
     // LAST, because it may open a different scene and move the Scene view's
     // camera - so it needs the engine running and every panel already built.
-    EditorSession::Restore(m_scenePanel);
+    EditorSession::Restore(m_scenePanel, m_gamePanel);
 
     // AFTER Restore, which may have opened a different scene than the one the
     // engine started with. The baseline has to be the scene that is actually
@@ -892,6 +892,24 @@ void EditorApp::DrawDiscardChangesPopup() {
         const Pending     what  = m_pending;
         const std::string where = m_pendingScene;
         m_pending = Pending::None;
+
+        // ==================================================================
+        //  THE FLAG IS CLEARED HERE, and leaving it set made this button do
+        //  nothing at all.
+        //
+        //  Continue() for an OpenScene puts the path back into
+        //  requestedScene, and the gate in Run() that reads that field asks
+        //  AskedAboutUnsavedWork first. With the scene still marked dirty
+        //  that gate asked again, immediately, so the dialog reopened on the
+        //  very next frame - forever. Save and continue worked only because
+        //  it happens to clear the flag on its way past.
+        //
+        //  Clearing it is also simply what the button says: discarding the
+        //  changes IS declaring that there is no unsaved work any more.
+        //  Continue()'s own comment already promised this had happened.
+        // ==================================================================
+        EditorState::Get().ClearDirty();
+
         ImGui::CloseCurrentPopup();
         Continue(what, where);
     }
@@ -1136,8 +1154,11 @@ void EditorApp::DrawMenuBar() {
             // meant what they just clicked. The tooltip says so instead.
             //
             // It goes through requestedScene like every other route, so the
-            // loading still happens at the one safe point in the frame.
-            EditorState::Get().requestedScene = scene.SourcePath();
+            // loading still happens at the one safe point in the frame - and
+            // it says, in the request itself, that it does not want the
+            // question that point now asks on every other route's behalf.
+            EditorState::Get().requestedScene                = scene.SourcePath();
+            EditorState::Get().requestedSceneDiscardsChanges = true;
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -1366,6 +1387,23 @@ void EditorApp::FocusGameViewIfRequested() {
     // pressed the Game view is the BACKGROUND TAB - which is precisely the
     // case where its own Draw does not run. See GamePanel.h.
     ImGui::SetWindowFocus(m_gamePanel->Title());
+}
+
+void EditorApp::FocusSceneViewIfRequested() {
+    if (!EditorState::Get().focusSceneView || m_scenePanel == nullptr) {
+        return;
+    }
+
+    // Opened first and focused next frame, for the reason the Game view's
+    // version gives: a closed panel has never been shown to ImGui, so there
+    // is no window of that name to focus yet.
+    if (!m_scenePanel->IsOpen()) {
+        m_scenePanel->SetOpen(true);
+        return;
+    }
+
+    EditorState::Get().focusSceneView = false;
+    ImGui::SetWindowFocus(m_scenePanel->Title());
 }
 
 void EditorApp::RevealAssetsPanelIfRequested() {
@@ -1844,9 +1882,34 @@ void EditorApp::Run(int frameLimit) {
         //  before this one, so it does not survive the clear. Unity's
         //  Console is empty at the start of a session too.
         // ==================================================================
+        // ==================================================================
+        //  BOTH EDGES OF PLAY MODE, from the one piece of memory.
+        //
+        //  The frame play STARTS clears the Console, above. The frame it ENDS
+        //  sends the keyboard back to the Scene view - because the next thing
+        //  wanted after a playtest is almost always to edit the level and
+        //  play again, and Stop used to leave focus in a Game view that had
+        //  stopped running.
+        //
+        //  NOTICED HERE RATHER THAN AT THE THREE ExitPlayMode CALL SITES.
+        //  The Stop button, Ctrl+P and the automatic stop before a script
+        //  rebuild all end a session, and a fourth will be added eventually;
+        //  setting a flag at each is the arrangement that gets forgotten.
+        //  This is the same argument that moved the unsaved-work question to
+        //  the one place every scene-opening route passes through.
+        // ==================================================================
         const bool inPlayMode = engine.IsInPlayMode();
         if (inPlayMode && !m_wasInPlayMode) {
             ClearConsoleForPlay();
+        }
+        if (!inPlayMode && m_wasInPlayMode) {
+            EditorState::Get().focusSceneView = true;
+
+            // AND THE OTHER REQUEST IS DROPPED, in case Play and Stop both
+            // happened inside one frame - a script rebuild stopping a session
+            // that started this frame. Leaving both set would make the
+            // outcome depend on which consumer ran first.
+            EditorState::Get().focusGameView = false;
         }
         m_wasInPlayMode = inPlayMode;
 
@@ -1867,6 +1930,7 @@ void EditorApp::Run(int frameLimit) {
         DrawUnsavedProjectPopup();
 
         FocusGameViewIfRequested();
+        FocusSceneViewIfRequested();
         RevealAssetsPanelIfRequested();
 
         // The title carries the project, the scene and whether there is
@@ -1935,13 +1999,27 @@ void EditorApp::Run(int frameLimit) {
         // ==================================================================
         if (!EditorState::Get().requestedScene.empty()) {
             const std::string path = EditorState::Get().requestedScene;
+
+            // BOTH FIELDS, TOGETHER. The flag describes this one request, so
+            // leaving it set would wave the next scene change past the
+            // question as well. See EditorState::requestedSceneDiscardsChanges.
+            const bool discards = EditorState::Get().requestedSceneDiscardsChanges;
             EditorState::Get().requestedScene.clear();
+            EditorState::Get().requestedSceneDiscardsChanges = false;
 
             if (engine.IsInPlayMode()) {
                 // Same refusal as New Scene, for the same reason: Stop would
                 // put the old scene back over the one just opened.
                 std::snprintf(m_status, sizeof(m_status),
                               "stop playing first - Stop puts the scene back");
+            } else if (discards) {
+                // Reload. Discarding IS the request, so there is nothing to
+                // ask. The flag is cleared AFTER the load, not before: the
+                // scene that comes back is by definition the file's own, so
+                // whatever state the load left behind, there is no unsaved
+                // work in it.
+                LoadScene(path);
+                EditorState::Get().ClearDirty();
             } else if (!AskedAboutUnsavedWork(Pending::OpenScene, path)) {
                 LoadScene(path);
             }
@@ -2006,7 +2084,7 @@ void EditorApp::Shutdown() {
     // The same guard the engine keeps for the same reason; see the
     // m_initialised check at the top of Engine::Shutdown.
     if (m_ready) {
-        EditorSession::Save(m_scenePanel);
+        EditorSession::Save(m_scenePanel, m_gamePanel);
     }
 
     // Panels before the engine. A panel's destructor may still reach engine

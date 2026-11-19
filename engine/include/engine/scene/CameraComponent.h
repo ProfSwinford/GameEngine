@@ -127,6 +127,22 @@ public:
     // nothing to declare here.
 
     float Zoom() const     { return m_zoom; }
+
+    // ======================================================================
+    //  HOW MANY WORLD UNITS TALL THE SHOT IS, or ZERO when this camera is
+    //  framed by zoom - which is every camera written before this existed.
+    //
+    //  THE SAME BARGAIN render/Camera.h EXPLAINS: a zoom lets a bigger window
+    //  show more world, which is right for an editor panel and wrong for a
+    //  game. A frame height pins the vertical slice and lets the width follow
+    //  the aspect ratio, exactly as Unity's orthographic camera does.
+    //
+    //  ZERO AS "NOT SAID" rather than a flag beside it, so the two can never
+    //  disagree - see Scene::InitialCameraFrameHeight, which uses the same
+    //  convention for the same reason.
+    // ======================================================================
+    float FrameHeight() const { return m_frameHeight; }
+    void  SetFrameHeight(float worldUnits);
     int   Priority() const { return m_priority; }
     bool  Enabled() const  { return m_enabled; }
 
@@ -144,6 +160,9 @@ public:
 
 private:
     float m_zoom     = 1.0f;
+
+    // 0 means "framed by zoom" - see FrameHeight.
+    float m_frameHeight = 0.0f;
     int   m_priority = 0;
     bool  m_enabled  = true;
 };

@@ -295,6 +295,24 @@ constexpr std::array kTypeSpellings{
     TypeSpelling{"EntityRef", ScriptFieldType::Entity},
     TypeSpelling{"eng::PrefabRef", ScriptFieldType::Prefab},
     TypeSpelling{"PrefabRef", ScriptFieldType::Prefab},
+
+    // ---- the one that can be either --------------------------------------
+    //
+    // "GameObject" IS AN ALIAS, like the component names above and for the
+    // same reason it has to be listed here: an alias leaves no
+    // `GameObjectRef` text for anything else to read.
+    //
+    // IT USED TO BE A POINTER TYPEDEF, which is why it was never in this
+    // table - and why `GameObject thing;` was reported as a type the
+    // Inspector cannot draw, with a list of scalars to pick from instead.
+    // The type is a value now; see scene/GameObjectRef.h.
+    //
+    // NO requiredType, deliberately. The whole point is that it accepts
+    // either a scene object or a prefab, so constraining it to entities
+    // carrying some component would rule out half of what it is for.
+    TypeSpelling{"eng::GameObjectRef", ScriptFieldType::GameObject},
+    TypeSpelling{"GameObjectRef", ScriptFieldType::GameObject},
+    TypeSpelling{"GameObject", ScriptFieldType::GameObject},
     TypeSpelling{"eng::AnimationRef", ScriptFieldType::Animation},
     TypeSpelling{"AnimationRef", ScriptFieldType::Animation},
     TypeSpelling{"eng::ImageRef", ScriptFieldType::Image},
@@ -687,14 +705,33 @@ bool ReadDeclaration(const SourceLine& line, std::string_view commentAbove,
         //  nullptr;` instead. A `= nullptr` beside a ComponentRef still lands
         //  in this branch and is still told it is a pointer, which is the
         //  best this parser can do: the line is wrong whichever it is.
+        //
+        //  AND IT NO LONGER NAMES GameObject EITHER, which is a sharper
+        //  version of the same staleness: that one is a value now - an
+        //  eng::GameObjectRef - and it ACCEPTS nullptr on purpose, so that
+        //  every line written against the old pointer typedef goes on
+        //  compiling. "Initialising from nullptr is the one thing a value
+        //  cannot do" is therefore no longer true of it, and the premise this
+        //  whole test rests on has one exception.
+        //
+        //  `GameObject target = nullptr;` is the spelling somebody will write
+        //  out of habit, and it is correct. Being told it is a pointer and
+        //  watching the field vanish is the worst outcome available, so the
+        //  exception is spelled out rather than left to the heuristic.
+        //  STILL PURE: it is a comparison against a list in this file, which
+        //  is what kTypeSpellings already is - no registry, no engine state.
         // ================================================================
+        const bool valueTakesNullptr = WordAt(typeText, 0, "GameObject") ||
+                                       WordAt(typeText, 0, "GameObjectRef") ||
+                                       WordAt(typeText, 0, "eng::GameObjectRef");
+
         const bool starOnType =
             !typeText.empty() && (typeText.back() == '*' || typeText.back() == '&');
         const bool starOnName =
             !nameText.empty() && (nameText.front() == '*' || nameText.front() == '&');
         const std::size_t assign = nameText.find('=');
         const bool fromNullptr =
-            assign != std::string::npos &&
+            !valueTakesNullptr && assign != std::string::npos &&
             TrimmedCopy(nameText.substr(assign + 1)).starts_with("nullptr");
 
         if (starOnType || starOnName || fromNullptr) {

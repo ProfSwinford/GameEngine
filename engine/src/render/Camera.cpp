@@ -16,11 +16,73 @@ void Camera::SetZoom(float zoom) {
     // view matrix from becoming impossible to invert; the upper bound stops a
     // stray scroll wheel from zooming so far that positions lose precision.
     m_zoom = std::clamp(zoom, 0.01f, 1000.0f);
+
+    // THE MODE FOLLOWS THE LAST THING ASKED FOR. See the note on the
+    // declaration: a camera framed by height whose zoom was set would have
+    // that zoom thrown away by the next resize, silently.
+    m_framing = Framing::Zoom;
+}
+
+void Camera::SetFrameHeight(float worldUnits) {
+    // The same floor and ceiling, expressed in the other unit. A frame height
+    // of zero is a zoom of infinity, which is the unusable matrix SetZoom's
+    // lower bound exists to prevent.
+    m_frameHeight = std::clamp(worldUnits, 0.01f, 1000000.0f);
+    m_framing     = Framing::Height;
+    RederiveZoom();
+}
+
+float Camera::FrameHeight() const {
+    if (m_framing == Framing::Height) {
+        return m_frameHeight;
+    }
+
+    // DERIVED THE OTHER WAY, so this answers in both modes and nothing has to
+    // ask which one a camera is in before it can report what is in shot.
+    return m_zoom > 0.0f ? m_viewport.y / m_zoom : 0.0f;
+}
+
+void Camera::SetViewportSize(Vec2 sizePixels) {
+    m_viewport = sizePixels;
+    RederiveZoom();
+}
+
+void Camera::RederiveZoom() {
+    // ======================================================================
+    //  NOTHING AT ALL IN Framing::Zoom, and that is the backwards
+    //  compatibility story in one line: every camera in every scene already
+    //  written is in that mode, so this function is a branch they never take
+    //  and the arithmetic they always had is untouched.
+    // ======================================================================
+    if (m_framing != Framing::Height) {
+        return;
+    }
+    if (m_frameHeight <= 0.0f || m_viewport.y <= 0.0f) {
+        return;   // nothing sensible to derive from; the last zoom stands
+    }
+
+    // The one relationship, stated once: zoom = viewport.y / frameHeight.
+    // Through SetZoom rather than assigned, so the clamp applies - a one-pixel
+    // viewport with a large frame height would otherwise produce a zoom the
+    // view matrix cannot be inverted from.
+    //
+    // AND THE MODE IS PUT BACK, because SetZoom switches it. Deriving a zoom
+    // is not somebody choosing one.
+    const float wanted = m_viewport.y / m_frameHeight;
+    SetZoom(wanted);
+    m_framing = Framing::Height;
 }
 
 void Camera::Reset() {
     m_position = Vec2{0.0f, 0.0f};
     m_zoom     = 1.0f;
+
+    // BACK TO THE DEFAULT MODE TOO. Reset means "as a new camera is", and a
+    // new camera is framed by zoom - otherwise pressing Reset on a
+    // height-framed camera would leave it in a mode whose number had just
+    // been thrown away.
+    m_framing     = Framing::Zoom;
+    m_frameHeight = 720.0f;
 }
 
 Mat3 Camera::ViewMatrix() const {

@@ -805,6 +805,17 @@ bool TileLibrary::Reload(std::string_view virtualPath, std::string& outError) {
     return it->second->Deserialize(node, outError);
 }
 
+void TileLibrary::Forget(std::string_view virtualPath) {
+    auto&      assets = Assets();
+    const auto it     = assets.find(virtualPath);
+    if (it == assets.end()) {
+        return;   // not cached, or not a tile at all - both are fine
+    }
+
+    ENGINE_LOG_INFO(Channels::kTilemap, "forgetting tile '{}'", virtualPath);
+    assets.erase(it);
+}
+
 std::size_t TileLibrary::Count() { return Assets().size(); }
 
 void TileLibrary::Clear() {

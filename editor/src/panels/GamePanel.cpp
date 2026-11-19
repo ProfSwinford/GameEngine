@@ -10,9 +10,33 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <cstdio>
+#include <string>
+
 namespace editor {
 
-void GamePanel::Draw() {
+void GamePanel::ChooseMode(std::size_t index) {
+    if (index < m_modes.size()) {
+        m_chosen = index;
+    }
+}
+
+void GamePanel::AddCustomMode(const GameViewMode& mode) {
+    // ALREADY THERE WINS. Typing 16:9 into the box when 16:9 is a built-in
+    // should select it rather than growing a second identical row that the
+    // dropdown then shows twice.
+    for (std::size_t i = 0; i < m_modes.size(); ++i) {
+        if (m_modes[i] == mode) {
+            m_chosen = i;
+            return;
+        }
+    }
+    m_modes.push_back(mode);
+    m_chosen = m_modes.size() - 1;
+}
+
+void GamePanel::DrawControls() {
     // ---- the game camera, editable ---------------------------------------
     //
     // This is the camera a player sees through, and it is what gets written
@@ -27,12 +51,75 @@ void GamePanel::Draw() {
         EditorState::Get().MarkDirty();
     }
 
+    // ======================================================================
+    //  ZOOM OR FRAME HEIGHT, and which one is shown IS the camera's mode.
+    //
+    //  Two widgets in the same place rather than both at once, because they
+    //  are two ways of saying one thing and showing both invites editing the
+    //  one that is about to be overwritten. The small button beside it is the
+    //  switch, and switching keeps the current shot: the number it fills in
+    //  is the one that means the same framing at this viewport.
+    //
+    //  WHY A GAME WANTS THE HEIGHT. A zoom lets a bigger window show MORE
+    //  WORLD, so a player at 2560x1440 saw further than one at 1280x720 -
+    //  up, down and sideways. Pinning the aspect fixed the shape of that
+    //  mistake; pinning the height fixes the mistake. See render/Camera.h.
+    // ======================================================================
     ImGui::SameLine();
-    float zoom = camera.Zoom();
-    ImGui::SetNextItemWidth(120.0f);
-    if (ImGui::DragFloat("Zoom", &zoom, 0.01f, 0.05f, 20.0f, "%.2fx")) {
-        camera.SetZoom(zoom);
+    const bool byHeight = camera.CurrentFraming() == eng::Camera::Framing::Height;
+
+    if (byHeight) {
+        float height = camera.FrameHeight();
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::DragFloat("##height", &height, 1.0f, 1.0f, 100000.0f,
+                             "%.0f tall")) {
+            camera.SetFrameHeight(height);
+            EditorState::Get().MarkDirty();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How many world units are visible from the top of the "
+                              "picture to the bottom, WHATEVER its pixel size.\n\n"
+                              "The width follows the aspect ratio, so a 21:9 player "
+                              "sees further sideways and the same amount "
+                              "vertically - which is what every ultrawide player "
+                              "expects.\n\n"
+                              "This is the one that makes what you frame here what "
+                              "ships.");
+        }
+    } else {
+        float zoom = camera.Zoom();
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::DragFloat("##zoom", &zoom, 0.01f, 0.05f, 20.0f, "%.2fx")) {
+            camera.SetZoom(zoom);
+            EditorState::Get().MarkDirty();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How many screen pixels one world unit covers.\n\n"
+                              "A BIGGER WINDOW THEN SHOWS MORE WORLD, which is why "
+                              "this is not the one to ship with: every player sees a "
+                              "different amount of the level. Press 'tall' to pin "
+                              "the vertical slice instead.");
+        }
+    }
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton(byHeight ? "zoom" : "tall")) {
+        // THE SHOT IS KEPT. Switching framing should change which number is
+        // held still, not what is on screen - so each direction hands the
+        // other the value that means the same thing at this viewport, which
+        // is exactly what Camera's own two accessors already compute.
+        if (byHeight) {
+            camera.SetZoom(camera.Zoom());
+        } else {
+            camera.SetFrameHeight(camera.FrameHeight());
+        }
         EditorState::Get().MarkDirty();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(byHeight ? "Frame by zoom instead - a bigger window will "
+                                     "show more world"
+                                   : "Frame by height instead - every player sees the "
+                                     "same vertical slice");
     }
 
     ImGui::SameLine();
@@ -41,15 +128,150 @@ void GamePanel::Draw() {
         EditorState::Get().MarkDirty();
     }
 
-    // How much room is left inside this panel, in pixels. The off-screen
-    // picture is resized to match, so the view fills the panel whatever size
-    // the user drags it to.
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    m_target.Resize(static_cast<int>(avail.x), static_cast<int>(avail.y));
+    // ======================================================================
+    //  WHAT SHAPE THE GAME IS RENDERED AT.
+    //
+    //  NOT MarkDirty, for any of this row. The aspect you are looking through
+    //  and how big it is drawn are facts about the person at the keyboard,
+    //  not about the level - the same reasoning that keeps the Scene view's
+    //  own camera out of the scene file. Marking the scene unsaved because
+    //  somebody checked what 4:3 looks like would be a lie, and Ctrl+S would
+    //  then write a scene nobody had edited.
+    // ======================================================================
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150.0f);
+    if (ImGui::BeginCombo("##aspect", m_modes[m_chosen].label.c_str())) {
+        for (std::size_t i = 0; i < m_modes.size(); ++i) {
+            // A LINE BETWEEN THE GROUPS, because "16:9" and "1920 x 1080" are
+            // answers to different questions and a flat list of fourteen
+            // makes you read every one to find that out.
+            if (i > 0 && m_modes[i].kind != m_modes[i - 1].kind) {
+                ImGui::Separator();
+            }
 
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 size(static_cast<float>(m_target.Width()),
-                      static_cast<float>(m_target.Height()));
+            const bool chosen = i == m_chosen;
+            if (ImGui::Selectable(m_modes[i].label.c_str(), chosen)) {
+                m_chosen = i;
+            }
+            if (chosen) {
+                ImGui::SetItemDefaultFocus();
+            }
+
+            // Removing a custom entry, on the row it belongs to. Built-ins
+            // have no x: offering one that refuses would be worse than not
+            // offering it.
+            if (i >= m_builtInCount) {
+                ImGui::SameLine();
+                ImGui::PushID(static_cast<int>(i));
+                if (ImGui::SmallButton("x")) {
+                    m_modes.erase(m_modes.begin() + static_cast<long>(i));
+                    if (m_chosen >= m_modes.size()) {
+                        m_chosen = m_modes.size() - 1;
+                    } else if (m_chosen > i) {
+                        --m_chosen;
+                    }
+                    ImGui::PopID();
+                    break;   // the list just moved under this loop
+                }
+                ImGui::PopID();
+            }
+        }
+
+        ImGui::Separator();
+
+        // ---- adding one -------------------------------------------------
+        ImGui::TextDisabled("add a ratio or a size");
+        ImGui::SetNextItemWidth(110.0f);
+        const bool entered =
+            ImGui::InputTextWithHint("##custom", "16:9 or 1920x1080", m_customText,
+                                     sizeof(m_customText),
+                                     ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Add") || entered) {
+            GameViewMode  made;
+            std::string   why;
+            if (ParseGameViewMode(m_customText, made, why)) {
+                AddCustomMode(made);
+                m_customText[0]  = '\0';
+                m_customError[0] = '\0';
+            } else {
+                std::snprintf(m_customError, sizeof(m_customError), "%s", why.c_str());
+            }
+        }
+        if (m_customError[0] != '\0') {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", m_customError);
+        }
+
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("What the camera renders at.\n\n"
+                          "Free Aspect follows this panel, so dragging it wider "
+                          "shows MORE of the level.\n"
+                          "An aspect pins the shape; a resolution pins the exact "
+                          "pixels, which is the only one that answers 'what will a "
+                          "player see'.");
+    }
+
+    // ---- and how big it is drawn -----------------------------------------
+    //
+    // SEPARATE FROM THE RESOLUTION, deliberately - see GameViewLayout.h.
+    // Scaling the render would change what the camera sees, which is the
+    // thing the dropdown beside this exists to pin down.
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130.0f);
+    float scale = m_scale;
+    if (ImGui::DragFloat("##scale", &scale, 0.01f, 0.0f, 8.0f,
+                         m_scale <= kFitScale ? "Fit" : "%.2fx")) {
+        m_scale = scale <= 0.02f ? kFitScale : scale;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("How big the finished picture is drawn in this panel.\n\n"
+                          "Fit is as large as the panel allows, never past 1:1.\n"
+                          "1.00x is one render pixel per screen pixel, which is the "
+                          "only honest way to look at pixel art - a big target is "
+                          "then mostly off the edge, on purpose.");
+    }
+}
+
+void GamePanel::Draw() {
+    DrawControls();
+
+    // ======================================================================
+    //  THE TWO SIZES, AND THEY ARE DIFFERENT NUMBERS.
+    //
+    //  `layout.target*` is what the camera renders at. `layout.draw*` is how
+    //  big that picture appears here. They were the same number for as long
+    //  as the render simply followed the panel, and every piece of arithmetic
+    //  below used to be able to ignore the difference. None of it can now -
+    //  the pointer translation least of all.
+    // ======================================================================
+    const ImVec2         avail  = ImGui::GetContentRegionAvail();
+    const GameViewLayout layout =
+        LayoutGameView(m_modes[m_chosen], avail.x, avail.y, m_scale);
+
+    m_target.Resize(layout.targetWidth, layout.targetHeight);
+
+    // ======================================================================
+    //  CENTRED, WITH BLACK AROUND IT.
+    //
+    //  A 16:9 render in a square panel leaves room on two sides, and what
+    //  goes there has to be BLACK rather than the panel's own grey: the whole
+    //  point of pinning an aspect is to see what a player sees, and a player
+    //  sees black bars. Grey ones would make the framing look like it
+    //  continues past the edge of the picture.
+    //
+    //  The fill covers the WHOLE content region, not just the margins, so
+    //  there is no seam to line up and nothing to get wrong when the picture
+    //  is larger than the panel and the margins are negative.
+    // ======================================================================
+    const ImVec2 area = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        area, ImVec2(area.x + avail.x, area.y + avail.y), IM_COL32(0, 0, 0, 255));
+
+    const ImVec2 size(layout.drawWidth, layout.drawHeight);
+    const ImVec2 origin(area.x + std::max(0.0f, (avail.x - size.x) * 0.5f),
+                        area.y + std::max(0.0f, (avail.y - size.y) * 0.5f));
 
     if (!m_target.IsValid()) {
         ImGui::TextDisabled("this view could not be created");
@@ -63,6 +285,13 @@ void GamePanel::Draw() {
 
     // ImGui::Image displays a picture. The picture itself is filled in later
     // this frame by RenderView.
+    //
+    // THE CURSOR IS MOVED TO THE CENTRED ORIGIN FIRST, so that the item
+    // ImGui creates is the PICTURE's rectangle and not the panel's. Everything
+    // below reads IsItemHovered and IsItemClicked off it, and those have to
+    // mean "over the game" rather than "over the black beside it" - a click
+    // in the letterbox is not a click in the game.
+    ImGui::SetCursorScreenPos(origin);
     ImGui::Image(reinterpret_cast<ImTextureID>(m_target.NativeTexture()), size);
 
     // Clicking the view takes focus. That is how you get the keyboard back
@@ -86,9 +315,26 @@ void GamePanel::Draw() {
     const bool     overView = ImGui::IsItemHovered();
     const bool     live     = overView && eng::Engine::Get().IsInPlayMode();
 
+    // ==================================================================
+    //  SCALED INTO THE RENDER, and this is the line the whole two-sizes
+    //  distinction exists for.
+    //
+    //  The UI is laid out against the size the game RENDERS at, so the
+    //  pointer has to arrive in those coordinates - not in the panel's. A
+    //  1920x1080 target drawn 600 pixels wide is being shown at under a
+    //  third scale, so a click 300 pixels in from the picture's left edge is
+    //  960 pixels into the game.
+    //
+    //  Getting this wrong does not look like a bug in the mouse. It looks
+    //  like buttons that only work near one corner, and it gets blamed on
+    //  the UI layout for an afternoon.
+    const eng::Vec2 inRender{(io.MousePos.x - origin.x) * layout.TargetPerDrawX(),
+                             (io.MousePos.y - origin.y) * layout.TargetPerDrawY()};
+
     eng::UISystem::SetPointer(
-        eng::Vec2{io.MousePos.x - origin.x, io.MousePos.y - origin.y},
-        eng::Vec2{size.x, size.y},
+        inRender,
+        eng::Vec2{static_cast<float>(layout.targetWidth),
+                  static_cast<float>(layout.targetHeight)},
         live && ImGui::IsMouseDown(ImGuiMouseButton_Left), live);
 
     // ----------------------------------------------------------------------
@@ -107,7 +353,33 @@ void GamePanel::Draw() {
     //  standalone build, which installs no GUI hooks, was fine. See
     //  EditorGui::SetGameViewArea.
     // ----------------------------------------------------------------------
-    EditorGui::SetGameViewArea(origin.x, origin.y, size.x, size.y, live);
+    // ======================================================================
+    //  CLIPPED TO THE PANEL, and leaving this out was a real bug.
+    //
+    //  At a scale of 1.00x a 1920x1080 target is DRAWN 1920x1080 - mostly
+    //  outside a 600-pixel panel, deliberately. Publishing that rectangle
+    //  told EditorGui the game occupied a 1920x1080 region anchored at this
+    //  panel's corner, which on a docked layout covers the Inspector and the
+    //  Hierarchy.
+    //
+    //  And the consequence is not cosmetic. EditorGui::HookWantsMouse tests
+    //  this LATCHED rectangle against each event's own position - see the
+    //  note there about why it is latched rather than asked fresh - so a
+    //  click on the Inspector was reported as not wanted by ImGui and routed
+    //  to the game's InputMap instead. The Inspector would simply stop
+    //  responding, while the Scene view beside it worked.
+    //
+    //  The intersection with the content region is what the game actually
+    //  occupies on screen, which is what this field is for.
+    // ======================================================================
+    const float clipMinX = std::max(origin.x, area.x);
+    const float clipMinY = std::max(origin.y, area.y);
+    const float clipMaxX = std::min(origin.x + size.x, area.x + avail.x);
+    const float clipMaxY = std::min(origin.y + size.y, area.y + avail.y);
+
+    EditorGui::SetGameViewArea(clipMinX, clipMinY,
+                               std::max(0.0f, clipMaxX - clipMinX),
+                               std::max(0.0f, clipMaxY - clipMinY), live);
 
     // FOCUS is what routes the keyboard, and it is deliberately focus rather
     // than merely hovering: hovering would mean the player stopped responding

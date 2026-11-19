@@ -7,20 +7,30 @@
 //  and the screen fades back. Nothing the player sees jumps.
 //
 //  =============================================================================
-//  THERE IS NO DontDestroyOnLoad HERE, AND THIS IS WHAT STANDS IN FOR IT
+//  THIS CARRIES ITS STATE IN STATICS, AND NO LONGER HAS TO
 //
-//  Unity keeps a GameObject alive across a load and everything on it survives.
-//  This engine cannot: there is exactly ONE Scene in the process, and loading
-//  one unloads the other first, which destroys every entity, every component
-//  and every behaviour - see Engine.h on RequestScene. The scripting reference
-//  says so outright and gives the answer this file uses: carry the state in a
-//  static.
+//  DontDestroyOnLoad() NOW EXISTS - call it on a script's own entity and the
+//  entity, its components, its behaviour and its children survive a scene
+//  change as the same objects. See ScriptBehaviour::DontDestroyOnLoad and
+//  Scene::SetPersistent. This file predates it and is left as it was, because
+//  it works and because the static approach is still the right one for what
+//  it happens to need: THREE FLOATS AND NOTHING ELSE.
 //
-//  So the ENTITY does not survive and the STATE does. The three statics below
-//  live as long as the script library is loaded, and a GameController in the
-//  next scene adopts them in OnStart rather than starting fresh. What a player
-//  can see - the black screen - is therefore continuous even though the object
-//  drawing it is not the same object.
+//  WHICH IS THE WHOLE DISTINCTION WORTH TAKING FROM THIS FILE. Statics carry
+//  STATE. They cannot carry a position, a child, a coroutine, a collider or a
+//  reference that something else holds - and the moment a manager needs any
+//  of those, the entity has to survive rather than its numbers. A fade is a
+//  float; an inventory the player is carrying is not.
+//
+//  So the ENTITY does not survive here and the STATE does. The three statics
+//  below live as long as the script library is loaded, and a GameController in
+//  the next scene adopts them in OnStart rather than starting fresh. What a
+//  player can see - the black screen - is therefore continuous even though the
+//  object drawing it is not the same object.
+//
+//  REWRITTEN WITH DontDestroyOnLoad this would be one controller that is never
+//  torn down, and the statics would go. That is a better shape and a change to
+//  working content, so it has not been made here.
 //
 //  WHY THAT IS NOT A FLASH OF THE NEW LEVEL. The load happens at the END of
 //  the frame that asked for it, and the new scene's OnStart runs before its

@@ -6,6 +6,7 @@
 #include "panels/AssetBrowserPanel.h"
 
 #include "AssetDragDrop.h"
+#include "AssetRefs.h"
 #include "EditorApp.h"
 #include "ShellOpen.h"
 #include "ScriptBuild.h"
@@ -1693,8 +1694,49 @@ void AssetBrowserPanel::DrawRenamePopup() {
             // A FOLDER NEEDS NO FLAG HERE, which is why m_renamePath carries
             // no isDirectory the way m_deletePath does: FollowAsset looks for
             // "<old>.oimport", a folder has none, and it does nothing.
-            eng::ImportLibrary::FollowAsset(
-                m_renamePath, JoinPath(ParentOf(m_renamePath), m_renameBuffer));
+            const std::string newPath =
+                JoinPath(ParentOf(m_renamePath), m_renameBuffer);
+            eng::ImportLibrary::FollowAsset(m_renamePath, newPath);
+
+            // THE PARSED COPIES GO, for the reason RequestDelete gives about
+            // prefabs and AssetRefs.h gives about tiles: nothing watches the
+            // disk, so a file that has moved goes on being handed out from
+            // memory under its old path for the rest of the session.
+            ForgetCachedAsset(m_renamePath);
+
+            // ==============================================================
+            //  AND EVERYTHING THAT POINTED AT IT NOW POINTS AT THE NEW NAME.
+            //
+            //  Without this a rename is a quiet way to break a level: a
+            //  tilemap whose palette entry will not load keeps its cells,
+            //  because cells are numbers, and simply draws nothing where that
+            //  tile was. See AssetRefs.h.
+            // ==============================================================
+            const bool wasDirty = EditorState::Get().IsDirty();
+            const RefRewrite refs = RewriteAssetReferences(m_renamePath, newPath);
+
+            if (refs.openScene) {
+                // The scene was rebuilt from text, so anything naming an
+                // entity by id is describing a scene that no longer exists -
+                // the same reason EditorApp::LoadScene clears it.
+                EditorState::Get().ClearSelection();
+
+                // THE FLAG IS PUT BACK rather than left wherever the reload
+                // dropped it. The file on disk was rewritten too, so the two
+                // still agree exactly as much as they did a moment ago: an
+                // unsaved scene is still unsaved, and a saved one has not
+                // become dirty by having a reference corrected in both places
+                // at once.
+                if (wasDirty) {
+                    EditorState::Get().MarkDirty();
+                } else {
+                    EditorState::Get().ClearDirty();
+                }
+            }
+
+            m_statusIsError = false;
+            std::snprintf(m_status, sizeof(m_status), "renamed to %s - %s",
+                          m_renameBuffer, DescribeRewrite(refs).c_str());
 
             m_picked.clear();
             EditorState::Get().selectedAsset.clear();
@@ -2814,8 +2856,30 @@ void AssetBrowserPanel::ApplyPendingMove() {
     // concatenation, for the empty-root reason spelled out in the rename
     // above. A folder dropped on a folder brings its own sidecars and finds
     // nothing here.
-    eng::ImportLibrary::FollowAsset(
-        request.from, JoinPath(request.toDirectory, LeafOf(request.from)));
+    const std::string movedTo = JoinPath(request.toDirectory, LeafOf(request.from));
+    eng::ImportLibrary::FollowAsset(request.from, movedTo);
+    ForgetCachedAsset(request.from);
+
+    // AND EVERY REFERENCE COMES WITH IT, exactly as on a rename - a move is a
+    // rename that changes the folder rather than the leaf, and a path that
+    // has stopped resolving does not care which of the two happened to it.
+    // A FOLDER dragged onto another folder is covered too: the match counts
+    // the old path followed by "/" as being inside it. See AssetRefs.h.
+    const bool       wasDirty = EditorState::Get().IsDirty();
+    const RefRewrite refs     = RewriteAssetReferences(request.from, movedTo);
+
+    if (refs.openScene) {
+        EditorState::Get().ClearSelection();
+        if (wasDirty) {
+            EditorState::Get().MarkDirty();
+        } else {
+            EditorState::Get().ClearDirty();
+        }
+    }
+
+    std::snprintf(m_status, sizeof(m_status), "moved %s to %s - %s",
+                  request.from.c_str(), DisplayPath(request.toDirectory).c_str(),
+                  DescribeRewrite(refs).c_str());
 
     // What was selected is at a different path now. The selection is dropped
     // rather than left naming somewhere nothing lives, because the Delete key

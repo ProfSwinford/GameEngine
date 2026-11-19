@@ -46,6 +46,19 @@ AABB CameraComponent::WorldBounds(Vec2 viewportPixels) const {
 
 bool CameraComponent::Deserialize(const Json& node, std::string& outError) {
     SetZoom(ReadFloat(node, "zoom", 1.0f, kTypeName));
+
+    // ==================================================================
+    //  "frameHeight" WINS WHEN PRESENT, and is absent from every camera
+    //  written before it existed - so a component with only a zoom reads
+    //  exactly as it always did, default included.
+    // ==================================================================
+    const float height = ReadFloat(node, "frameHeight", 0.0f, kTypeName);
+    if (height > 0.0f) {
+        SetFrameHeight(height);
+    } else {
+        m_frameHeight = 0.0f;
+    }
+
     m_priority = ReadInt(node, "priority", 0, kTypeName);
     m_enabled  = ReadBool(node, "enabled", true, kTypeName);
 
@@ -54,10 +67,24 @@ bool CameraComponent::Deserialize(const Json& node, std::string& outError) {
 }
 
 bool CameraComponent::Serialize(Json& out) const {
-    out["zoom"]     = m_zoom;
+    // EXACTLY ONE OF THE TWO, for the reason Scene's own camera block gives:
+    // a camera is framed one way or the other, and writing both would make a
+    // round trip depend on which key the reader preferred.
+    if (m_frameHeight > 0.0f) {
+        out["frameHeight"] = m_frameHeight;
+    } else {
+        out["zoom"] = m_zoom;
+    }
     out["priority"] = m_priority;
     out["enabled"]  = m_enabled;
     return true;
+}
+
+void CameraComponent::SetFrameHeight(float worldUnits) {
+    // Clamped like SetZoom, and for the same reason: a height of zero is a
+    // zoom of infinity, and the view matrix it produces cannot be inverted -
+    // so nothing could be clicked on.
+    m_frameHeight = std::max(0.0f, worldUnits);
 }
 
 void CameraComponent::OnAttach() {
@@ -154,7 +181,14 @@ void CameraSystem::Apply() {
     // which is most of the reason for making the camera an entity at all.
     Camera& view = Engine::Get().GetCamera();
     view.SetPosition(transform->WorldPosition());
-    view.SetZoom(active->Zoom());
+    // WHICHEVER WAY THIS CAMERA IS FRAMED. SetFrameHeight derives the zoom
+    // from the viewport, so the amount of world in shot stops depending on
+    // the window - see render/Camera.h.
+    if (active->FrameHeight() > 0.0f) {
+        view.SetFrameHeight(active->FrameHeight());
+    } else {
+        view.SetZoom(active->Zoom());
+    }
 }
 
 void CameraSystem::Update(float /*deltaSeconds*/) {

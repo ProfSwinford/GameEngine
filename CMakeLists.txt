@@ -104,6 +104,26 @@ project(Engine2D
 #       out of the low half of a pointer and its generation out of the high
 #       half, so the hook would silently never match anything rather than
 #       crashing. Nothing but this number catches it.
+#  AND ONE CHANGE THAT DELIBERATELY DID NOT BUMP IT, recorded here because
+#  the next person to add a field type will ask:
+#
+#    ScriptFieldType gained a GameObject enumerator and ScriptBehaviour gained
+#    two Instantiate overloads for it. Neither is a layout change. The
+#    enumerator is APPENDED, so every existing value keeps its number and the
+#    enum's range is unchanged; ScriptField grew no members, only an
+#    AsGameObjectRef() accessor; and the Instantiate pair are non-virtual
+#    member functions, which the "do NOT bump" rule above names outright. A
+#    stale script DLL simply has no field of the new type, which is the
+#    harmless direction.
+#
+#    The GameObject ALIAS changed meaning in that same change - from
+#    eng::Entity* to eng::GameObjectRef - and that is worth a second look
+#    rather than a shrug, because an alias changing type is exactly the shape
+#    of thing this number exists for. It is safe here for one reason: the
+#    alias appears in no struct, no function pointer and no table that crosses
+#    the boundary. It is only ever a local or a member INSIDE a script's own
+#    library, which is compiled as one piece.
+#
 #    4 - ScriptComponent grew a list of running coroutines, and
 #        ScriptBehaviour grew StartCoroutine. Both layouts cross the boundary
 #        through inline and template code, so a script DLL built against the

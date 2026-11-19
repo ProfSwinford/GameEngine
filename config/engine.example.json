@@ -28,6 +28,17 @@
     "gizmoCircleSegments": 24
   },
 
+  "units": {
+    "_note": "HOW BIG 'ONE' IS, in pixels. One tile, one standing character's width, one grid square - whatever your project's ordinary thing is. 32 is this project's tile size.",
+    "_why": "Colliders are authored as a fraction of it: a scale of [1,1] means 'the size of the sprite this is attached to', or one unit square when there is no sprite, and [0.5,1] means half as wide and full height. Those numbers still mean the right thing after you redraw the art at twice the resolution; pixel counts typed into every scene file do not. The editor also creates new objects one unit across, whatever size their picture happens to be.",
+    "pixelsPerUnit": 32
+  },
+
+  "presentation": {
+    "_note": "WHAT SHAPE THE FINISHED GAME IS. \"free\" lets it fill the window, which means a wider monitor sees MORE OF THE LEVEL - fine while building, wrong for shipping. A ratio like \"16:9\" pins the shape; a size like \"1920x1080\" pins the exact pixels, which is what makes pixel art land on the same grid everywhere. Whatever space is left over is filled with BLACK, so full screen on a differently-shaped display still works.",
+    "mode": "free"
+  },
+
   "physics": {
     "_gravity": "GRAVITY IS IN YOUR GAME'S UNITS, and this engine works in PIXELS. Unity's -9.81 is metres per second squared; at roughly 100 pixels to the metre, -981 is the same real-world gravity. The engine's built-in default is -9.81 so that the number means what a physics textbook says, which makes it a barely visible drift in pixels - about 30 pixels in two and a half seconds - so every project that wants gravity has to say so here. Use [0, 0] for a top-down game.",
     "gravity": [0.0, -981.0],

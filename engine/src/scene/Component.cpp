@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include <engine/core/Log.h>
+#include <engine/core/WorldUnit.h>
 #include <engine/render/Camera.h>
 #include <engine/resource/ResourceManager.h>
 #include <engine/scene/Component.h>
@@ -270,6 +271,38 @@ void SpriteComponent::ShowTexture(const TextureRef& texture) {
     m_texture = texture;   // and NOT m_texturePath - see Component.h
 }
 
+void SpriteComponent::FitToWorldUnit() {
+    const float unit = WorldUnit::Pixels();
+
+    // THE PICTURE'S OWN SIZE, not RenderedSize() - which would hand back the
+    // size set by the LAST call to this and make a second one a no-op built
+    // on the first. The proportions being kept are the image's.
+    if (!m_texture || m_texture->width <= 0 || m_texture->height <= 0) {
+        m_pixelSize = Vec2{unit, unit};
+        return;
+    }
+
+    const float width   = static_cast<float>(m_texture->width);
+    const float height  = static_cast<float>(m_texture->height);
+    const float longest = std::max(width, height);
+
+    m_pixelSize = Vec2{unit * width / longest, unit * height / longest};
+}
+
+Vec2 SpriteComponent::RenderedSize() const {
+    // An authored size wins outright, including over a texture that is a
+    // different shape: "size" in the scene file means "draw it this big", not
+    // "start from this".
+    if (m_pixelSize.x > 0.0f && m_pixelSize.y > 0.0f) {
+        return m_pixelSize;
+    }
+    if (!m_texture) {
+        return Vec2{0.0f, 0.0f};
+    }
+    return Vec2{static_cast<float>(m_texture->width),
+                static_cast<float>(m_texture->height)};
+}
+
 // ---------------------------------------------------------------------------
 //  SpriteRenderSystem
 // ---------------------------------------------------------------------------
@@ -336,11 +369,7 @@ void SpriteRenderSystem::RenderRange(Camera& camera, int minLayer, int maxLayer)
         const Vec2  scale    = world.GetScale();
         const float rotation = world.GetRotation();
 
-        Vec2 sizePixels = sprite->PixelSize();
-        if (sizePixels.x <= 0.0f || sizePixels.y <= 0.0f) {
-            sizePixels = Vec2{static_cast<float>(sprite->GetTexture()->width),
-                              static_cast<float>(sprite->GetTexture()->height)};
-        }
+        const Vec2 sizePixels = sprite->RenderedSize();
 
         const Vec2 onScreen{sizePixels.x * scale.x * camera.Zoom(),
                             sizePixels.y * scale.y * camera.Zoom()};

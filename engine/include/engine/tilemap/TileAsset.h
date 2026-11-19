@@ -472,6 +472,27 @@ public:
     // and seeing the map update possible.
     static bool Reload(std::string_view virtualPath, std::string& outError);
 
+    // ======================================================================
+    //  DROPS ONE ENTRY, for a file that has been renamed, moved or deleted.
+    //
+    //  NOTHING WATCHES THE DISK. Load caches by path and hands the cached
+    //  copy back for the rest of the session, so a .otile that is no longer
+    //  at that path goes on resolving perfectly well from memory - the editor
+    //  looks completely fine, and the stale path is written back into the
+    //  scene file on the next save. The breakage then surfaces on somebody
+    //  else's machine, or on the next launch, with nothing to connect it to
+    //  the rename that caused it.
+    //
+    //  SAFE TO CALL FOR A PATH THAT IS NOT CACHED, and for one that is not a
+    //  tile at all: the caller is usually the Assets panel, which does not
+    //  know or care what kind of file it has just moved.
+    //
+    //  A map still holding the dropped TileAsset* keeps working - it is the
+    //  CACHE entry that goes, not the object - until the map next refreshes
+    //  its palette, which is when it picks up the new path.
+    // ======================================================================
+    static void Forget(std::string_view virtualPath);
+
     static std::size_t Count();
     static void        Clear();
 

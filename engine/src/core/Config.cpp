@@ -64,6 +64,15 @@ bool LoadBootConfig(std::string_view virtualPath, BootConfig& outConfig,
     outConfig.windowWidth  = ReadInt(window, "width", outConfig.windowWidth, "window");
     outConfig.windowHeight = ReadInt(window, "height", outConfig.windowHeight, "window");
     outConfig.windowTitle  = ReadString(window, "title", outConfig.windowTitle, "window");
+    outConfig.fullscreen   = ReadBool(window, "fullscreen", outConfig.fullscreen, "window");
+
+    // --- presentation ------------------------------------------------------
+    //
+    // Left as text and parsed by render/Presentation, which owns the one
+    // reader for this spelling - see the note on BootConfig::presentation.
+    const Json& presentation = Section(document, "presentation");
+    outConfig.presentation =
+        ReadString(presentation, "mode", outConfig.presentation, "presentation");
 
     // --- logging ----------------------------------------------------------
     const Json& logging = Section(document, "logging");
@@ -88,6 +97,16 @@ bool LoadBootConfig(std::string_view virtualPath, BootConfig& outConfig,
         ReadFloat(tunables, "fixedTimestepSeconds", outConfig.fixedTimestepSeconds, "tunables");
     outConfig.maxStepsPerFrame =
         ReadInt(tunables, "maxStepsPerFrame", outConfig.maxStepsPerFrame, "tunables");
+
+    // --- units ------------------------------------------------------------
+    //
+    // Its own section rather than another tunable, because it is not one. A
+    // tunable is a number you try different values of; this one is a
+    // statement about what the project's art is, and every authored size in
+    // every scene is a fraction of it. See core/WorldUnit.h.
+    const Json& units = Section(document, "units");
+    outConfig.worldUnitPixels =
+        ReadFloat(units, "pixelsPerUnit", outConfig.worldUnitPixels, "units");
 
     // --- physics ----------------------------------------------------------
     const Json& physics = Section(document, "physics");

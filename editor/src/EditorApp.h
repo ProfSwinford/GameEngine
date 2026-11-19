@@ -211,6 +211,20 @@ struct EditorState {
     // direct call, so no panel needs a pointer to another panel.
     bool focusGameView = false;
 
+    // ======================================================================
+    //  AND BACK TO THE SCENE VIEW WHEN PLAY ENDS.
+    //
+    //  The other half of focusGameView, and leaving it out was jarring in a
+    //  way that is hard to see from the code: Play puts the keyboard in the
+    //  Game view, Stop left it there, and the next thing somebody wants to do
+    //  after a playtest is almost always edit the level and play again. Every
+    //  one of those cycles started with a click on a panel to get the Scene
+    //  view back.
+    //
+    //  A FLAG, for the same reason focusGameView is one: see the note above.
+    // ======================================================================
+    bool focusSceneView = false;
+
     // A scene that the Assets panel or the Scene view asked to open, applied
     // by EditorApp AFTER every panel has finished drawing.
     //
@@ -221,6 +235,21 @@ struct EditorState {
     // argument DeferredOps makes for the engine, arriving at the editor - and
     // the editor does not get an exemption from the engine's own rules.
     std::string requestedScene;
+
+    // Set alongside requestedScene by a route whose WHOLE POINT is to throw
+    // the current scene away - Reload Scene, and nothing else so far.
+    //
+    // WHY IT HAS TO EXIST. The unsaved-work question is asked in one place,
+    // where requestedScene is applied, because six routes set that field and
+    // asking at the call sites asked for one of them. That centralising
+    // swallowed the single route that deliberately did NOT want the question:
+    // Reload says in its own tooltip that it discards without asking, and
+    // then asked anyway. A route cannot opt out by not calling the gate when
+    // it no longer calls the gate at all, so it says so in the request.
+    //
+    // CLEARED WITH requestedScene, never on its own, so a reload cannot leave
+    // it set and silently wave the NEXT scene change past the question.
+    bool requestedSceneDiscardsChanges = false;
 
     // A .oinput somebody double-clicked in the Assets panel. Read and
     // cleared by the Input Actions window on its next draw, for the same
@@ -526,6 +555,15 @@ private:
     // the panel because at the moment Play is pressed the Game view is a
     // background tab, so its own Draw is not running. See GamePanel.h.
     void FocusGameViewIfRequested();
+
+    // The other direction, when a playtest ends. Same reason for living here:
+    // whichever panel had focus during play is not the one that has to know
+    // about this.
+    //
+    // The REQUEST is made where m_wasInPlayMode notices play ending, in Run -
+    // one place for both edges, rather than at each of the three routes that
+    // can end a session. See the note there.
+    void FocusSceneViewIfRequested();
 
     // ======================================================================
     //  And the Assets panel, for the same reason and with the same bug if it

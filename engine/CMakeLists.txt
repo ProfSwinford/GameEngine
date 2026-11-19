@@ -21,6 +21,7 @@ set(ENGINE_SOURCES
     src/core/Time.cpp                 # the clock, readable from any script
     src/core/LogBuffer.cpp            # the copy the Console window shows
     src/core/Subsystem.cpp            # ordered start-up and shutdown
+    src/core/WorldUnit.cpp            # how many pixels "one" is
 
     src/debug/Debug.cpp               # Unity's Debug: friendly logging and shapes
 
@@ -53,6 +54,7 @@ set(ENGINE_SOURCES
     src/platform/Window.cpp           # the game window
 
     src/render/Camera.cpp
+    src/render/Presentation.cpp       # what shape the game is, and the black around it
     src/render/Font.cpp               # baking a .ttf into one texture
     src/render/StbTrueType.cpp        # where stb_truetype is compiled
     src/render/Gizmos.cpp             # helper shapes drawn over the world
@@ -69,6 +71,7 @@ set(ENGINE_SOURCES
     src/scene/DeferredOps.cpp         # safe create and destroy
     src/scene/Entity.cpp
     src/scene/EntityRef.cpp            # one entity referring to another
+    src/scene/GameObjectRef.cpp       # one reference: a scene object OR a prefab
     src/scene/ImageRef.cpp            # one script variable naming one picture
     src/scene/Messaging.cpp           # entities talking to each other
     src/scene/Prefab.cpp              # saved entities, and the link back to them
@@ -100,6 +103,7 @@ set(ENGINE_HEADERS
     include/engine/core/LogBuffer.h
     include/engine/core/Subsystem.h
     include/engine/core/Time.h
+    include/engine/core/WorldUnit.h
     include/engine/debug/Debug.h
     include/engine/fs/FileSystem.h
     include/engine/fs/UserPaths.h
@@ -125,6 +129,7 @@ set(ENGINE_HEADERS
     include/engine/platform/SdlHandles.h
     include/engine/platform/Window.h
     include/engine/render/Camera.h
+    include/engine/render/Presentation.h
     include/engine/render/Gizmos.h
     include/engine/render/Renderer.h
     include/engine/render/Texture.h
@@ -139,6 +144,7 @@ set(ENGINE_HEADERS
     include/engine/scene/Entity.h
     include/engine/scene/EntityId.h
     include/engine/scene/EntityRef.h
+    include/engine/scene/GameObjectRef.h
     include/engine/scene/ImageRef.h
     include/engine/scene/Messaging.h
     include/engine/scene/Prefab.h

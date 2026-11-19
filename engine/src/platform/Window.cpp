@@ -122,6 +122,39 @@ int Window::Height() const {
     return h;
 }
 
+bool Window::SetFullscreen(bool on) {
+    if (m_window == nullptr) {
+        return false;
+    }
+
+    // SDL3's SDL_SetWindowFullscreen with no mode set is borderless full
+    // screen: the window takes the whole display and the desktop's own mode
+    // is left alone. See the note on the declaration for why that is the one
+    // worth having rather than a mode change.
+    if (!SDL_SetWindowFullscreen(m_window.get(), on)) {
+        ENGINE_LOG_ERROR(Channels::kPlatform, "could not {} full screen: {}",
+                         on ? "enter" : "leave", SDL_GetError());
+        return false;
+    }
+
+    // ASKED FOR AND CONFIRMED SEPARATELY. SDL applies the change
+    // asynchronously on some platforms, so this syncs before anything reads
+    // the size back - a frame rendered against the old size would be the
+    // whole picture in the wrong place, once, which looks like a flash.
+    SDL_SyncWindow(m_window.get());
+
+    ENGINE_LOG_INFO(Channels::kPlatform, "{} full screen ({}x{})",
+                    on ? "entered" : "left", Width(), Height());
+    return true;
+}
+
+bool Window::IsFullscreen() const {
+    if (m_window == nullptr) {
+        return false;
+    }
+    return (SDL_GetWindowFlags(m_window.get()) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
 void Window::SetTitle(const char* title) {
     if (m_window == nullptr || title == nullptr) {
         return;

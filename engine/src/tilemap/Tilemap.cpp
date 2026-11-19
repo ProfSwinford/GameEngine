@@ -1168,6 +1168,29 @@ EntityId TilemapComponent::BuildTileObject(TileCoord cell, const TileAsset& asse
                             "({}), so that component is left at its defaults",
                             asset.Path(), cell.x, cell.y, typeName, whyNot);
         }
+
+        // ==================================================================
+        //  A COLLIDER ON A TILE IS A FRACTION OF THE CELL.
+        //
+        //  There is no sprite on a tile object - the map draws the art
+        //  itself, in bulk - so a collider here would otherwise measure
+        //  against one world unit and a scale of {1,1} would mean "32 pixels"
+        //  rather than "this cell". Those are the same number often enough to
+        //  hide the difference and not often enough to rely on: a 16-pixel
+        //  autotile sheet, or a map with an explicit cellSize, parts them
+        //  immediately.
+        //
+        //  AFTER Deserialize AND BEFORE ANYTHING READS THE SHAPE. An older
+        //  .otile spells its collider in pixels, and that conversion is lazy
+        //  precisely so it can happen against the reference that finally
+        //  applies - this cell. A read slipped in between would resolve it
+        //  against a world unit instead and the tile would come out the wrong
+        //  size on any map whose cells are not 32. See
+        //  ColliderComponent::SetReferenceSizeOverride.
+        // ==================================================================
+        if (auto* collider = dynamic_cast<ColliderComponent*>(component)) {
+            collider->SetReferenceSizeOverride(CellSize());
+        }
     }
 
     return id;

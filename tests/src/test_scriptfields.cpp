@@ -79,11 +79,20 @@ public:
     // where the bug was.
     EntityRef preset{"Preset"};
 
+    // ONE HOLDING A SCENE OBJECT AND ONE HOLDING A PREFAB. A rename has to
+    // follow the first and leave the second completely alone: a prefab path
+    // is not an entity name, and rewriting it because some entity happened to
+    // be called the same thing would silently break the spawn.
+    GameObjectRef linkedObject;
+    GameObjectRef linkedPrefab = GameObjectRef::ToPrefab("prefabs/bullet.oprefab");
+
     void OnExpose(ScriptFields& fields) {
         fields.Var("anything", anything);
         fields.Ref("needsSprite", needsSprite, "SpriteComponent");
         fields.Ref("needsScript", needsScript, "TestPlain", "must carry a TestPlain");
         fields.Var("preset", preset);
+        fields.Var("linkedObject", linkedObject);
+        fields.Var("linkedPrefab", linkedPrefab);
     }
 
     void OnFixedUpdate() {}
@@ -1783,7 +1792,12 @@ TEST_CASE("a reference is collected like any other variable") {
     const Attached attached("TestRefs");
 
     REQUIRE(attached.component.IsResolved());
-    REQUIRE(attached.component.Fields().Count() == 4);
+
+    // Four EntityRefs and the two GameObjectRefs beside them. The count is
+    // asserted rather than the names alone so that a field silently failing
+    // to be collected is a failure here rather than a surprise somewhere
+    // later.
+    REQUIRE(attached.component.Fields().Count() == 6);
 
     REQUIRE(attached.Field("anything") != nullptr);
     CHECK(attached.Field("anything")->type == ScriptFieldType::Entity);
@@ -2427,11 +2441,18 @@ TEST_CASE("every field type survives the JSON round trip, and none of them write
     AnimationRef walk{"textures/hero.png#walk_left"};
     ImageRef     icon{"textures/ui/key.png"};
 
+    // ONE PER TYPE, and exactly one: the completeness check at the bottom
+    // compares this array's LENGTH against how many types have a name, so a
+    // second GameObjectRef here would break that guard rather than
+    // strengthening it. The other half of this one - a scene object rather
+    // than a prefab - is swept by its own case below.
+    GameObjectRef spawn = GameObjectRef::ToPrefab("prefabs/bullet.oprefab");
+
     const ScriptField everyField[] = {
         Bind(number),  Bind(count),  Bind(enabled),
         Bind(label),   Bind(offset), Bind(tint),
         Bind(target),  Bind(bullet), Bind(walk),
-        Bind(icon),
+        Bind(icon),    Bind(spawn),
     };
 
     for (const ScriptField& field : everyField) {
@@ -2943,4 +2964,263 @@ TEST_CASE("an element of a shortened array keeps its value, and is still saved")
     CHECK(*attached.Field("slots[3]")->AsString() == "still here");
     CHECK(attached.component.IsFieldOverridden("slots[3]"));
     CHECK(attached.component.SavedValues().at("slots[3]") == "still here");
+}
+
+// ===========================================================================
+//  THE ONE REFERENCE THAT CAN BE EITHER KIND OF THING.
+//
+//  eng::GameObjectRef - Unity's `public GameObject` - holds a prefab OR an
+//  object already in the scene, chosen by what gets dragged onto it rather
+//  than by the type written in the script. The cases below are mostly about
+//  the two halves NOT being confusable: a name must never come back where a
+//  path was expected, the JSON must say which half it is rather than leaving
+//  it to be guessed, and an unset one must write an empty object rather than
+//  a null - because a null is read by a prefab instance as "erase this
+//  field".
+// ===========================================================================
+
+TEST_CASE("a GameObject reference knows which kind of thing it is") {
+    GameObjectRef nothing;
+    CHECK_FALSE(nothing.IsSet());
+    CHECK_FALSE(nothing.IsPrefab());
+    CHECK_FALSE(nothing.IsSceneObject());
+    CHECK(nothing.Target() == nullptr);
+
+    const GameObjectRef prefab = GameObjectRef::ToPrefab("prefabs/bullet.oprefab");
+    CHECK(prefab.IsSet());
+    CHECK(prefab.IsPrefab());
+    CHECK_FALSE(prefab.IsSceneObject());
+    CHECK(prefab.PrefabPath() == "prefabs/bullet.oprefab");
+
+    // THE HALVES DO NOT LEAK INTO EACH OTHER. A caller that mixed them up
+    // would otherwise get a path where it expected a name and spend a while
+    // looking for an entity called "prefabs/bullet.oprefab".
+    CHECK(prefab.Name().empty());
+
+    const GameObjectRef object = GameObjectRef::ToSceneObject("Door");
+    CHECK(object.IsSceneObject());
+    CHECK(object.Name() == "Door");
+    CHECK(object.PrefabPath().empty());
+}
+
+TEST_CASE("a GameObject reference still behaves like the pointer it replaced") {
+    // `GameObject` WAS `typedef eng::Entity*`, and every line written against
+    // that spelling has to go on meaning what it meant - which is the whole
+    // reason the conversion and the arrow are there rather than an explicit
+    // Target() call at every use.
+    ComponentFactory::RegisterBuiltins();
+
+    Scene scene;
+    Scene::SetActive(&scene);
+
+    Entity* door = scene.Get(scene.CreateEntity("Door"));
+    REQUIRE(door != nullptr);
+
+    GameObjectRef ref = door;        // implicit, from a plain pointer
+    CHECK(ref.IsSceneObject());
+    CHECK(ref.Name() == "Door");
+
+    Entity* back = ref;              // implicit, back to a plain pointer
+    CHECK(back == door);
+    CHECK(ref->Name() == "Door");    // operator->
+    CHECK(ref != nullptr);
+
+    GameObjectRef cleared = nullptr; // `GameObject thing = nullptr;`
+    CHECK_FALSE(cleared.IsSet());
+    CHECK(cleared == GameObjectRef{});
+
+    Scene::SetActive(nullptr);
+}
+
+TEST_CASE("a GameObject reference holding a scene object resolves, and stops when it goes") {
+    ComponentFactory::RegisterBuiltins();
+
+    Scene scene;
+    Scene::SetActive(&scene);
+
+    const EntityId id   = scene.CreateEntity("Door");
+    Entity*        door = scene.Get(id);
+    REQUIRE(door != nullptr);
+
+    const GameObjectRef ref = GameObjectRef::ToSceneObject("Door");
+    CHECK(ref.Target() == door);
+    CHECK(ref.Id() == id);
+
+    // IT HOLDS A NAME, NOT AN ADDRESS, so the reference survives the thing it
+    // names being destroyed - and answers null rather than handing back
+    // memory that has been reused. EntityRef.h has the argument at length.
+    scene.DestroyEntityImmediate(id);
+    CHECK(ref.Target() == nullptr);
+    CHECK(ref.IsSet());   // still SET, just pointing at nothing
+
+    Scene::SetActive(nullptr);
+}
+
+TEST_CASE("a prefab reference resolves to nothing, which is not a bug") {
+    // A prefab is not in the scene: there is no transform to read and no
+    // position to ask for. It becomes an entity when it is instantiated, and
+    // the alternative - silently building one every time somebody read a
+    // position - would be far worse than a null.
+    const GameObjectRef ref = GameObjectRef::ToPrefab("prefabs/bullet.oprefab");
+    CHECK(ref.IsSet());
+    CHECK(ref.Target() == nullptr);
+    CHECK(ref.Id().IsNull());
+}
+
+TEST_CASE("a GameObject field says which half it is in the file") {
+    GameObjectRef     prefab = GameObjectRef::ToPrefab("prefabs/bullet.oprefab");
+    const ScriptField prefabField = Bind(prefab);
+
+    const Json writtenPrefab = FieldToJson(prefabField);
+    REQUIRE(writtenPrefab.is_object());
+    CHECK(writtenPrefab.contains("prefab"));
+    CHECK(writtenPrefab["prefab"].get<std::string>() == "prefabs/bullet.oprefab");
+
+    GameObjectRef     object      = GameObjectRef::ToSceneObject("Door");
+    const ScriptField objectField = Bind(object);
+
+    const Json writtenObject = FieldToJson(objectField);
+    REQUIRE(writtenObject.is_object());
+    CHECK(writtenObject.contains("entity"));
+    CHECK(writtenObject["entity"].get<std::string>() == "Door");
+
+    // ======================================================================
+    //  AN UNSET ONE IS AN EMPTY OBJECT, NOT A NULL.
+    //
+    //  A null is what a prefab instance reads as "erase this field" - so a
+    //  GameObject variable nobody had filled in would, on the first save,
+    //  delete that field from every instance of the prefab.
+    // ======================================================================
+    GameObjectRef     empty      = {};
+    const ScriptField emptyField = Bind(empty);
+    const Json        writtenEmpty = FieldToJson(emptyField);
+    CHECK_FALSE(writtenEmpty.is_null());
+    CHECK(writtenEmpty.is_object());
+    CHECK(writtenEmpty.empty());
+}
+
+TEST_CASE("a GameObject field reads both halves back, and a bare string as a name") {
+    GameObjectRef     value;
+    const ScriptField field = Bind(value);
+    std::string       error;
+
+    Json asPrefab   = Json::object();
+    asPrefab["prefab"] = "prefabs/bullet.oprefab";
+    REQUIRE(JsonFitsFieldType(ScriptFieldType::GameObject, asPrefab));
+    REQUIRE(ReadFieldFromJson(field, asPrefab, error));
+    CHECK(value.IsPrefab());
+    CHECK(value.PrefabPath() == "prefabs/bullet.oprefab");
+
+    Json asEntity     = Json::object();
+    asEntity["entity"] = "Door";
+    REQUIRE(ReadFieldFromJson(field, asEntity, error));
+    CHECK(value.IsSceneObject());
+    CHECK(value.Name() == "Door");
+
+    // A BARE STRING IS AN ENTITY NAME, which is what somebody hand-editing a
+    // scene will type - and it is the harmless half to guess. A name that
+    // resolves to nothing is visible in the Inspector; a path guessed wrong
+    // would be a spawner that silently spawns nothing.
+    REQUIRE(JsonFitsFieldType(ScriptFieldType::GameObject, Json("Lever")));
+    REQUIRE(ReadFieldFromJson(field, Json("Lever"), error));
+    CHECK(value.IsSceneObject());
+    CHECK(value.Name() == "Lever");
+
+    // And the shapes that are not either of those are refused rather than
+    // read as something.
+    CHECK_FALSE(JsonFitsFieldType(ScriptFieldType::GameObject, Json(7)));
+    CHECK_FALSE(JsonFitsFieldType(ScriptFieldType::GameObject, Json::array({1, 2})));
+
+    Json wrongInsides      = Json::object();
+    wrongInsides["prefab"] = 7;
+    CHECK_FALSE(JsonFitsFieldType(ScriptFieldType::GameObject, wrongInsides));
+}
+
+TEST_CASE("a GameObject field round trips through the file both ways") {
+    GameObjectRef     original = GameObjectRef::ToPrefab("prefabs/bullet.oprefab");
+    const ScriptField from     = Bind(original);
+
+    GameObjectRef     restored;
+    const ScriptField into = Bind(restored);
+
+    std::string error;
+    REQUIRE(ReadFieldFromJson(into, FieldToJson(from), error));
+    CHECK(restored == original);
+
+    original.SetSceneObject("Door");
+    REQUIRE(ReadFieldFromJson(into, FieldToJson(from), error));
+    CHECK(restored == original);
+    CHECK(restored.IsSceneObject());
+
+    // AN UNSET ONE ROUND TRIPS TOO, which matters because the empty object it
+    // writes has to read back as "nothing" rather than as a scene object
+    // with an empty name.
+    original.Clear();
+    REQUIRE(ReadFieldFromJson(into, FieldToJson(from), error));
+    CHECK_FALSE(restored.IsSet());
+}
+
+TEST_CASE("renaming an entity moves a GameObject reference too, but not a prefab one") {
+    // ======================================================================
+    //  THE SECOND KIND OF REFERENCE THAT HOLDS A NAME.
+    //
+    //  RetargetReferences walked EntityRef fields only, so a GameObject
+    //  variable pointing at something in the scene was quietly disconnected
+    //  by an ordinary rename in the Hierarchy - the exact failure that
+    //  function exists to prevent, reintroduced by a new type rather than by
+    //  a new bug.
+    //
+    //  AND THE PREFAB HALF MUST NOT MOVE. A prefab path is not an entity
+    //  name. Rewriting it because some entity happened to share its text
+    //  would break the spawn and leave nothing to see.
+    // ======================================================================
+    TestScene      world;
+    const EntityId id = world.Add("Player").Id();
+
+    Json vars;
+    vars["linkedObject"]           = Json::object();
+    vars["linkedObject"]["entity"] = "Player";
+    Attached attached("TestRefs", vars);
+    attached.component.OnAttach();
+
+    const GameObjectRef* link = attached.Field("linkedObject")->AsGameObjectRef();
+    REQUIRE(link != nullptr);
+    REQUIRE(link->IsSceneObject());
+    REQUIRE(link->Target() != nullptr);
+
+    REQUIRE(world.scene.RenameEntity(id, "Hero"));
+
+    CHECK(link->Name() == "Hero");
+    CHECK(link->Target() != nullptr);
+
+    // THE SAVED VALUE TOO, for the reason the EntityRef case gives: moving
+    // the live one alone works perfectly until the level is loaded again.
+    Json out;
+    REQUIRE(attached.component.Serialize(out));
+    CHECK(out["vars"]["linkedObject"]["entity"] == "Hero");
+
+    // And the prefab is exactly where it was.
+    const GameObjectRef* prefab = attached.Field("linkedPrefab")->AsGameObjectRef();
+    REQUIRE(prefab != nullptr);
+    CHECK(prefab->IsPrefab());
+    CHECK(prefab->PrefabPath() == "prefabs/bullet.oprefab");
+}
+
+TEST_CASE("a prefab reference whose path matches a renamed entity is left alone") {
+    // The nastiest version of the case above: an entity whose NAME is the
+    // same text as a prefab's path. Contrived, and the point is that the
+    // rename is decided by which half the reference is holding rather than
+    // by comparing strings and hoping.
+    TestScene      world;
+    const EntityId id = world.Add("prefabs/bullet.oprefab").Id();
+
+    Attached attached("TestRefs");
+    attached.component.OnAttach();
+
+    REQUIRE(world.scene.RenameEntity(id, "Something Else"));
+
+    const GameObjectRef* prefab = attached.Field("linkedPrefab")->AsGameObjectRef();
+    REQUIRE(prefab != nullptr);
+    CHECK(prefab->IsPrefab());
+    CHECK(prefab->PrefabPath() == "prefabs/bullet.oprefab");
 }

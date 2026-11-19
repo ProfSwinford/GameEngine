@@ -32,6 +32,15 @@
 //      not the game camera's. The game camera belongs to the scene file and is
 //      restored from it; this one belongs to the person.
 //
+//    WHAT SHAPE THE GAME VIEW IS RENDERING AT, and how big it is drawn - the
+//      aspect or resolution chosen in its dropdown, the scale, and any CUSTOM
+//      entries typed into it. Same argument as the line above: which aspect
+//      you are checking your UI against is a fact about you, not about the
+//      level, so it does not belong in the scene file - and it has to survive
+//      a restart or it is a setting nobody uses twice. The custom entries
+//      most of all: retyping "1366:768" every session is worse than not
+//      having been able to add it.
+//
 //  ==========================================================================
 //  WHAT IS DELIBERATELY NOT REMEMBERED
 //
@@ -55,6 +64,7 @@
 namespace editor {
 
 class ScenePanel;
+class GamePanel;
 
 class EditorSession {
 public:
@@ -68,11 +78,11 @@ public:
     //
     // A missing or unreadable file is not an error: it means a first run, and
     // the editor simply opens as it always did.
-    static void Restore(ScenePanel* scenePanel);
+    static void Restore(ScenePanel* scenePanel, GamePanel* gamePanel);
 
     // Writes the current state. Call BEFORE the panels are destroyed and
     // before the engine shuts down, because it reads from both.
-    static void Save(ScenePanel* scenePanel);
+    static void Save(ScenePanel* scenePanel, GamePanel* gamePanel);
 };
 
 } // namespace editor

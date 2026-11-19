@@ -29,6 +29,7 @@
 #include <engine/core/Json.h>
 #include <engine/math/Vec2.h>
 #include <engine/core/Log.h>
+#include <engine/core/WorldUnit.h>
 
 #include <string>
 #include <string_view>
@@ -52,6 +53,35 @@ struct BootConfig {
     int         gizmoCircleSegments  = 24;      // how round a drawn circle looks
     float       fixedTimestepSeconds = 1.0f / 60.0f;
     int         maxStepsPerFrame     = 5;
+
+    // "window" -> "fullscreen". Borderless, keeping the desktop's own mode;
+    // see platform/Window.h for why that rather than a display mode change.
+    bool        fullscreen = false;
+
+    // ======================================================================
+    //  "presentation" -> "mode": "free", "16:9" or "1920x1080".
+    //
+    //  WHAT SHAPE THE FINISHED GAME IS. Free - the default, and what the
+    //  engine did before this existed - lets the game fill the window, which
+    //  means a wider monitor sees MORE OF THE LEVEL. Pinning a shape or a
+    //  size fixes the framing for every player and puts black in whatever
+    //  space is left over.
+    //
+    //  KEPT AS TEXT rather than parsed into this struct, because the one
+    //  parser lives in render/Presentation.h and the editor's own
+    //  custom-aspect box calls the same one. Two copies of "what does 16:9
+    //  mean" is exactly the drift worth avoiding.
+    // ======================================================================
+    std::string presentation = "free";
+
+    // "units" - how many pixels one world unit is.
+    //
+    // The size of an ordinary thing: one tile, one character's width, one
+    // grid square. Authored sizes are written as fractions of it, so they
+    // survive a change of art resolution. See core/WorldUnit.h for why that
+    // is worth a setting of its own, and physics/Collider.h for what reads
+    // it.
+    float       worldUnitPixels = WorldUnit::kDefaultPixels;
 
     // "physics"
     //

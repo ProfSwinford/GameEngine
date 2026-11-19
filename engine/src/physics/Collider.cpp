@@ -392,6 +392,75 @@ Vec2 ColliderComponent::OwnerWorldScale() const {
     return Vec2{std::fabs(scale.x), std::fabs(scale.y)};
 }
 
+void ColliderComponent::SetScale(Vec2 scale) {
+    // RESOLVED FIRST, and skipping this was a real bug waiting to happen: a
+    // collider read from an older file still has its pixels pending, and
+    // setting a scale without clearing that flag would have the pending
+    // conversion overwrite the value a moment later, on whatever read came
+    // next. Resolving discards nothing - the pixels become the scale that is
+    // about to be replaced.
+    EnsureResolved();
+    m_scale = scale;
+}
+
+void ColliderComponent::SetReferenceSizeOverride(Vec2 size) {
+    // ======================================================================
+    //  IT DOES NOT RESOLVE FIRST, and the obvious instinct to make it do so
+    //  is wrong in a way worth writing down.
+    //
+    //  SetScale resolves before it writes, because a pending conversion would
+    //  overwrite the value being set. This looks like the same situation and
+    //  is the opposite one: resolving here would divide an older .otile's
+    //  pixels by whatever reference happens to apply BEFORE the cell is
+    //  announced - one world unit - and leave behind a FRACTION of 32. Apply
+    //  that fraction to a 64-pixel cell and the shape doubles. "size": [32, 8]
+    //  came out 64 x 16.
+    //
+    //  Leaving it pending is what keeps the pixels honest: the conversion is
+    //  lazy, so it happens on the first read, by which time the reference IS
+    //  the cell - and 32 / 64 is the scale that gives 32 pixels back.
+    //
+    //  THE ORDER AT THE CALL SITE THEREFORE MATTERS: announce the size before
+    //  anything reads the collider's shape. Tilemap::BuildTileObject does it
+    //  immediately after Deserialize, with nothing in between.
+    // ======================================================================
+    m_referenceOverride =
+        (size.x > 0.0f && size.y > 0.0f) ? size : Vec2{0.0f, 0.0f};
+}
+
+Vec2 ColliderComponent::ReferenceSize() const {
+    // WHOEVER BUILT THIS ENTITY GETS THE FIRST WORD, because a sprite is only
+    // the usual way to know how big a thing is, not the only one. See
+    // SetReferenceSizeOverride.
+    if (m_referenceOverride.x > 0.0f && m_referenceOverride.y > 0.0f) {
+        return m_referenceOverride;
+    }
+
+    const Entity* owner = Owner();
+    if (owner != nullptr) {
+        if (const SpriteComponent* sprite = owner->Find<SpriteComponent>()) {
+            const Vec2 drawn = sprite->RenderedSize();
+
+            // A SPRITE WITH NO PICTURE IS NOT A SIZE. A texture that failed
+            // to load, or a sprite component added a second before its path
+            // was typed, measures {0,0} - and a collider the size of nothing
+            // collides with nothing, silently, which is the worst way for a
+            // missing file to show up. One unit is the honest fallback and it
+            // is visible.
+            if (drawn.x > 0.0f && drawn.y > 0.0f) {
+                return drawn;
+            }
+        }
+    }
+    return WorldUnit::Square();
+}
+
+Vec2 ColliderComponent::ScaledSize() const {
+    EnsureResolved();
+    const Vec2 reference = ReferenceSize();
+    return Vec2{m_scale.x * reference.x, m_scale.y * reference.y};
+}
+
 void ColliderComponent::SetDensity(float density) {
     // Zero density would make an auto-mass body weigh nothing, and the solver
     // divides by mass.
@@ -504,6 +573,14 @@ bool ColliderComponent::Deserialize(const Json& node, std::string& outError) {
     m_offset  = ReadVec2(node, "offset", Vec2{0.0f, 0.0f}, "Collider");
     m_enabled = ReadBool(node, "enabled", true, "Collider");
 
+    // ONE KEY FOR ALL FIVE SHAPES, read here rather than five times over,
+    // because "how big is it, as a fraction of the thing it is on" is the
+    // same question whatever the shape turns out to be. The default already
+    // in m_scale is whichever one this shape was constructed with - {1,1} for
+    // most, {0.5,1} for a capsule - so a file that does not mention it keeps
+    // that rather than being flattened to one.
+    m_scale = ReadVec2(node, "scale", m_scale, "Collider");
+
     m_material.friction = std::max(ReadFloat(node, "friction", 0.4f, "Collider"), 0.0f);
 
     // Clamped at 1. Above it a bounce returns MORE energy than it received and
@@ -528,6 +605,20 @@ bool ColliderComponent::Serialize(Json& out) const {
     out["collidesWith"] = std::move(wanted);
 
     out["trigger"] = m_trigger;
+
+    // ALWAYS WRITTEN, unlike the fields below it, and for a reason that is
+    // not about tidiness.
+    //
+    // The absence of "scale" is what tells a loader that a file predates it
+    // and that its "points" are pixels - see PolygonColliderComponent's
+    // ResolveLegacy. A polygon whose scale happened to be {1,1} and so had
+    // the key omitted would be read back as an old file and have its outline
+    // divided by the sprite size a second time.
+    //
+    // It is also the collider's one size. Omitting the size of a shape from
+    // the file that describes it to save a line is the wrong trade.
+    EnsureResolved();
+    WriteVec2(out, "scale", m_scale);
 
     // The rest are only written when they differ from the default, so an
     // ordinary collider does not carry six meaningless lines around in every
@@ -571,28 +662,52 @@ bool BoxColliderComponent::Deserialize(const Json& node, std::string& outError) 
         return false;
     }
 
-    // "size" is Unity's spelling and "halfExtents" is this engine's. Both are
-    // accepted; half-extents wins if somebody writes both, because that is the
-    // one this engine has always written and so the one an older file has.
-    if (HasKey(node, "size") && !HasKey(node, "halfExtents")) {
-        SetSize(ReadVec2(node, "size", Size(), kTypeName));
-    } else {
-        m_halfExtents = ReadVec2(node, "halfExtents", m_halfExtents, kTypeName);
+    // ======================================================================
+    //  THE OLD PIXEL SPELLINGS, and "scale" beats both of them.
+    //
+    //  "halfExtents" was this engine's and "size" was Unity's, accepted as a
+    //  convenience. Both are pixels and neither is written any more. A file
+    //  that has a "scale" is a current one and its pixels - if some editor
+    //  left them behind - are stale, so the scale wins without argument
+    //  rather than the two fighting over which describes the collider.
+    //
+    //  Half-extents beats "size" among the old pair, for the old reason: it
+    //  is the one this engine wrote, so it is the one an old file has.
+    // ======================================================================
+    const bool hasHalf = HasKey(node, "halfExtents");
+    const bool hasSize = HasKey(node, "size");
+    if (!HasKey(node, "scale") && (hasHalf || hasSize)) {
+        m_legacyHalfExtents =
+            hasHalf ? ReadVec2(node, "halfExtents", Vec2{16.0f, 16.0f}, kTypeName)
+                    : ReadVec2(node, "size", Vec2{32.0f, 32.0f}, kTypeName) * 0.5f;
+        m_legacyPending = true;
     }
 
     SetEdgeRadius(ReadFloat(node, "edgeRadius", m_edgeRadius, kTypeName));
     return true;
 }
 
+void BoxColliderComponent::ResolveLegacy() const {
+    const Vec2 reference = ReferenceSize();
+    const Vec2 pixels    = m_legacyHalfExtents * 2.0f;
+    m_scale = Vec2{pixels.x / reference.x, pixels.y / reference.y};
+}
+
 bool BoxColliderComponent::Serialize(Json& out) const {
     if (!ColliderComponent::Serialize(out)) {
         return false;
     }
-    WriteVec2(out, "halfExtents", m_halfExtents);
+    // The size went out as "scale" in the base, which is the only size there
+    // is now. Nothing shape-specific is left but the rounding.
     if (m_edgeRadius != 0.0f) {
         out["edgeRadius"] = m_edgeRadius;
     }
     return true;
+}
+
+void BoxColliderComponent::SetSize(Vec2 size) {
+    const Vec2 reference = ReferenceSize();
+    SetScale(Vec2{size.x / reference.x, size.y / reference.y});
 }
 
 int BoxColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
@@ -605,11 +720,12 @@ int BoxColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
     // special to do for any of them - which is exactly why a rotated box is
     // now a rotated box and not the upright box around it.
     const Mat3 world = OwnerWorldMatrix();
+    const Vec2 half  = ScaledSize() * 0.5f;
     Vec2       corners[4] = {
-        world.TransformPoint(m_offset + Vec2{-m_halfExtents.x, -m_halfExtents.y}),
-        world.TransformPoint(m_offset + Vec2{ m_halfExtents.x, -m_halfExtents.y}),
-        world.TransformPoint(m_offset + Vec2{ m_halfExtents.x,  m_halfExtents.y}),
-        world.TransformPoint(m_offset + Vec2{-m_halfExtents.x,  m_halfExtents.y}),
+        world.TransformPoint(m_offset + Vec2{-half.x, -half.y}),
+        world.TransformPoint(m_offset + Vec2{ half.x, -half.y}),
+        world.TransformPoint(m_offset + Vec2{ half.x,  half.y}),
+        world.TransformPoint(m_offset + Vec2{-half.x,  half.y}),
     };
     MakeAnticlockwise(corners, 4);
 
@@ -622,9 +738,10 @@ int BoxColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
 
 float BoxColliderComponent::Area() const {
     const Vec2 scale = OwnerWorldScale();
+    const Vec2 half  = ScaledSize() * 0.5f;
 
-    const float halfX = m_halfExtents.x * scale.x;
-    const float halfY = m_halfExtents.y * scale.y;
+    const float halfX = half.x * scale.x;
+    const float halfY = half.y * scale.y;
     const float core  = 4.0f * halfX * halfY;
 
     // ======================================================================
@@ -658,20 +775,46 @@ bool CircleColliderComponent::Deserialize(const Json& node, std::string& outErro
     if (!ColliderComponent::Deserialize(node, outError)) {
         return false;
     }
-    m_radius = ReadFloat(node, "radius", m_radius, kTypeName);
-    if (m_radius < 0.0f) {
-        outError = "a circle collider's \"radius\" cannot be negative";
-        return false;
+    // The old pixel spelling, superseded by "scale" but still read. A
+    // negative one is still a hard refusal: it was a refusal when it was the
+    // only size a circle had, and quietly accepting it now would make an old
+    // file that used to be rejected load as a collider of nothing.
+    if (!HasKey(node, "scale") && HasKey(node, "radius")) {
+        m_legacyRadius = ReadFloat(node, "radius", 16.0f, kTypeName);
+        if (m_legacyRadius < 0.0f) {
+            outError = "a circle collider's \"radius\" cannot be negative";
+            return false;
+        }
+        m_legacyPending = true;
     }
     return true;
 }
 
+void CircleColliderComponent::ResolveLegacy() const {
+    // The diameter, as a fraction of each axis. Radius() takes the larger of
+    // the two back out again, so this round-trips: a reference of 24x48 and a
+    // radius of 7 becomes {14/24, 14/48}, whose larger product is 14, half of
+    // which is 7.
+    const Vec2  reference = ReferenceSize();
+    const float diameter  = m_legacyRadius * 2.0f;
+    m_scale = Vec2{diameter / reference.x, diameter / reference.y};
+}
+
+float CircleColliderComponent::Radius() const {
+    const Vec2 size = ScaledSize();
+    return std::max(size.x, size.y) * 0.5f;
+}
+
+void CircleColliderComponent::SetRadius(float radius) {
+    const Vec2  reference = ReferenceSize();
+    const float diameter  = radius * 2.0f;
+    SetScale(Vec2{diameter / reference.x, diameter / reference.y});
+}
+
 bool CircleColliderComponent::Serialize(Json& out) const {
-    if (!ColliderComponent::Serialize(out)) {
-        return false;
-    }
-    out["radius"] = m_radius;
-    return true;
+    // Nothing of its own left to write: "scale" in the base is the size, and
+    // "radius" is not written any more - see the note in Deserialize.
+    return ColliderComponent::Serialize(out);
 }
 
 Circle CircleColliderComponent::WorldCircle() const {
@@ -683,7 +826,11 @@ Circle CircleColliderComponent::WorldCircle() const {
     // so the circle comes out slightly too big rather than slightly too small
     // - collisions then fire early, which is the safer direction for a game.
     // Use a capsule or a polygon when an ellipse is genuinely wanted.
-    const float worldRadius = m_radius * std::max(scale.x, scale.y);
+    //
+    // Radius() has already made the same choice about the collider's OWN
+    // scale, one axis further up. The two are the same decision applied to
+    // the two things that can stretch a circle, and they have to agree.
+    const float worldRadius = Radius() * std::max(scale.x, scale.y);
     return Circle{world.TransformPoint(m_offset), worldRadius};
 }
 
@@ -700,7 +847,7 @@ float CircleColliderComponent::Area() const {
     // collision system - see the note there. The two must agree or the shape
     // the solver pushes is not the shape it weighs.
     const Vec2  scale  = OwnerWorldScale();
-    const float radius = m_radius * std::max(scale.x, scale.y);
+    const float radius = Radius() * std::max(scale.x, scale.y);
     return kPi * radius * radius;
 }
 
@@ -709,14 +856,23 @@ float CircleColliderComponent::Area() const {
 // ---------------------------------------------------------------------------
 
 void CapsuleColliderComponent::SetSize(Vec2 size) {
-    m_size = Vec2{std::max(size.x, 0.0f), std::max(size.y, 0.0f)};
+    const Vec2 clamped{std::max(size.x, 0.0f), std::max(size.y, 0.0f)};
+    const Vec2 reference = ReferenceSize();
+    SetScale(Vec2{clamped.x / reference.x, clamped.y / reference.y});
 }
 
 bool CapsuleColliderComponent::Deserialize(const Json& node, std::string& outError) {
     if (!ColliderComponent::Deserialize(node, outError)) {
         return false;
     }
-    SetSize(ReadVec2(node, "size", m_size, kTypeName));
+
+    // The old pixel spelling. A capsule's "size" was always the full width
+    // and height, so this is the one shape whose old key needs no halving.
+    if (!HasKey(node, "scale") && HasKey(node, "size")) {
+        const Vec2 pixels = ReadVec2(node, "size", Vec2{32.0f, 64.0f}, kTypeName);
+        m_legacySize      = Vec2{std::max(pixels.x, 0.0f), std::max(pixels.y, 0.0f)};
+        m_legacyPending   = true;
+    }
 
     const std::string direction = ReadString(node, "direction", "Vertical", kTypeName);
     if (direction == "Vertical") {
@@ -731,11 +887,15 @@ bool CapsuleColliderComponent::Deserialize(const Json& node, std::string& outErr
     return true;
 }
 
+void CapsuleColliderComponent::ResolveLegacy() const {
+    const Vec2 reference = ReferenceSize();
+    m_scale = Vec2{m_legacySize.x / reference.x, m_legacySize.y / reference.y};
+}
+
 bool CapsuleColliderComponent::Serialize(Json& out) const {
     if (!ColliderComponent::Serialize(out)) {
         return false;
     }
-    WriteVec2(out, "size", m_size);
     out["direction"] =
         (m_direction == CapsuleDirection::Vertical) ? "Vertical" : "Horizontal";
     return true;
@@ -766,7 +926,8 @@ int CapsuleColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
     const Mat3 world = OwnerWorldMatrix();
     const Vec2 scale = OwnerWorldScale();
 
-    const Vec2 scaled{m_size.x * scale.x, m_size.y * scale.y};
+    const Vec2 own = ScaledSize();
+    const Vec2 scaled{own.x * scale.x, own.y * scale.y};
 
     // Unity's description turned into the engine's: the radius is half the
     // SHORT side, and whatever length is left after both round ends is the
@@ -823,7 +984,8 @@ float CapsuleColliderComponent::Area() const {
     // then derive. Writing it the other way round is what made the collider
     // three times too wide under a vertical stretch.
     const Vec2  scale    = OwnerWorldScale();
-    const Vec2  scaled{m_size.x * scale.x, m_size.y * scale.y};
+    const Vec2  own = ScaledSize();
+    const Vec2  scaled{own.x * scale.x, own.y * scale.y};
     const bool  vertical = m_direction == CapsuleDirection::Vertical;
     const float breadth  = vertical ? scaled.x : scaled.y;
     const float length   = vertical ? scaled.y : scaled.x;
@@ -839,13 +1001,20 @@ float CapsuleColliderComponent::Area() const {
 // ---------------------------------------------------------------------------
 
 std::vector<Vec2> PolygonColliderComponent::DefaultSquare() {
-    // 32 pixels across, anticlockwise. See the note on BoxCollider's default
-    // for why this is not Unity's half-a-unit square.
-    return {Vec2{-16.0f, -16.0f}, Vec2{16.0f, -16.0f},
-            Vec2{16.0f, 16.0f},   Vec2{-16.0f, 16.0f}};
+    // The whole scaled box, corner to corner, anticlockwise - so a brand new
+    // polygon collider is exactly the sprite, and dragging its corners in is
+    // the obvious next move. In FRACTIONS, like every other point list: see
+    // PolygonColliderComponent::Points.
+    return {Vec2{-0.5f, -0.5f}, Vec2{0.5f, -0.5f},
+            Vec2{0.5f, 0.5f},   Vec2{-0.5f, 0.5f}};
 }
 
 void PolygonColliderComponent::SetPoints(std::vector<Vec2> points) {
+    // The pending conversion would overwrite these a moment later. See
+    // ColliderComponent::SetScale, which has the same line for the same
+    // reason.
+    EnsureResolved();
+
     if (points.size() > static_cast<std::size_t>(ConvexShape::kMaxPoints)) {
         ENGINE_LOG_ERROR(Channels::kPhysics,
                          "a polygon collider was given {} points and this engine "
@@ -900,6 +1069,21 @@ bool PolygonColliderComponent::Deserialize(const Json& node, std::string& outErr
     }
     SetPoints(std::move(points));
 
+    // ======================================================================
+    //  A FILE WITH NO "scale" WROTE ITS POINTS IN PIXELS.
+    //
+    //  That is the only thing that can tell the two apart, and it is enough:
+    //  the key is written unconditionally now - see
+    //  ColliderComponent::Serialize, which says so there for exactly this
+    //  reason - so its absence means the file predates it.
+    //
+    //  Nothing is converted here. ResolveLegacy divides the points by the
+    //  reference box once the entity is whole enough to have one.
+    // ======================================================================
+    if (!HasKey(node, "scale") && HasKey(node, "points")) {
+        m_legacyPending = true;
+    }
+
     if (!IsConvex()) {
         // Reported rather than refused. A dented outline still collides - as
         // its convex hull - so refusing to load the scene would be a harsher
@@ -913,15 +1097,30 @@ bool PolygonColliderComponent::Deserialize(const Json& node, std::string& outErr
     return true;
 }
 
+void PolygonColliderComponent::ResolveLegacy() const {
+    // Pixels become fractions of the reference box, and the scale stays
+    // whatever it was - {1,1} for a file that never had one. The product is
+    // then the pixels the file asked for: (p / reference) * (1 * reference).
+    const Vec2 reference = ReferenceSize();
+    for (Vec2& point : m_points) {
+        point = Vec2{point.x / reference.x, point.y / reference.y};
+    }
+}
+
 bool PolygonColliderComponent::Serialize(Json& out) const {
     if (!ColliderComponent::Serialize(out)) {
         return false;
     }
-    WritePointList(out, "points", m_points);
+    WritePointList(out, "points", Points());
     return true;
 }
 
 int PolygonColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
+    // FIRST, because it is what turns an older file's pixels into the
+    // fractions the loop below multiplies. Reading m_points before this
+    // would read them mid-conversion.
+    const Vec2 size = ScaledSize();
+
     if (maxOut < 1 || m_points.size() < 3) {
         return 0;
     }
@@ -932,7 +1131,9 @@ int PolygonColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
         std::min(m_points.size(), static_cast<std::size_t>(ConvexShape::kMaxPoints)));
 
     for (int i = 0; i < count; ++i) {
-        transformed[i] = world.TransformPoint(m_offset + m_points[static_cast<std::size_t>(i)]);
+        const Vec2 point = m_points[static_cast<std::size_t>(i)];
+        transformed[i]   = world.TransformPoint(
+            m_offset + Vec2{point.x * size.x, point.y * size.y});
     }
     MakeAnticlockwise(transformed, count);
 
@@ -945,6 +1146,7 @@ int PolygonColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
 // calm, the same direction the old world-bounds version erred in and the
 // right one for a number whose job is to make a shape tumble convincingly.
 Vec2 PolygonColliderComponent::LocalSize() const {
+    const Vec2 size = ScaledSize();
     if (m_points.empty()) {
         return Vec2{0.0f, 0.0f};
     }
@@ -956,12 +1158,19 @@ Vec2 PolygonColliderComponent::LocalSize() const {
         hi.x = std::max(hi.x, p.x);
         hi.y = std::max(hi.y, p.y);
     }
-    return hi - lo;
+    const Vec2 span = hi - lo;
+    return Vec2{span.x * size.x, span.y * size.y};
 }
 
 float PolygonColliderComponent::Area() const {
     const Vec2 scale = OwnerWorldScale();
-    return PolygonArea(m_points) * scale.x * scale.y;
+    const Vec2 size  = ScaledSize();
+
+    // The outline is in fractions, so its area is in fractions SQUARED - one
+    // factor of the scaled box per axis puts it back into pixels. Getting
+    // this wrong would not show up as a wrong shape anywhere; it would show
+    // up as an auto-mass body that weighs a thousandth of what it should.
+    return PolygonArea(m_points) * size.x * size.y * scale.x * scale.y;
 }
 
 // ---------------------------------------------------------------------------
@@ -969,12 +1178,15 @@ float PolygonColliderComponent::Area() const {
 // ---------------------------------------------------------------------------
 
 std::vector<Vec2> EdgeColliderComponent::DefaultLine() {
-    // 64 pixels long, so a new edge collider is something you can see and
-    // grab. See the note on BoxCollider's default.
-    return {Vec2{-32.0f, 0.0f}, Vec2{32.0f, 0.0f}};
+    // Right across the scaled box, through the middle - so a new edge
+    // collider is as wide as the thing it was added to and is something you
+    // can see and grab. In FRACTIONS: see EdgeColliderComponent::Points.
+    return {Vec2{-0.5f, 0.0f}, Vec2{0.5f, 0.0f}};
 }
 
 void EdgeColliderComponent::SetPoints(std::vector<Vec2> points) {
+    EnsureResolved();   // see PolygonColliderComponent::SetPoints
+
     const auto maxPoints = static_cast<std::size_t>(kMaxEdgePoints);
     if (points.size() > maxPoints) {
         ENGINE_LOG_ERROR(Channels::kPhysics,
@@ -1006,16 +1218,30 @@ bool EdgeColliderComponent::Deserialize(const Json& node, std::string& outError)
     }
     SetPoints(std::move(points));
 
+    // An older file's points are pixels; see the note in
+    // PolygonColliderComponent::Deserialize for why the missing "scale" is
+    // what says so.
+    if (!HasKey(node, "scale") && HasKey(node, "points")) {
+        m_legacyPending = true;
+    }
+
     SetEdgeRadius(ReadFloat(node, "edgeRadius", m_edgeRadius, kTypeName));
     m_loop = ReadBool(node, "loop", m_loop, kTypeName);
     return true;
+}
+
+void EdgeColliderComponent::ResolveLegacy() const {
+    const Vec2 reference = ReferenceSize();
+    for (Vec2& point : m_points) {
+        point = Vec2{point.x / reference.x, point.y / reference.y};
+    }
 }
 
 bool EdgeColliderComponent::Serialize(Json& out) const {
     if (!ColliderComponent::Serialize(out)) {
         return false;
     }
-    WritePointList(out, "points", m_points);
+    WritePointList(out, "points", Points());
     if (m_edgeRadius != 0.0f) {
         out["edgeRadius"] = m_edgeRadius;
     }
@@ -1026,6 +1252,8 @@ bool EdgeColliderComponent::Serialize(Json& out) const {
 }
 
 int EdgeColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
+    const Vec2 size = ScaledSize();   // first; see the polygon's WorldShapes
+
     if (m_points.size() < 2) {
         return 0;
     }
@@ -1041,10 +1269,12 @@ int EdgeColliderComponent::WorldShapes(ConvexShape* out, int maxOut) const {
 
     int written = 0;
     for (int i = 0; i < segments && written < maxOut; ++i) {
-        const Vec2 a = world.TransformPoint(
-            m_offset + m_points[static_cast<std::size_t>(i)]);
+        const Vec2 pa = m_points[static_cast<std::size_t>(i)];
+        const Vec2 pb = m_points[static_cast<std::size_t>((i + 1) % m_points.size())];
+        const Vec2 a  = world.TransformPoint(
+            m_offset + Vec2{pa.x * size.x, pa.y * size.y});
         const Vec2 b = world.TransformPoint(
-            m_offset + m_points[static_cast<std::size_t>((i + 1) % m_points.size())]);
+            m_offset + Vec2{pb.x * size.x, pb.y * size.y});
         out[written++] = ToConvex(Capsule{a, b, radius});
     }
     return written;
@@ -1063,6 +1293,7 @@ int EdgeColliderComponent::WorldShapeCount() const {
 // no area and gets no auto-mass - see Area below - but a body given one a
 // mass by hand still has to be able to turn.
 Vec2 EdgeColliderComponent::LocalSize() const {
+    const Vec2 size = ScaledSize();
     if (m_points.empty()) {
         return Vec2{0.0f, 0.0f};
     }
@@ -1074,7 +1305,9 @@ Vec2 EdgeColliderComponent::LocalSize() const {
         hi.x = std::max(hi.x, p.x);
         hi.y = std::max(hi.y, p.y);
     }
-    return (hi - lo) + Vec2{m_edgeRadius, m_edgeRadius} * 2.0f;
+    const Vec2 span = hi - lo;
+    return Vec2{span.x * size.x, span.y * size.y} +
+           Vec2{m_edgeRadius, m_edgeRadius} * 2.0f;
 }
 
 float EdgeColliderComponent::Area() const {
