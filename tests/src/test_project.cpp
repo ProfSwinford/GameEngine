@@ -624,3 +624,42 @@ TEST_CASE("a half-made project does not look like a finished one") {
 
     CHECK_FALSE(dir.Has("Outer/Inner/project.oproj"));
 }
+
+TEST_CASE("a new project's settings name the shape it ships at") {
+    // ======================================================================
+    //  SAME CLASS OF BUG AS THE GRAVITY CASE ABOVE: a key that is absent
+    //  takes a default nobody chose. With no "presentation" section a game
+    //  ships Free - it stretches to fill whatever window it opens in, so a
+    //  wider monitor sees more of the level - and with no "window" ->
+    //  "resizable" the player can drag it to any shape at all. Neither is a
+    //  decision the project made; both are what it got for saying nothing.
+    //
+    //  The values seeded here are the old behaviour, deliberately. The point
+    //  is that the keys are IN the file, with their notes, where somebody
+    //  will see them - and that the Game view's dropdown has somewhere to
+    //  write that looks like the rest of the file rather than appending a
+    //  section of its own.
+    // ======================================================================
+    TempDir dir("create-presentation");
+
+    ProjectInfo info;
+    std::string error;
+    REQUIRE(Project::Create(dir.Str(), "Shaped", info, error));
+
+    std::string parseError;
+    const Json  config = ParseJson(dir.ReadFile("Shaped/config/engine.json"), parseError);
+    REQUIRE(parseError.empty());
+
+    REQUIRE(config.contains("presentation"));
+    CHECK(config.at("presentation").at("mode").get<std::string>() == "free");
+    CHECK(config.at("presentation").contains("_note"));
+
+    REQUIRE(config.contains("window"));
+    REQUIRE(config.at("window").contains("resizable"));
+    CHECK(config.at("window").at("resizable").get<bool>() == true);
+
+    // The window's own size is still there beside it - the two are separate
+    // keys and a locked window takes its size from these.
+    CHECK(config.at("window").at("width").get<int>() == 1280);
+    CHECK(config.at("window").at("height").get<int>() == 720);
+}

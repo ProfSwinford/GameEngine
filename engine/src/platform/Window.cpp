@@ -155,6 +155,46 @@ bool Window::IsFullscreen() const {
     return (SDL_GetWindowFlags(m_window.get()) & SDL_WINDOW_FULLSCREEN) != 0;
 }
 
+void Window::SetResizable(bool on) {
+    if (m_window == nullptr || IsResizable() == on) {
+        return;
+    }
+    if (!SDL_SetWindowResizable(m_window.get(), on)) {
+        ENGINE_LOG_ERROR(Channels::kPlatform, "could not make the window {}: {}",
+                         on ? "resizable" : "fixed", SDL_GetError());
+        return;
+    }
+    ENGINE_LOG_INFO(Channels::kPlatform, "the window is now {}",
+                    on ? "resizable" : "a fixed size");
+}
+
+bool Window::IsResizable() const {
+    if (m_window == nullptr) {
+        return false;
+    }
+    return (SDL_GetWindowFlags(m_window.get()) & SDL_WINDOW_RESIZABLE) != 0;
+}
+
+bool Window::SetSize(int width, int height) {
+    if (m_window == nullptr || width <= 0 || height <= 0) {
+        return false;
+    }
+    if (Width() == width && Height() == height) {
+        return true;
+    }
+    if (!SDL_SetWindowSize(m_window.get(), width, height)) {
+        ENGINE_LOG_ERROR(Channels::kPlatform,
+                         "could not resize the window to {}x{}: {}", width, height,
+                         SDL_GetError());
+        return false;
+    }
+
+    // Synced for the same reason SetFullscreen is: the change may be applied
+    // asynchronously, and the caller reads the size back in the next breath.
+    SDL_SyncWindow(m_window.get());
+    return true;
+}
+
 void Window::SetTitle(const char* title) {
     if (m_window == nullptr || title == nullptr) {
         return;

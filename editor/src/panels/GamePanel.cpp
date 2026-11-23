@@ -5,8 +5,10 @@
 #include "panels/GamePanel.h"
 
 #include "EditorApp.h"
+#include "ProjectSettings.h"
 
 #include <engine/input/InputMap.h>   // HasBindings, for the overlay
+#include <engine/render/Presentation.h>
 
 #include <imgui.h>
 
@@ -16,10 +18,45 @@
 
 namespace editor {
 
-void GamePanel::ChooseMode(std::size_t index) {
-    if (index < m_modes.size()) {
-        m_chosen = index;
+// ---------------------------------------------------------------------------
+//  THE DROPDOWN IS THE GAME'S OUTPUT, NOT A PREVIEW.
+//
+//  This is the fix for the thing that made the whole feature useless: the
+//  chosen shape used to live in .editor/session.json, which is one person's
+//  view of one project, so pinning 16:9 and exporting produced a game that
+//  stretched to fill whatever window it opened in. The setting had never left
+//  the editor.
+//
+//  It now goes to config/engine.json, which the engine reads at start-up and
+//  the export copies into the game. The SCALE SLIDER stays in the session,
+//  because how large the preview is drawn on one monitor is nobody else's
+//  business and must not change what ships.
+// ---------------------------------------------------------------------------
+void GamePanel::ApplyChosenModeToProject() {
+    if (m_chosen >= m_modes.size()) {
+        return;
     }
+
+    const GameViewMode& mode = m_modes[m_chosen];
+
+    // Spelled the way the settings file spells it, through the one parser
+    // both ends share - see Presentation::ParseSpec.
+    std::string spec = "free";
+    if (mode.kind == GameViewMode::Kind::Aspect) {
+        spec = std::to_string(mode.x) + ":" + std::to_string(mode.y);
+    } else if (mode.kind == GameViewMode::Kind::Resolution) {
+        spec = std::to_string(mode.x) + "x" + std::to_string(mode.y);
+    }
+
+    std::string error;
+    if (!SetPresentationMode(spec, error)) {
+        // SAID IN THE PANEL, not only in the Console. A read-only checkout is
+        // a real case, and a dropdown that silently does not stick is worse
+        // than one that refuses out loud.
+        std::snprintf(m_settingError, sizeof(m_settingError), "%s", error.c_str());
+        return;
+    }
+    m_settingError[0] = '\0';
 }
 
 void GamePanel::AddCustomMode(const GameViewMode& mode) {
@@ -36,7 +73,65 @@ void GamePanel::AddCustomMode(const GameViewMode& mode) {
     m_chosen = m_modes.size() - 1;
 }
 
+// ---------------------------------------------------------------------------
+//  THE PROJECT IS THE SOURCE OF TRUTH FOR THE SHAPE, so the dropdown starts
+//  on whatever config/engine.json says rather than on whatever this person
+//  last looked at.
+//
+//  WHY LAZILY, ON THE FIRST DRAW, rather than in a constructor: the panel is
+//  built before the engine has read the settings file, so there would be
+//  nothing to read.
+//
+//  A SETTING THE DROPDOWN HAS NEVER HEARD OF BECOMES A CUSTOM ENTRY. Somebody
+//  may have hand-edited "1366:768" into the file, and a dropdown that
+//  silently showed Free Aspect instead would be lying about what the game
+//  does.
+// ---------------------------------------------------------------------------
+void GamePanel::SyncChosenFromProject() {
+    if (m_syncedFromProject) {
+        return;
+    }
+    m_syncedFromProject = true;
+
+    const std::string spec = PresentationMode();
+
+    eng::Presentation::Mode mode = eng::Presentation::Mode::Free;
+    int                     x    = 0;
+    int                     y    = 0;
+    std::string             why;
+    if (!eng::Presentation::ParseSpec(spec, mode, x, y, why)) {
+        return;   // reported by the engine at start-up; Free Aspect stands
+    }
+
+    if (mode == eng::Presentation::Mode::Free) {
+        m_chosen = 0;   // Free Aspect is always first - see BuiltInGameViewModes
+        return;
+    }
+
+    const GameViewMode wanted{mode == eng::Presentation::Mode::Aspect
+                                  ? GameViewMode::Kind::Aspect
+                                  : GameViewMode::Kind::Resolution,
+                              x, y, {}};
+
+    for (std::size_t i = 0; i < m_modes.size(); ++i) {
+        if (m_modes[i] == wanted) {
+            m_chosen = i;
+            return;
+        }
+    }
+
+    // Not one of ours: keep it, labelled the way the file spells it.
+    GameViewMode added = wanted;
+    added.label = mode == eng::Presentation::Mode::Aspect
+                      ? std::to_string(x) + ":" + std::to_string(y)
+                      : std::to_string(x) + " x " + std::to_string(y);
+    m_modes.push_back(added);
+    m_chosen = m_modes.size() - 1;
+}
+
 void GamePanel::DrawControls() {
+    SyncChosenFromProject();
+
     // ---- the game camera, editable ---------------------------------------
     //
     // This is the camera a player sees through, and it is what gets written
@@ -152,6 +247,7 @@ void GamePanel::DrawControls() {
             const bool chosen = i == m_chosen;
             if (ImGui::Selectable(m_modes[i].label.c_str(), chosen)) {
                 m_chosen = i;
+                ApplyChosenModeToProject();
             }
             if (chosen) {
                 ImGui::SetItemDefaultFocus();
@@ -192,6 +288,7 @@ void GamePanel::DrawControls() {
             std::string   why;
             if (ParseGameViewMode(m_customText, made, why)) {
                 AddCustomMode(made);
+                ApplyChosenModeToProject();
                 m_customText[0]  = '\0';
                 m_customError[0] = '\0';
             } else {
@@ -205,12 +302,39 @@ void GamePanel::DrawControls() {
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("What the camera renders at.\n\n"
+        ImGui::SetTooltip("What the camera renders at, HERE AND IN THE BUILT GAME.\n\n"
                           "Free Aspect follows this panel, so dragging it wider "
                           "shows MORE of the level.\n"
                           "An aspect pins the shape; a resolution pins the exact "
                           "pixels, which is the only one that answers 'what will a "
-                          "player see'.");
+                          "player see'.\n\n"
+                          "Saved in config/engine.json, which the export copies into "
+                          "the game - so this is not a preview.");
+    }
+
+    // ---- and whether the player may resize the window --------------------
+    //
+    // BESIDE THE SHAPE, because the two together are what "forcing a look"
+    // means: letterboxing keeps a pinned shape correct at any size, so
+    // resizing is not broken - but a 480x270 game presented at exactly 3x has
+    // one right answer and a hundred wrong ones, and leaving a player to find
+    // it by dragging is not a style decision anybody wants to delegate.
+    ImGui::SameLine();
+    bool resizable = WindowResizable();
+    if (ImGui::Checkbox("Resizable", &resizable)) {
+        std::string error;
+        if (!SetWindowResizable(resizable, error)) {
+            std::snprintf(m_settingError, sizeof(m_settingError), "%s", error.c_str());
+        } else {
+            m_settingError[0] = '\0';
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Whether the BUILT GAME's window can be dragged to any "
+                          "size. The editor's own window is never affected.\n\n"
+                          "Off pins it to window.width x window.height from "
+                          "config/engine.json - set those to match a pinned "
+                          "resolution, or the game runs letterboxed for ever.");
     }
 
     // ---- and how big it is drawn -----------------------------------------

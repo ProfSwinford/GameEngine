@@ -62,7 +62,7 @@
 // library. The duplication above is still the right call; it just has to say
 // so out loud.
 
-bool IsPickup(eng::Entity& entity) {
+static bool IsPickup(eng::Entity& entity) {
     auto* collider = eng::FindCollider(entity);
     return collider != nullptr && collider->Layer() == "Pickup";
 }

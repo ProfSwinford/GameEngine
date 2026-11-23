@@ -40,6 +40,7 @@ set(TEST_SOURCES
     src/test_assetrefs.cpp
     src/test_gameview.cpp
     src/test_persistence.cpp
+    src/test_projectsettings.cpp
 
     # ==========================================================================
     #  ONE EDITOR FILE, COMPILED INTO THE TEST PROGRAM.
@@ -60,6 +61,11 @@ set(TEST_SOURCES
     # where a click lands, and it depends on nothing but two numbers and a
     # mode - no ImGui, no engine, no window. See GameViewLayout.h.
     ../editor/src/GameViewLayout.cpp
+
+    # And the settings writer, which is the third one here that rewrites the
+    # user's own files - config/engine.json, holding every key binding in the
+    # project. See ProjectSettings.h.
+    ../editor/src/ProjectSettings.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

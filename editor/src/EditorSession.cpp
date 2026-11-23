@@ -156,25 +156,25 @@ void EditorSession::Restore(ScenePanel* scenePanel, GamePanel* gamePanel) {
             }
 
             // ==============================================================
-            //  AND THE CHOICE BY LABEL, NOT BY INDEX.
+            //  THE CHOSEN SHAPE IS NOT READ FROM HERE ANY MORE, and an older
+            //  session's "mode" key is deliberately ignored.
             //
-            //  An index is a position in a list this engine's own built-ins
-            //  occupy, so adding a preset in a later version would silently
-            //  shift every project's remembered choice by one - and the only
-            //  symptom would be the Game view opening on 4:3 when it used to
-            //  open on 16:9. The label survives that.
+            //  It used to be remembered here, which is exactly what made the
+            //  whole feature useless: this file is one person's view of one
+            //  project, so pinning 16:9 and exporting produced a game that
+            //  stretched to fill whatever window it opened in. The setting
+            //  had never left the editor.
+            //
+            //  It lives in config/engine.json now - the file the engine reads
+            //  at start-up and the export copies into the game - and the Game
+            //  view selects whatever that says. See editor/src/ProjectSettings.h
+            //  for the project-versus-person split, and GamePanel's
+            //  SyncChosenFromProject for the reading.
+            //
+            //  IGNORED RATHER THAN MIGRATED, because the project setting is
+            //  now the only answer and a session that disagreed with it would
+            //  quietly override what the game is going to do.
             // ==============================================================
-            if (const auto chosen = view->find("mode");
-                chosen != view->end() && chosen->is_string()) {
-                const std::string label = chosen->get<std::string>();
-                const auto&       modes = gamePanel->Modes();
-                for (std::size_t i = 0; i < modes.size(); ++i) {
-                    if (modes[i].label == label) {
-                        gamePanel->ChooseMode(i);
-                        break;
-                    }
-                }
-            }
 
             if (const auto scale = view->find("scale");
                 scale != view->end() && scale->is_number()) {
@@ -221,11 +221,12 @@ void EditorSession::Save(ScenePanel* scenePanel, GamePanel* gamePanel) {
     if (gamePanel != nullptr) {
         eng::Json view = eng::Json::object();
 
-        const auto& modes = gamePanel->Modes();
-        if (gamePanel->ChosenMode() < modes.size()) {
-            view["mode"] = modes[gamePanel->ChosenMode()].label;
-        }
+        // NOT THE CHOSEN SHAPE. That is a property of the game and lives in
+        // config/engine.json - see the note in Restore. Only the scale, which
+        // is how large the preview is drawn on THIS monitor.
         view["scale"] = gamePanel->Scale();
+
+        const auto& modes = gamePanel->Modes();
 
         // ONLY THE CUSTOM ONES. Writing the built-ins down would freeze this
         // version's list into every project, so a preset added later would

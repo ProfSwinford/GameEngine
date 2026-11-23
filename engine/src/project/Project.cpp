@@ -385,9 +385,35 @@ bool Project::Create(std::string_view realParentDirectory, std::string_view name
               "engine's own source tree.\",\n"
            << "\n"
            << "  \"window\": {\n"
+           << "    \"_resizable\": \"false locks the BUILT GAME's window to the "
+              "width and height here - the editor's own window is never affected. "
+              "Set it from the Resizable box in the Game view.\",\n"
            << "    \"title\": \"" << name << "\",\n"
            << "    \"width\": 1280,\n"
-           << "    \"height\": 720\n"
+           << "    \"height\": 720,\n"
+           << "    \"resizable\": true\n"
+           << "  },\n"
+           << "\n"
+           // ==================================================================
+           //  PRESENTATION IS WRITTEN OUT for the same reason physics and
+           //  input are, below: a key that is absent takes a default nobody
+           //  chose, and "free" is the wrong default to ship.
+           //
+           //  It is left AT "free" here, because a new project has no art and
+           //  no idea what shape it wants to be yet. The point of writing it
+           //  is that the key is in the file, with its note, where somebody
+           //  will see it - and that the Game view's dropdown has somewhere
+           //  to write to that looks like the rest of the file.
+           // ==================================================================
+           << "  \"presentation\": {\n"
+           << "    \"_note\": \"What shape the finished game is. \\\"free\\\" lets "
+              "it fill the window, so a wider monitor sees MORE OF THE LEVEL - "
+              "fine while building, wrong for shipping. A ratio like \\\"16:9\\\" "
+              "pins the shape; a size like \\\"1920x1080\\\" pins the exact pixels, "
+              "which is what makes pixel art land on the same grid everywhere. "
+              "Whatever space is left over is filled with BLACK. Set it from the "
+              "Game view's dropdown in the editor.\",\n"
+           << "    \"mode\": \"free\"\n"
            << "  },\n"
            << "\n"
            << "  \"logging\": {\n"

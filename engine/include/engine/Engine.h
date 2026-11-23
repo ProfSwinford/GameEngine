@@ -370,6 +370,26 @@ public:
         // ------------------------------------------------------------------
         std::function<bool()> guiInit;
         std::function<void()> guiShutdown;
+
+        // ==================================================================
+        //  TRUE FOR THE GAME, FALSE FOR A TOOL THAT HOSTS IT.
+        //
+        //  The player sets it; the editor does not. It gates the settings
+        //  that describe THE PLAYER'S WINDOW - full screen, and whether the
+        //  window may be resized - because those are statements about the
+        //  shipped game and are absurd applied to an editor: a project that
+        //  ships full screen at a locked 1280x720 would otherwise open the
+        //  EDITOR full screen at a locked 1280x720, with no way back except
+        //  hand-editing the settings file.
+        //
+        //  DEFAULT FALSE, so a host that does not think about this gets the
+        //  harmless answer. The player is the one place that opts in.
+        //
+        //  It does NOT gate the presentation shape itself. That is read
+        //  either way, because the editor's Game view wants to show you what
+        //  the setting does - see render/Presentation.h.
+        // ==================================================================
+        bool gameOwnsTheWindow = false;
     };
 
     // There is exactly one engine. Get() returns it.
@@ -418,6 +438,24 @@ public:
     GameClock&        Clock()        { return m_clock; }
     Scene&            GetScene()     { return *m_scene; }
     const BootConfig& Config() const { return m_config; }
+
+    // ======================================================================
+    //  TWO SETTINGS THE EDITOR CAN CHANGE WHILE RUNNING.
+    //
+    //  The settings file is read ONCE, at start-up, which is right for almost
+    //  everything in it - but these two are edited from the Game view, and a
+    //  setting you cannot see take effect until you restart is a setting
+    //  nobody trusts. The editor writes the file and then says so here, so
+    //  Config() goes on being the one answer to "what does this project ask
+    //  for" rather than becoming stale the moment somebody changes it.
+    //
+    //  NEITHER TOUCHES THE WINDOW. Applying them is a separate decision and
+    //  belongs to the game - see Options::gameOwnsTheWindow.
+    // ======================================================================
+    void SetPresentationSetting(std::string_view spec) {
+        m_config.presentation = std::string(spec);
+    }
+    void SetWindowResizableSetting(bool on) { m_config.windowResizable = on; }
 
     // Loads a different scene at a safe moment, applying the camera settings
     // the scene file asked for.

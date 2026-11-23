@@ -70,20 +70,22 @@ public:
     // ======================================================================
     //  WHAT SHAPE THE GAME IS RENDERED AT, and how big it is shown.
     //
-    //  Public because EditorSession writes it down: which aspect you were
-    //  looking through is a fact about the person, like where the Scene view
-    //  was pointing, and resetting it to Free Aspect on every launch would
-    //  make it a setting nobody uses twice. The custom entries especially -
-    //  retyping "1366:768" each session is worse than not having it.
+    //  THESE ARE THE PERSON'S HALF, which is the only reason they are public:
+    //  EditorSession writes them into .editor/session.json. Retyping
+    //  "1366:768" every session is worse than not having the feature, and how
+    //  large the preview is drawn on one monitor is nobody else's business.
+    //
+    //  WHICH SHAPE IS CHOSEN IS NOT HERE. That is the project's, it lives in
+    //  config/engine.json, and it is read back by SyncChosenFromProject() -
+    //  see ProjectSettings.h for the split and why keeping it in the session
+    //  file was the bug this panel was changed to fix.
     //
     //  See GameViewLayout.h for what the three kinds mean and why the scale
     //  is a separate number from the resolution.
     // ======================================================================
     const std::vector<GameViewMode>& Modes() const { return m_modes; }
-    std::size_t ChosenMode() const { return m_chosen; }
-    void        ChooseMode(std::size_t index);
-    float       Scale() const { return m_scale; }
-    void        SetScale(float scale) { m_scale = scale; }
+    float                            Scale() const { return m_scale; }
+    void                             SetScale(float scale) { m_scale = scale; }
 
     // How many of Modes() are built in. Everything at or past it is custom
     // and can be removed.
@@ -96,6 +98,15 @@ private:
     // the panel and this doubled it.
     void DrawControls();
 
+    // Writes the chosen shape into config/engine.json, which is what makes
+    // the dropdown the GAME's output rather than a preview. See the note on
+    // the definition.
+    void ApplyChosenModeToProject();
+
+    // Selects whatever config/engine.json asks for, once, on the first draw.
+    // See the note on the definition for why not in the constructor.
+    void SyncChosenFromProject();
+
     eng::RenderTarget m_target;
     bool              m_focused = false;
 
@@ -107,6 +118,13 @@ private:
     // What the custom-entry box holds while it is being typed into.
     char m_customText[32] = "";
     char m_customError[96] = "";
+
+    // Why a project setting could not be written - a read-only checkout, say.
+    // Shown in the panel rather than only logged: a control that silently
+    // does not stick is worse than one that refuses out loud.
+    char m_settingError[192] = "";
+
+    bool m_syncedFromProject = false;
 };
 
 } // namespace editor

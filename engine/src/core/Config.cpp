@@ -65,6 +65,8 @@ bool LoadBootConfig(std::string_view virtualPath, BootConfig& outConfig,
     outConfig.windowHeight = ReadInt(window, "height", outConfig.windowHeight, "window");
     outConfig.windowTitle  = ReadString(window, "title", outConfig.windowTitle, "window");
     outConfig.fullscreen   = ReadBool(window, "fullscreen", outConfig.fullscreen, "window");
+    outConfig.windowResizable =
+        ReadBool(window, "resizable", outConfig.windowResizable, "window");
 
     // --- presentation ------------------------------------------------------
     //

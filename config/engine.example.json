@@ -2,10 +2,14 @@
   "_comment": "A documented copy of every setting the engine understands, with an explanation of each. The engine does NOT read this file - it reads config/engine.json next to it. Both are kept in the project: this one is the documentation, that one is the configuration.",
 
   "window": {
-    "_note": "The size the window opens at, and what appears in its title bar. The window can still be resized by dragging it.",
+    "_note": "The size the window opens at, and what appears in its title bar.",
+    "_resizable": "Whether the player may drag the window to any size. TRUE by default, which is what the engine has always done. False pins it to the width and height here - useful when a pinned presentation has one right scale and a hundred wrong ones. ONLY THE GAME OBEYS IT: the editor hosts the same engine and never locks its own window.",
+    "_fullscreen": "Borderless full screen, keeping the desktop's own mode. Works with a pinned presentation, because whatever space the shape does not fill is black.",
     "title": "Engine2D",
     "width": 1280,
-    "height": 720
+    "height": 720,
+    "resizable": true,
+    "fullscreen": false
   },
 
   "logging": {

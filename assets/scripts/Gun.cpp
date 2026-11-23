@@ -75,6 +75,9 @@ public:
             Instantiate(bullet, eng::SpawnOptions{}
                                     .At(barrel->WorldPosition() + forward * muzzle)
                                     .Facing(barrel->WorldRotation()));
+
+        scene->Get(shot)->Find<Rigidbody2DComponent>()->SetVelocity(forward * speed);
+
         if (shot.IsNull()) {
             return;   // Instantiate already said why, in the Console
         }

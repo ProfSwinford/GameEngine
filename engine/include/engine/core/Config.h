@@ -59,6 +59,25 @@ struct BootConfig {
     bool        fullscreen = false;
 
     // ======================================================================
+    //  "window" -> "resizable". May the player drag the window to any size?
+    //
+    //  TRUE BY DEFAULT, which is what the engine has always done - so no
+    //  existing project changes by this key arriving.
+    //
+    //  WHY TURNING IT OFF IS A REAL REQUEST. Letterboxing keeps a pinned
+    //  shape correct at any window size, so resizing is no longer BROKEN -
+    //  but a game can still want to forbid it. A fixed window is part of a
+    //  look: a 480x270 pixel game presented at exactly 3x has a right answer
+    //  and a hundred wrong ones, and leaving the player to find the right one
+    //  by dragging is not a style decision anybody wants to delegate.
+    //
+    //  ONLY THE GAME OBEYS IT. The editor hosts the same engine and must not
+    //  lock its own window because a project said so - see
+    //  Engine::Options::gameOwnsTheWindow.
+    // ======================================================================
+    bool        windowResizable = true;
+
+    // ======================================================================
     //  "presentation" -> "mode": "free", "16:9" or "1920x1080".
     //
     //  WHAT SHAPE THE FINISHED GAME IS. Free - the default, and what the

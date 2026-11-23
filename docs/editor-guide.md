@@ -948,8 +948,16 @@ player will have.
 
 Type a ratio like `16:9` or a size like `1366x768` into the box at the bottom
 of the dropdown to **add your own**; the separator is how it knows which you
-meant. Custom entries get an **x** to remove them, and they are remembered per
-project along with which one you had chosen.
+meant. Custom entries get an **x** to remove them, and are remembered per
+project.
+
+**This dropdown is the game's output, not a preview.** Choosing from it writes
+`presentation.mode` into `config/engine.json` — the file the engine reads at
+start-up and the export packs into the built game — so the shape you pin here
+is the shape that ships. It used to be remembered in the editor's own session
+file, which is why pinning 16:9, exporting, and finding the game stretching to
+fill whatever window it opened in was not a bug in the export: the setting had
+simply never left the editor.
 
 **The scale slider is a separate number from the resolution**, and that is
 deliberate: scaling the render would change what the camera sees, which is the
@@ -962,6 +970,11 @@ mostly off the edge, on purpose.
 Whatever space is left over is filled with **black**, because that is what a
 player sees. Grey bars would make the framing look as though it carried on
 past the edge of the picture.
+
+**The slider is also the one control here that stays in your session**,
+rather than in the project. How large the preview is drawn on your monitor
+is nobody else's business and it must not change what ships — which is the
+same reason the shape itself goes the other way.
 
 #### Zoom, or how much world is in shot
 
@@ -998,18 +1011,57 @@ there looking editable.
 
 #### And in the shipped game
 
-The same three choices exist for the real thing, in `config/engine.json`:
+The dropdown writes it here, and you can write it by hand as well:
 
 ```json
 "presentation": { "mode": "16:9" }
 ```
 
 `"free"`, a ratio, or a size — the same spellings the dropdown takes, read by
-the same code. The game is rendered at that shape, centred in the window, with
-black in whatever is left over. **Full screen still works**: with
+the same code, so a value the editor accepts is a value the game accepts. The
+game is rendered at that shape, centred in the window, with black in whatever
+is left over. **Full screen still works**: with
 `"window": { "fullscreen": true }` the window takes the whole display and the
 bars go where the display is the wrong shape, rather than the game stretching
 or showing more world than it was designed for.
+
+#### Locking the window
+
+Beside the dropdown, **Resizable** decides whether the built game's window can
+be dragged to any size at all:
+
+```json
+"window": { "width": 1280, "height": 720, "resizable": false }
+```
+
+Letterboxing means a resizable window is no longer *wrong* — a pinned shape
+stays correctly pinned at any size — so this is about style rather than
+correctness. But a 480x270 pixel game presented at exactly 3x has one right
+answer and a hundred wrong ones, and leaving a player to find it by dragging is
+not a decision worth delegating.
+
+**The editor's own window is never affected**, whatever a project says. The
+editor hosts the same engine, so a project that shipped full screen at a locked
+size would otherwise open the *editor* full screen at a locked size, with no
+way back but hand-editing the file.
+
+Two things to know:
+
+- **The window size and the render size are separate keys**, and nothing makes
+  them agree. A 720p render in a locked 1280x800 window is black bars for ever.
+  If you pin a resolution, set `window.width` and `window.height` to match it
+  or to a whole multiple of it.
+- **A size the display cannot give is reported, not silently shrunk.** The
+  window is created resizable and locked a moment later — which is SDL's own
+  advice for getting a specific size — and if what comes back is smaller than
+  what was asked for, the log says so rather than leaving you to wonder why the
+  game is not the size the file says.
+
+Both of these settings are **edited in place**. `config/engine.json` holds
+every key binding in the project and a note against most of its sections
+explaining what the setting is for, so the editor splices the one value it is
+changing into the text and leaves every other byte where it was. The diff is
+one line, which is the only kind of diff anybody reads.
 
 **Play is greyed out while the scripts are compiling**, and hovering it says
 so. A build unloads the script libraries for as long as it runs, so a game

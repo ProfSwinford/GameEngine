@@ -72,6 +72,12 @@ int main(int argc, char** argv) {
     eng::Engine::Options options;
     int                  frameLimit = 0;
 
+    // THIS IS THE GAME, so the window settings the project asked for are
+    // ours to obey - full screen, and whether the player may resize. The
+    // editor hosts the same engine and deliberately does not set this. See
+    // Engine::Options::gameOwnsTheWindow.
+    options.gameOwnsTheWindow = true;
+
     // -1 means "nobody asked". Scene 0 is a perfectly good answer, so a
     // sentinel is needed rather than treating zero as unset.
     int sceneIndex = -1;

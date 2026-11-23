@@ -390,10 +390,61 @@ bool Engine::Init(const Options& options) {
         }
     }
 
-    // AFTER the renderer exists, because entering full screen changes the
-    // window's size and anything that cached it would be a frame behind.
-    if (m_config.fullscreen) {
-        m_window.SetFullscreen(true);
+    // ======================================================================
+    //  THE WINDOW SETTINGS, AND ONLY FOR THE GAME.
+    //
+    //  These describe the shipped game's window, so the editor must not take
+    //  them: a project that ships full screen at a locked size would
+    //  otherwise open the EDITOR full screen at a locked size, with no way
+    //  back except hand-editing the settings file. See
+    //  Engine::Options::gameOwnsTheWindow.
+    //
+    //  AFTER the renderer exists, because entering full screen changes the
+    //  window's size and anything that cached it would be a frame behind.
+    if (options.gameOwnsTheWindow) {
+        // ------------------------------------------------------------------
+        //  THE LOCK FIRST, FULL SCREEN SECOND, and that order is load-bearing.
+        //
+        //  SDL constrains a window CREATED resizable to what the compositor
+        //  thinks will fit on the desktop, and its own advice is to clear the
+        //  flag AFTER creation when a specific size is wanted. So clearing it
+        //  and then asking for the configured size back is what actually pins
+        //  a game to 1280x720; without the second half, a project that locks
+        //  its window gets locked at whatever the compositor allowed.
+        //
+        //  Doing this after entering full screen would ask for a size while
+        //  the window has no say over its own, and would make the message
+        //  below report the size of the DISPLAY as the size the project
+        //  asked for.
+        // ------------------------------------------------------------------
+        if (!m_config.windowResizable) {
+            m_window.SetResizable(false);
+            m_window.SetSize(m_config.windowWidth, m_config.windowHeight);
+
+            const int granted = m_window.Width();
+            const int grantedHeight = m_window.Height();
+            if (granted == m_config.windowWidth &&
+                grantedHeight == m_config.windowHeight) {
+                ENGINE_LOG_INFO(Channels::kPlatform,
+                                "the window is fixed at {}x{} because the project "
+                                "asked for it - window.resizable is false",
+                                granted, grantedHeight);
+            } else {
+                // Said out loud rather than swallowed: a game pinned to a
+                // size the display cannot give is a game whose look nobody
+                // can reproduce, and the alternative is a silent difference
+                // between the configured number and the window on screen.
+                ENGINE_LOG_WARN(Channels::kPlatform,
+                                "the window is fixed, but at {}x{} rather than the "
+                                "{}x{} the project asked for - the display would not "
+                                "give the whole of it",
+                                granted, grantedHeight, m_config.windowWidth,
+                                m_config.windowHeight);
+            }
+        }
+        if (m_config.fullscreen) {
+            m_window.SetFullscreen(true);
+        }
     }
 
     SystemScheduler::LogOrder();

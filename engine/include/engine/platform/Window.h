@@ -81,6 +81,43 @@ public:
     bool SetFullscreen(bool on);
     bool IsFullscreen() const;
 
+    // ======================================================================
+    //  MAY THE PLAYER DRAG THE WINDOW TO ANY SIZE?
+    //
+    //  Changed after creation rather than only as a creation flag, because
+    //  the setting that decides it is read from the project's settings file
+    //  AFTER the window exists - and because the editor must be able to leave
+    //  its own window alone while the game it hosts does not. See
+    //  Engine::Options::gameOwnsTheWindow.
+    //
+    //  OFF IS NOT THE SAME AS FIXED-AT-A-SIZE. This stops the player dragging
+    //  the edges; it does not choose a size. The size comes from
+    //  "window" -> "width"/"height", and if a game pins a render resolution
+    //  it almost certainly wants the window to match - the two are separate
+    //  keys and nothing makes them agree, which is worth knowing because a
+    //  720p render in a locked 1280x800 window is black bars for ever.
+    // ======================================================================
+    void SetResizable(bool on);
+    bool IsResizable() const;
+
+    // ======================================================================
+    //  PUT THE WINDOW BACK TO A GIVEN SIZE.
+    //
+    //  THIS EXISTS BECAUSE OF A DETAIL IN SDL'S OWN DOCUMENTATION. A window
+    //  CREATED resizable is constrained "to the dimensions recommended by the
+    //  compositor to fit it within the usable desktop space" - so a project
+    //  asking for 1280x720 on a 1366x768 laptop is quietly given something
+    //  smaller, and a lock applied afterwards pins it at the smaller size.
+    //  SDL's advice is to clear the flag after creation if a specific size is
+    //  wanted; this is the other half of taking that advice, asking for the
+    //  size back once the constraint is gone.
+    //
+    //  Returns false when SDL refused. What actually resulted is whatever
+    //  Width() and Height() say afterwards, which is not necessarily what was
+    //  asked for - nothing can give a 4K window to a 1080p display.
+    // ======================================================================
+    bool SetSize(int width, int height);
+
     // Fills the whole window with one colour. Each channel is 0-255, which is
     // why they are `unsigned char` - that type holds exactly 0 to 255.
     void Clear(unsigned char r, unsigned char g, unsigned char b);

@@ -4,7 +4,9 @@
   "window": {
     "title": "My Engine",
     "width": 1280,
-    "height": 720
+    "height": 720,
+    "_resizable": "false locks the BUILT GAME's window to the width and height above - the editor's own window is never affected. Set it from the Resizable box in the Game view.",
+    "resizable": true
   },
 
   "logging": {

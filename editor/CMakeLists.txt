@@ -33,6 +33,7 @@ set(EDITOR_SOURCES
     src/ColliderHandles.cpp              # dragging a collider's shape in the Scene view
     src/AssetRefs.cpp                    # following an asset when it is renamed or moved
     src/GameViewLayout.cpp               # the Game view aspect, resolution and scale
+    src/ProjectSettings.cpp              # the editor writing config/engine.json
     src/TileAssetEditor.cpp              # editing one .otile, in the Inspector
     src/EditorSession.cpp                # remembers where you were when you closed it
     src/GameExport.cpp                   # File -> Build Game...
