@@ -1681,7 +1681,40 @@ void AssetBrowserPanel::DrawRenamePopup() {
     ImGui::BeginDisabled(blank || !scriptRefusal.empty());
     if ((submitted && !blank) || ImGui::Button("Rename", ImVec2(120, 0))) {
         std::string error;
-        if (eng::FileSystem::Rename(m_renamePath, m_renameBuffer, error)) {
+        // ==================================================================
+        //  NOT WHILE THE GAME IS RUNNING.
+        //
+        //  A rename rewrites every reference to the file, INCLUDING THE OPEN
+        //  SCENE'S - on disk with a text rewrite, and in memory by rebuilding
+        //  the scene from its own text. Stop then puts the pre-play snapshot
+        //  back over that second half, so the file on disk names the new path
+        //  while the scene in memory names the old one. The next save writes
+        //  the dead path back, and the sprite that referenced it silently
+        //  draws nothing from then on - which is the exact breakage
+        //  AssetRefs.h was written to prevent.
+        //
+        //  Rebuilding the scene mid-session also destroys every running
+        //  script object, so this was disruptive even before Stop undid it.
+        // ==================================================================
+        //  NOT `return` - FALLS THROUGH TO THE CLOSE BELOW.
+        //
+        //  This is inside BeginPopupModal and inside BeginDisabled, and
+        //  returning here jumped over both EndDisabled and EndPopup: a debug
+        //  build aborts in ImGui::End ("Must call EndPopup() and not End()!")
+        //  and a release build spends the rest of the frame drawing the panel's
+        //  own status line inside the modal, greyed out and unclickable.
+        //
+        //  CLOSING THE POPUP IS ALSO THE RIGHT ANSWER, not a side effect. A
+        //  modal blocks the Toolbar, so a dialog that stayed open telling
+        //  somebody to press Stop would be telling them to press a button it
+        //  was covering. The refusal is in the Assets panel's status line,
+        //  which is visible the moment this closes.
+        if (eng::Engine::Get().IsInPlayMode()) {
+            m_statusIsError = true;
+            std::snprintf(m_status, sizeof(m_status),
+                          "stop playing first - renaming updates the open scene, and "
+                          "Stop puts the scene back");
+        } else if (eng::FileSystem::Rename(m_renamePath, m_renameBuffer, error)) {
             m_statusIsError = false;
             std::snprintf(m_status, sizeof(m_status), "renamed to %s", m_renameBuffer);
 
@@ -2140,6 +2173,29 @@ const std::string* AssetBrowserPanel::ScriptNameTaken(const std::string& name,
 }
 
 bool AssetBrowserPanel::CreateScript(const std::string& name, std::string& outError) {
+    // ======================================================================
+    //  NOT WHILE THE GAME IS RUNNING, and before the file is written.
+    //
+    //  This ends in ScriptBuild::BuildAndReload, which unloads the script
+    //  library on the main thread - running every started script's OnDestroy,
+    //  destroying every behaviour object, and leaving the components to run
+    //  OnStart again on the next step while the SAME session keeps playing.
+    //  That is precisely the mid-session teardown EditorApp::RebuildScriptsIfChanged
+    //  refuses to do without stopping first, and it says so at length.
+    //
+    //  The compile also blocks the editor for ten seconds or more - including
+    //  the Stop button - so the session cannot even be ended while it runs.
+    //
+    //  FIRST IN THE FUNCTION, so nothing is written and nothing is built. The
+    //  popup shows outError and stays open, which is the right place for it:
+    //  the name typed so far is still there after Stop.
+    // ======================================================================
+    if (eng::Engine::Get().IsInPlayMode()) {
+        outError = "stop playing first - building a new script unloads the script "
+                   "library, which destroys every running script object";
+        return false;
+    }
+
     if (!IsValidScriptName(name, outError)) {
         return false;
     }
@@ -2836,6 +2892,20 @@ void AssetBrowserPanel::ApplyPendingMove() {
     // sixty times a second.
     const PendingMove request = m_pendingMove;
     m_pendingMove             = {};
+
+    // The same refusal as the rename above, for the same reason: a move is a
+    // rename that changes the folder, it rewrites the open scene's references
+    // both on disk and in memory, and Stop undoes only the second half.
+    //
+    // CHECKED AFTER THE REQUEST HAS BEEN TAKEN AND CLEARED, so the refusal
+    // reports once rather than sixty times a second.
+    if (eng::Engine::Get().IsInPlayMode()) {
+        m_statusIsError = true;
+        std::snprintf(m_status, sizeof(m_status),
+                      "stop playing first - moving a file updates the open scene, and "
+                      "Stop puts the scene back");
+        return;
+    }
 
     std::string error;
     if (!eng::FileSystem::Move(request.from, request.toDirectory, error)) {

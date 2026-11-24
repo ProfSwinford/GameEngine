@@ -35,12 +35,14 @@
 //  writes ONLY the current one.
 //
 //  This is not tidiness - it is the trap Component.h spells out for
-//  SpriteComponent, and it bites exactly the same way here. Ctrl+S is not
-//  blocked while the game is playing, and every undo snapshot is a whole
-//  SaveToString; so a run-time write to a saved field eventually becomes the
-//  authored value, and the next time the scene is opened the player starts in
-//  the pause menu. SetTexture and ShowTexture are two calls for this reason,
-//  and so are these two members.
+//  SpriteComponent, and it bites exactly the same way here. Every undo
+//  snapshot is a whole SaveToString, so a run-time write to a saved field
+//  eventually becomes the authored value, and the next time the scene is
+//  opened the player starts in the pause menu. SetTexture and ShowTexture are
+//  two calls for this reason, and so are these two members.
+//
+//  (Saving during a playtest is refused now - see Engine::SaveScene - which
+//  this note used to name as the other way in. Undo is enough on its own.)
 //
 //  ==========================================================================
 //  THE ASSET IS RESOLVED LAZILY, ON THE FIRST ASK

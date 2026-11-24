@@ -132,17 +132,52 @@ void GamePanel::SyncChosenFromProject() {
 void GamePanel::DrawControls() {
     SyncChosenFromProject();
 
-    // ---- the game camera, editable ---------------------------------------
+    // ======================================================================
+    //  THE GAME CAMERA, EDITABLE - AND IT EDITS WHATEVER ACTUALLY DRIVES IT.
     //
-    // This is the camera a player sees through, and it is what gets written
-    // into the scene file when you save. It is edited here rather than in the
-    // Scene view because this is the panel showing what it points at.
-    eng::Camera& camera = eng::Engine::Get().GetCamera();
+    //  This is the camera a player sees through, edited here rather than in
+    //  the Scene view because this is the panel showing what it points at.
+    //
+    //  TWO THINGS CAN BE BEHIND IT, and writing to the wrong one is a control
+    //  that silently does nothing:
+    //
+    //    A CAMERA ENTITY, when the scene has one. CameraSystem copies that
+    //    entity into the engine camera at the end of every Simulate, so a
+    //    write to the engine camera is overwritten one frame later - and
+    //    Engine::SaveScene deliberately leaves the scene's camera block alone
+    //    while an entity is driving the view, so the write was not saved
+    //    either. The row still called MarkDirty, so the editor asked about
+    //    unsaved work for an edit it had already thrown away and could never
+    //    have written down.
+    //
+    //    THE ENGINE CAMERA ITSELF, when the scene has no camera entity. Then
+    //    it IS the scene's framing, and saving writes it into the file.
+    //
+    //  SO THE ROW BRANCHES, exactly as the Scene view's "Align game camera"
+    //  button already does for the same reason - see ScenePanel.cpp, which
+    //  says why writing to the engine camera there would appear to do nothing.
+    // ======================================================================
+    eng::Camera&           camera = eng::Engine::Get().GetCamera();
+    eng::CameraComponent*  driver = eng::CameraSystem::Active();
+
+    if (driver != nullptr) {
+        const eng::Entity* owner = driver->Owner();
+        ImGui::TextDisabled("Driven by '%s' - edits below change that entity.",
+                            owner != nullptr ? owner->Name().c_str() : "a camera");
+    }
 
     float position[2] = {camera.Position().x, camera.Position().y};
     ImGui::SetNextItemWidth(180.0f);
     if (ImGui::DragFloat2("Camera", position, 1.0f)) {
-        camera.SetPosition(eng::Vec2{position[0], position[1]});
+        const eng::Vec2 wanted{position[0], position[1]};
+        if (eng::Transform2D* transform =
+                driver != nullptr ? driver->OwnerTransform() : nullptr) {
+            // WORLD position, because that is what the camera reads from it -
+            // a camera parented to a vehicle rides along with it.
+            transform->SetWorldPosition(wanted);
+        } else {
+            camera.SetPosition(wanted);
+        }
         EditorState::Get().MarkDirty();
     }
 
@@ -168,7 +203,11 @@ void GamePanel::DrawControls() {
         ImGui::SetNextItemWidth(120.0f);
         if (ImGui::DragFloat("##height", &height, 1.0f, 1.0f, 100000.0f,
                              "%.0f tall")) {
-            camera.SetFrameHeight(height);
+            if (driver != nullptr) {
+                driver->SetFrameHeight(height);
+            } else {
+                camera.SetFrameHeight(height);
+            }
             EditorState::Get().MarkDirty();
         }
         if (ImGui::IsItemHovered()) {
@@ -185,7 +224,11 @@ void GamePanel::DrawControls() {
         float zoom = camera.Zoom();
         ImGui::SetNextItemWidth(120.0f);
         if (ImGui::DragFloat("##zoom", &zoom, 0.01f, 0.05f, 20.0f, "%.2fx")) {
-            camera.SetZoom(zoom);
+            if (driver != nullptr) {
+                driver->SetZoom(zoom);
+            } else {
+                camera.SetZoom(zoom);
+            }
             EditorState::Get().MarkDirty();
         }
         if (ImGui::IsItemHovered()) {
@@ -203,7 +246,16 @@ void GamePanel::DrawControls() {
         // held still, not what is on screen - so each direction hands the
         // other the value that means the same thing at this viewport, which
         // is exactly what Camera's own two accessors already compute.
-        if (byHeight) {
+        if (driver != nullptr) {
+            // THE SAME TWO VALUES, onto the component instead. Zero is how a
+            // CameraComponent says "framed by zoom" - see its FrameHeight.
+            if (byHeight) {
+                driver->SetFrameHeight(0.0f);
+                driver->SetZoom(camera.Zoom());
+            } else {
+                driver->SetFrameHeight(camera.FrameHeight());
+            }
+        } else if (byHeight) {
             camera.SetZoom(camera.Zoom());
         } else {
             camera.SetFrameHeight(camera.FrameHeight());
@@ -219,8 +271,23 @@ void GamePanel::DrawControls() {
 
     ImGui::SameLine();
     if (ImGui::SmallButton("Reset")) {
-        camera.Reset();
+        if (driver != nullptr) {
+            // The component's own defaults: zoom 1, framed by zoom. The
+            // entity is NOT moved - where a camera sits is a placement
+            // somebody made, not a camera setting, and the gizmo is the
+            // thing for putting it back.
+            driver->SetFrameHeight(0.0f);
+            driver->SetZoom(1.0f);
+        } else {
+            camera.Reset();
+        }
         EditorState::Get().MarkDirty();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(driver != nullptr
+                              ? "Back to zoom 1x, framed by zoom. Does not move the "
+                                "camera entity."
+                              : "Back to the middle of the world at zoom 1x.");
     }
 
     // ======================================================================
@@ -355,6 +422,28 @@ void GamePanel::DrawControls() {
                           "1.00x is one render pixel per screen pixel, which is the "
                           "only honest way to look at pixel art - a big target is "
                           "then mostly off the edge, on purpose.");
+    }
+
+    // ======================================================================
+    //  AND IF A SETTING WOULD NOT WRITE, SAY SO.
+    //
+    //  Both controls above write config/engine.json, which can be read-only,
+    //  held open by something else, or on a full disk. Without this the
+    //  dropdown simply snapped back to its old value with no explanation -
+    //  which reads as a broken dropdown rather than as a file that could not
+    //  be written.
+    // ======================================================================
+    if (m_settingError[0] != '\0') {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.38f, 0.32f, 1.0f));
+        ImGui::TextWrapped("%s", m_settingError);
+        ImGui::PopStyleColor();
+
+        // ON ITS OWN LINE, not SameLine: TextWrapped above it is as wide as the
+        // panel when the message wraps, so a button beside it lands past the
+        // clip rect and is thrown away.
+        if (ImGui::SmallButton("Dismiss##settingerror")) {
+            m_settingError[0] = '\0';
+        }
     }
 }
 

@@ -539,6 +539,12 @@ void Scene::ResolveParents(const Json& entitiesArray) {
 }
 
 bool Scene::BuildFromDocument(std::string& outError) {
+    // THERE IS A SCENE HERE NOW. Set at the top rather than on the way out
+    // because this is the shared tail of Load and LoadFromString, and a build
+    // that reports a problem has still replaced what was here - the entities
+    // it managed to make are open for editing. See Scene::IsOpen.
+    m_open = true;
+
     m_name = ReadString(m_document, "name", "<unnamed>");
 
     const Json& camera = Field(m_document, "camera");
@@ -888,12 +894,85 @@ bool Scene::SaveToString(std::string& outText, std::string& outError) {
     return true;
 }
 
+// ===========================================================================
+//  THE PLAY-MODE PAIR: the snapshot above, plus which file this scene is.
+//
+//  Two lines of bookkeeping either side of the pair that already existed.
+//  They are here rather than in Engine::EnterPlayMode/ExitPlayMode, where
+//  they used to live as a bare string, for two reasons:
+//
+//    THE SCENE OWNS BOTH HALVES. Contents and identity are two members of
+//    this class, and the thing that puts one back should be the thing that
+//    puts the other back - not a caller remembering to do half of it.
+//
+//    IT CAN BE TESTED. Engine::m_scene is only created inside Engine::Init,
+//    which needs a window, so nothing in the test suite can enter play mode
+//    at all - which is precisely why this bug shipped unnoticed. A Scene is
+//    an ordinary object, so the whole invariant now has a test with no
+//    engine and no display under it. See tests/src/test_snapshot.cpp.
+// ===========================================================================
+bool Scene::TakePlaySnapshot(PlaySnapshot& outSnapshot, std::string& outError) {
+    // THE PATH IS KEPT ONLY ONCE THE TEXT HAS SUCCEEDED, and both halves are
+    // built in a local the caller never sees until both are there - so a
+    // refused snapshot hands back nothing rather than something half true.
+    //
+    // THE LOCAL IS WHAT DELIVERS THAT, not the order of the two reads. Writing
+    // the path straight into outSnapshot and the text afterwards would look
+    // like a simplification and would quietly hand a caller a snapshot with a
+    // path and no text - and Engine::ExitPlayMode tests Empty(), which asks
+    // about the text, so a session that was never entered could still
+    // re-point the scene on the way out. tests/src/test_snapshot.cpp pins it.
+    PlaySnapshot taken;
+    if (!SaveToString(taken.text, outError)) {
+        return false;
+    }
+    taken.sourcePath = m_sourcePath;
+
+    outSnapshot = std::move(taken);
+    outError.clear();
+    return true;
+}
+
+bool Scene::RestorePlaySnapshot(const PlaySnapshot& snapshot, std::string& outError) {
+    if (!LoadFromString(snapshot.text, outError)) {
+        // See the header: a scene whose restore failed is pointed at NO file,
+        // because every other answer leaves a real file one Ctrl+S away from
+        // being overwritten with whatever the failed restore left behind.
+        m_sourcePath.clear();
+        return false;
+    }
+
+    // AND THE FILE IT WAS BEING EDITED AS, which is the whole point of the
+    // pair. Assigned unconditionally, including when it is empty: a scene that
+    // had never been saved must come back never having been saved, or the
+    // first Ctrl+S after a playtest writes it over whichever file the session
+    // happened to visit last.
+    m_sourcePath = snapshot.sourcePath;
+
+    outError.clear();
+    return true;
+}
+
 bool Scene::LoadFromString(std::string_view text, std::string& outError) {
     Unload();
 
-    // m_sourcePath is deliberately left alone. Restoring a Play-mode snapshot
-    // must not make the scene forget which file it came from, or Ctrl+S after
-    // pressing Stop would have nowhere to go.
+    // ======================================================================
+    //  m_sourcePath IS DELIBERATELY LEFT ALONE, and the reason is undo.
+    //
+    //  An undo step is one of these strings. Ctrl+Z must put the ENTITIES
+    //  back without re-pointing the file: Save As followed by Ctrl+Z would
+    //  otherwise send the scene back to the file it was just saved away from,
+    //  and the next Ctrl+S would overwrite that one. See editor/src/UndoStack.h.
+    //
+    //  THIS COMMENT USED TO CLAIM IT WAS FOR PLAY MODE - "or Ctrl+S after
+    //  pressing Stop would have nowhere to go" - AND THAT WAS WRONG, in the
+    //  way that costs somebody their work. It is true only while a play
+    //  session stays in one scene. The moment a script calls RequestScene,
+    //  Scene::Load has already moved m_sourcePath to the requested file, and
+    //  leaving it alone here means Stop hands the pre-play entities back under
+    //  the played scene's name. Play goes through RestorePlaySnapshot below
+    //  for exactly that reason; this function is the contents-only half.
+    // ======================================================================
     m_document = ParseJson(text, outError);
     if (!outError.empty()) {
         ENGINE_LOG_ERROR(Channels::kScene, "could not restore the scene: {}", outError);
@@ -904,6 +983,11 @@ bool Scene::LoadFromString(std::string_view text, std::string& outError) {
 }
 
 void Scene::Unload(UnloadScope scope) {
+    // CLOSED BEFORE THE EARLY RETURN, so that unloading a scene which happens
+    // to hold no entities still closes it. Load and LoadFromString set it back
+    // on their way through BuildFromDocument. See Scene::IsOpen.
+    m_open = false;
+
     if (m_slots.empty()) {
         return;
     }
@@ -1134,6 +1218,9 @@ void Scene::StartNewScene() {
     m_cameraPosition = Vec2{};
     m_cameraZoom     = 1.0f;
     m_cameraFrameHeight = 0.0f;
+
+    // A brand new scene IS open, with no entities and no file. See IsOpen.
+    m_open = true;
 
     ENGINE_LOG_INFO(Channels::kScene, "new scene started; it has no file yet");
 }

@@ -82,8 +82,22 @@ void BuildPanel::Draw() {
                            "below, starting with the one the game should open on.");
     }
 
-    const std::string& openScene = eng::Engine::Get().GetScene().SourcePath();
-    int                removeAt  = -1;
+    // ======================================================================
+    //  THERE IS NO "OPEN SCENE" WHILE THE GAME IS RUNNING.
+    //
+    //  During a session the scene is whatever the playtest is in, which after
+    //  a script's RequestScene is a different file from the one being edited.
+    //  "Add the open scene" wrote THAT into build.json - and if the list was
+    //  empty it became index 0, the scene the shipped game opens with. The
+    //  highlight below told the same lie more quietly.
+    //
+    //  BY VALUE, not by reference: the empty case is a temporary, and a
+    //  reference would outlive it.
+    // ======================================================================
+    const bool        playing = eng::Engine::Get().IsInPlayMode();
+    const std::string openScene =
+        playing ? std::string{} : eng::Engine::Get().GetScene().SourcePath();
+    int removeAt = -1;
 
     for (int i = 0; i < static_cast<int>(m_included.size()); ++i) {
         const std::string& path = m_included[static_cast<std::size_t>(i)];
@@ -157,12 +171,18 @@ void BuildPanel::Draw() {
         RefreshAvailable();
     }
     ImGui::SameLine();
+    ImGui::BeginDisabled(playing);
     if (ImGui::Button("Add the open scene") && !openScene.empty()) {
         if (std::find(m_included.begin(), m_included.end(), openScene) ==
             m_included.end()) {
             m_included.push_back(openScene);
             m_dirty = true;
         }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && playing) {
+        ImGui::SetTooltip("Not while playing - the scene on screen is a copy that "
+                          "Stop puts back.");
     }
 
     if (ImGui::TreeNodeEx("Scenes not in the build", ImGuiTreeNodeFlags_DefaultOpen)) {

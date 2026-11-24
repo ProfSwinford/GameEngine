@@ -33,6 +33,8 @@
 #include "panels/InspectorPanel.h"
 #include "panels/ScenePanel.h"
 #include "panels/InputActionsPanel.h"
+#include "panels/ProjectSettingsPanel.h"
+#include "panels/EditorOptionsPanel.h"
 
 #include <imgui.h>
 
@@ -232,6 +234,21 @@ bool EditorApp::Init(const std::string& projectRoot) {
     inputActions->SetOpen(false);
     AddPanel(std::move(inputActions));                 // action maps and bindings
     AddPanel(std::make_unique<BuildPanel>());          // what ships, and in what order
+
+    // BOTH SETTINGS PANELS START CLOSED, for the same reason the Input
+    // Actions panel does: they are opened from a menu when they are wanted,
+    // and a first run that threw two forms at somebody would be answering a
+    // question nobody had asked.
+    auto projectSettings   = std::make_unique<ProjectSettingsPanel>();
+    m_projectSettingsPanel = projectSettings.get();
+    projectSettings->SetOpen(false);
+    AddPanel(std::move(projectSettings));              // config/engine.json, as a form
+
+    auto editorOptions   = std::make_unique<EditorOptionsPanel>();
+    m_editorOptionsPanel = editorOptions.get();
+    editorOptions->SetOpen(false);
+    AddPanel(std::move(editorOptions));                // the editor's own appearance
+
     AddPanel(std::make_unique<ConsolePanel>());        // the log
 
     // LAST, because it may open a different scene and move the Scene view's
@@ -628,6 +645,38 @@ void EditorApp::DrawEditMenu() {
         EditorState::Get().ClearSelection();
     }
     ImGui::EndDisabled();
+
+    // ======================================================================
+    //  THE TWO SETTINGS PANELS, at the bottom of Edit.
+    //
+    //  Where Unity, Blender and most of the rest put them, which is the whole
+    //  argument: this is not a place to be inventive. They are separated from
+    //  the editing commands above by a line because they are a different kind
+    //  of thing - nothing above this line touches a file that is not the
+    //  scene.
+    //
+    //  THE ORDER IS DELIBERATE TOO: the project's settings first, the
+    //  editor's own second, because the first is the one somebody is looking
+    //  for when they go hunting for "settings".
+    // ======================================================================
+    ImGui::Separator();
+
+    if (ImGui::MenuItem("Project Settings...")) {
+        m_panelToShow = m_projectSettingsPanel;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("The PROJECT's settings, in config/engine.json - what "
+                          "shape the game is, gravity, units. They ship with the "
+                          "game.");
+    }
+
+    if (ImGui::MenuItem("Options...")) {
+        m_panelToShow = m_editorOptionsPanel;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("How the EDITOR looks - theme, font, colours. Yours, not "
+                          "the project's.");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -647,7 +696,32 @@ void EditorApp::HandleShortcuts() {
     eng::Engine& engine = eng::Engine::Get();
 
     // ---- the scene file --------------------------------------------------
-    if (Shortcuts::Pressed(Action::SaveScene)) {
+    //
+    // ======================================================================
+    //  NEITHER SAVE CHORD DOES ANYTHING WHILE THE GAME IS RUNNING.
+    //
+    //  Engine::SaveScene refuses on its own - that is the backstop no new
+    //  call site can forget - but a chord has no menu item to grey out, so
+    //  the reason has to arrive in the status bar. Asked here, before the
+    //  "has this scene got a file yet" question below, because during play
+    //  the answer to that one is about the scene the playtest is in rather
+    //  than the one being edited: Ctrl+S on a never-saved scene whose
+    //  playtest had changed level used to open Save As pre-filled with the
+    //  PLAYED scene's name, one Enter away from overwriting it.
+    // ======================================================================
+    if (engine.IsInPlayMode() &&
+        (Shortcuts::Pressed(Action::SaveScene) ||
+         Shortcuts::Pressed(Action::SaveSceneAs))) {
+        std::snprintf(m_status, sizeof(m_status),
+                      "stop playing first - the scene on screen is a copy that Stop "
+                      "puts back");
+    } else if (Shortcuts::Pressed(Action::SaveScene) && !engine.GetScene().IsOpen()) {
+        // NO SCENE OPEN. The path survives a Close Scene, so without this
+        // Ctrl+S wrote an empty scene over the file it still named. See
+        // Scene::IsOpen.
+        std::snprintf(m_status, sizeof(m_status),
+                      "no scene is open - there is nothing to save");
+    } else if (Shortcuts::Pressed(Action::SaveScene)) {
         if (engine.GetScene().SourcePath().empty()) {
             // NOWHERE TO SAVE TO YET, so Ctrl+S means what Save As means.
             // Doing nothing would be defensible and is what this used to do -
@@ -659,8 +733,7 @@ void EditorApp::HandleShortcuts() {
         } else {
             SaveScene({});
         }
-    }
-    if (Shortcuts::Pressed(Action::SaveSceneAs)) {
+    } else if (Shortcuts::Pressed(Action::SaveSceneAs)) {
         PrefillSaveAsPath(m_saveAsPath, sizeof(m_saveAsPath));
         m_openSaveAsPopup = true;
     }
@@ -816,6 +889,13 @@ void EditorApp::Continue(Pending what, const std::string& scene) {
             // will let it through rather than asking again.
             EditorState::Get().requestedScene = scene;
             break;
+        case Pending::Quit:
+            // Through ApproveQuit rather than Engine::RequestQuit directly,
+            // because the request has to be marked answered on the way past -
+            // otherwise the next frame takes it back off the engine and asks
+            // again. See HoldQuitForQuestion.
+            ApproveQuit();
+            break;
         case Pending::None:
             break;
     }
@@ -851,6 +931,13 @@ void EditorApp::DrawDiscardChangesPopup() {
         case Pending::CloseScene:
             ImGui::TextDisabled("Closing the scene will discard them.");
             break;
+        case Pending::Quit:
+            // NAMES THE CONSEQUENCE, not the action. "Closing the editor"
+            // sounds recoverable and is not: there is no autosave and no
+            // backup, so the work exists nowhere else once the process ends.
+            ImGui::TextDisabled("Closing the editor will discard them. There is no "
+                                "autosave - they are not written down anywhere else.");
+            break;
         default:
             ImGui::TextDisabled("Opening another scene will discard them.");
             break;
@@ -860,7 +947,14 @@ void EditorApp::DrawDiscardChangesPopup() {
     // A scene with nowhere to be saved to cannot be saved from here; Save As
     // needs a name, and asking for one inside this dialog would be a second
     // question stacked on the first.
-    const bool canSave = !scene.SourcePath().empty();
+    //
+    // AND THERE HAS TO BE A SCENE OPEN. The source path survives File ->
+    // Close Scene, so without IsOpen this offered to save a closed scene and
+    // wrote zero entities over the named file. That mattered most for the
+    // Quit case, which is the one moment everybody presses Save - and whose
+    // own text argues for pressing it. IsOpen rather than IsLoaded: an empty
+    // scene is still open and is still worth saving.
+    const bool canSave = !scene.SourcePath().empty() && scene.IsOpen();
 
     ImGui::BeginDisabled(!canSave);
     if (ImGui::Button("Save and continue", ImVec2(150, 0))) {
@@ -1014,6 +1108,17 @@ void EditorApp::RequestOpenScene(const std::string& virtualPath) {
 }
 
 void EditorApp::RequestCloseScene() {
+    if (eng::Engine::Get().IsInPlayMode()) {
+        // REFUSED, for the reason RequestNewScene gives and one more of its
+        // own. Unloading mid-session destroys every running script object
+        // while the session is still going, and Stop then puts the scene
+        // back - so "close" would be undone a moment later by the button
+        // that is supposed to be safe. Worse, the unsaved-work dialog on the
+        // way in would offer to save the PLAYED scene first.
+        std::snprintf(m_status, sizeof(m_status),
+                      "stop playing first - Stop puts the scene back");
+        return;
+    }
     if (AskedAboutUnsavedWork(Pending::CloseScene, {})) {
         return;
     }
@@ -1176,19 +1281,46 @@ void EditorApp::DrawMenuBar() {
         // scene you have just emptied on purpose, and saving the first scene
         // of a brand new project at all. Only Save needs a FILE to save to;
         // neither needs contents.
-        ImGui::BeginDisabled(!hasPath);
+        // ------ AND NEITHER OF THEM WHILE THE GAME IS RUNNING -------------
+        //
+        // Greyed rather than hidden, with the reason in the tooltip, which is
+        // how this editor refuses everything else during play - see Undo in
+        // the Edit menu. Engine::SaveScene refuses underneath as well; this
+        // is the half that stops the click being worth making.
+        const bool playingNow = eng::Engine::Get().IsInPlayMode();
+
+        // AND A SCENE HAS TO BE OPEN. The path outlives a Close Scene, so
+        // hasPath alone left Save Scene enabled with nothing to write - and
+        // it wrote an empty scene over that path. See Scene::IsOpen.
+        const bool canSaveNow = hasPath && scene.IsOpen() && !playingNow;
+
+        ImGui::BeginDisabled(!canSaveNow);
         if (ImGui::MenuItem("Save Scene", Shortcuts::Hint(Shortcuts::Action::SaveScene),
-                            false, hasPath)) {
+                            false, canSaveNow)) {
             SaveScene({});
         }
         ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (playingNow) {
+                ImGui::SetTooltip("Not while playing - the scene on screen is a copy "
+                                  "that Stop puts back.");
+            } else if (!scene.IsOpen()) {
+                ImGui::SetTooltip("No scene is open - there is nothing to save.");
+            }
+        }
 
+        ImGui::BeginDisabled(playingNow);
         if (ImGui::MenuItem("Save Scene As...",
                             Shortcuts::Hint(Shortcuts::Action::SaveSceneAs))) {
             // Pre-filled with the current name, so "save a variant of this" is
             // an edit rather than retyping the whole path.
             PrefillSaveAsPath(m_saveAsPath, sizeof(m_saveAsPath));
             m_openSaveAsPopup = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && playingNow) {
+            ImGui::SetTooltip("Not while playing - the scene on screen is a copy that "
+                              "Stop puts back.");
         }
 
         ImGui::Separator();
@@ -1406,6 +1538,23 @@ void EditorApp::FocusSceneViewIfRequested() {
     ImGui::SetWindowFocus(m_scenePanel->Title());
 }
 
+void EditorApp::ShowPanelIfRequested() {
+    if (m_panelToShow == nullptr) {
+        return;
+    }
+
+    // Opened first and focused on the NEXT frame - see the declaration. The
+    // request stays set until the focus actually happens, which is what makes
+    // the two frames one action rather than an open that sometimes sticks.
+    if (!m_panelToShow->IsOpen()) {
+        m_panelToShow->SetOpen(true);
+        return;
+    }
+
+    ImGui::SetWindowFocus(m_panelToShow->Title());
+    m_panelToShow = nullptr;
+}
+
 void EditorApp::RevealAssetsPanelIfRequested() {
     if (EditorState::Get().revealAsset.empty() || m_assetBrowserPanel == nullptr) {
         return;
@@ -1571,6 +1720,38 @@ void EditorApp::ReloadChangedPrefabs() {
     //
     // A function-local static rather than a member, so that <filesystem> stays
     // out of EditorApp.h - it is included by every panel in the editor.
+    // ======================================================================
+    //  NOT INTO A PLAY SESSION, and the change is not lost by waiting.
+    //
+    //  Rebuilding instances in the played scene is thrown away by Stop, which
+    //  restores the snapshot over it - so the work is pointless. It is also
+    //  harmful: the rebuild ends by calling Undo::Reset(), which makes the
+    //  PLAYED scene both the undo baseline and the editor's idea of what is
+    //  on disk. After Stop, the first edit then pushes that played scene onto
+    //  the undo stack, and one Ctrl+Z replaces the scene being edited with a
+    //  mid-playtest copy of another one - presented as saved.
+    //
+    //  NOTHING IS MISSED, BUT ONLY BECAUSE Stop ASKS AGAIN.
+    //
+    //  The timestamps below are recorded only once a change has been seen,
+    //  and this returns before any of them is touched - so the files still
+    //  look new to the next pass. The next pass is the thing that had to be
+    //  arranged: the only caller is the alt-tab handler, and pressing Stop
+    //  raises no focus event, so a prefab edited during a playtest stayed
+    //  stale until the person happened to alt-tab away and back a SECOND
+    //  time, with nothing said anywhere. Run() therefore calls this on the
+    //  frame play ends as well. See the play-mode edge in Run.
+    //
+    //  SAID IN THE STATUS BAR, because a deferral nobody can see is
+    //  indistinguishable from the feature being broken.
+    // ======================================================================
+    if (eng::Engine::Get().IsInPlayMode()) {
+        std::snprintf(m_status, sizeof(m_status),
+                      "a prefab changed on disk - instances rebuild when you press "
+                      "Stop");
+        return;
+    }
+
     static std::map<std::string, std::filesystem::file_time_type> seen;
 
     eng::Scene& scene = eng::Engine::Get().GetScene();
@@ -1718,12 +1899,205 @@ void EditorApp::RebuildScriptsIfChanged() {
     eng::Log::Flush();
 }
 
+// ===========================================================================
+//  CLOSING THE EDITOR - see the header for why it takes three functions.
+// ===========================================================================
+bool EditorApp::HoldQuitForQuestion() {
+    eng::Engine& engine = eng::Engine::Get();
+
+    // ALREADY ANSWERED. The dialog's own buttons put the request back on the
+    // engine, and taking it off again here is how this would become an editor
+    // that cannot be closed.
+    if (m_quitApproved) {
+        return false;
+    }
+
+    // NO INTERFACE TO ASK WITH. Run is only reached after a successful Init
+    // today, so this is a guard rather than a path - but a public method that
+    // puts a modal on screen should not depend on that staying true.
+    if (!m_ready) {
+        return false;
+    }
+
+    engine.CancelQuit();
+    m_quitPending = true;
+    return true;
+}
+
+void EditorApp::ApproveQuit() {
+    m_quitPending  = false;
+    m_quitApproved = true;
+
+    // AND WHATEVER THE PROJECT MENU WANTED TO DO AFTERWARDS BECOMES REAL.
+    //
+    // Switching project writes down where to go and then asks the loop to
+    // stop; this is the moment that stop is granted, so it is the moment the
+    // destination is allowed to count. Recording it when the request was made
+    // meant a quit the editor held and dropped left the destination latched,
+    // and a later unrelated close went there. See ProjectMenu::ConfirmExit.
+    ProjectMenu::ConfirmExit();
+
+    eng::Engine::Get().RequestQuit();
+}
+
+void EditorApp::ApplyQuitRequest() {
+    if (!m_quitPending) {
+        return;
+    }
+
+    eng::Engine& engine = eng::Engine::Get();
+
+    // ======================================================================
+    //  STOP FIRST, AND ASK ON A LATER FRAME.
+    //
+    //  During a play session the scene on screen is a copy and the unsaved
+    //  flag belongs to the session, so asking now would name the wrong file
+    //  and answer the wrong question - most of all when a script had changed
+    //  level, where the dialog would offer to save the scene being edited
+    //  over the one that had only been played.
+    //
+    //  ExitPlayMode puts the scene, its path and its unsaved flag back. The
+    //  last of those is applied at the play-mode edge at the TOP of a frame,
+    //  which is why this leaves the request standing and asks next time
+    //  round rather than reading a flag that is about to change.
+    // ======================================================================
+    if (engine.IsInPlayMode()) {
+        engine.ExitPlayMode();
+        return;
+    }
+
+    // ======================================================================
+    //  IS A QUESTION ACTUALLY ON SCREEN? ASKED, NOT ASSUMED.
+    //
+    //  This used to drop the quit whenever m_pending was set, on the
+    //  assumption that a non-None m_pending meant a dialog the person could
+    //  answer. That assumption can be false, and when it is, the editor
+    //  cannot be closed at all:
+    //
+    //    m_pending is cleared only by the three buttons inside the "Unsaved
+    //    Scene" modal. ImGui keeps one popup per level, and OpenPopupEx
+    //    closes whatever is at that level when a different id arrives - so
+    //    ProjectMenu's own "Unsaved Changes" dialog, drawn later in the same
+    //    frame, evicts ours without its buttons ever running. m_pending then
+    //    stays set with nothing on screen, and from that moment every close
+    //    route - the X, File -> Exit, even a project switch - was thrown
+    //    away here. The only way out was to kill the process.
+    //
+    //  So the question is asked of ImGui rather than inferred from a member.
+    // ======================================================================
+    const bool questionOnScreen =
+        m_openDiscardPopup || ImGui::IsPopupOpen("Unsaved Scene");
+
+    if (m_pending != Pending::None && questionOnScreen) {
+        if (m_pending == Pending::Quit) {
+            // OURS, AND IT IS UP. A second click on the close button is
+            // impatience, not a new request - but the window may not be
+            // where the person can see the answer, so it is raised again
+            // rather than silently ignored.
+            m_quitPending = false;
+            RaiseWindowForQuestion();
+        }
+        // SOMEBODY ELSE'S QUESTION. The request is NOT dropped: it waits,
+        // and is asked on a later frame once that dialog has been answered.
+        // Dropping it was the other half of the bug - a first, genuine close
+        // request disappeared with no record and no feedback, while the
+        // dialog on screen looked like the answer to it and acted only on
+        // the scene change.
+        return;
+    }
+
+    // ======================================================================
+    //  AND ANY OTHER DIALOG GETS THE SAME COURTESY: WAIT, DO NOT EVICT IT.
+    //
+    //  ImGui keeps one popup per level, so opening ours closes whichever was
+    //  already there. Without this the close button destroyed the Save As box
+    //  - and then put up a dialog whose own tooltip tells you to go and use
+    //  Save As. It would also have thrown away a half-typed name, a folder
+    //  pick, a rename and a delete confirmation.
+    //
+    //  WAITING RATHER THAN DROPPING, so the close still happens: the request
+    //  stays held and is asked once that dialog has been answered or
+    //  dismissed. Clicking the X is answered either way, just not instantly.
+    //
+    //  ASKED OF ImGui rather than of a list of popup names, because this file
+    //  does not own most of them - the Assets panel alone has six.
+    // ======================================================================
+    if (ImGui::IsPopupOpen(nullptr,
+                           ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        return;
+    }
+
+    // A PENDING QUESTION WITH NOTHING ON SCREEN is the evicted case above.
+    // It is forgotten here rather than waited on, because waiting on a
+    // dialog that will never reappear is the unclosable editor again. The
+    // scene route that raised it is lost, which is the lesser of the two.
+    if (m_pending != Pending::None) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                        "an unsaved-work question was replaced by another dialog "
+                        "before it could be answered; asking again about closing");
+        m_pending = Pending::None;
+        m_pendingScene.clear();
+    }
+
+    m_quitPending = false;
+
+    // THE SAME QUESTION THE SCENE ROUTES ASK, through the same function, so
+    // there is one dialog and one set of answers rather than a second one
+    // that resembles it. A clean scene is never asked about.
+    if (AskedAboutUnsavedWork(Pending::Quit, {})) {
+        RaiseWindowForQuestion();
+    } else {
+        ApproveQuit();
+    }
+}
+
+// ===========================================================================
+//  A QUESTION NOBODY CAN SEE IS A REFUSAL TO CLOSE.
+//
+//  The dialog is drawn inside the editor's own window, and a minimized window
+//  draws nothing - so holding a quit to ask about unsaved work turned "Close
+//  window" from the taskbar into an editor that silently did nothing. Before
+//  the hold it closed and discarded the work; neither is acceptable, so the
+//  window is brought back to where the question can be answered.
+//
+//  CALLED ONLY WHERE A QUESTION IS ACTUALLY RAISED, never on the way past: a
+//  clean scene closes immediately, and restoring a window a frame before it
+//  disappears is a flash of nothing.
+// ===========================================================================
+void EditorApp::RaiseWindowForQuestion() {
+    eng::Window& window = eng::Engine::Get().GetWindow();
+    window.Restore();
+    window.Raise();
+}
+
 void EditorApp::Run(int frameLimit) {
     eng::Engine& engine = eng::Engine::Get();
 
     int frames = 0;
 
-    while (engine.BeginFrame()) {
+    for (;;) {
+        // ==================================================================
+        //  BeginFrame's ANSWER IS ADVICE, AND THE FRAME IS STILL USABLE.
+        //
+        //  It returns false only when a quit has been requested - and it has
+        //  already polled the events, updated the input, sized the camera and
+        //  asked the clock for its steps by then. So the editor takes the
+        //  request off the engine, draws the frame it was given, and asks
+        //  about unsaved work at the apply point near the bottom of this
+        //  loop. See HoldQuitForQuestion and Engine::CancelQuit.
+        //
+        //  This used to be `while (engine.BeginFrame())`, and the frame that
+        //  noticed the close was the frame that ended the loop - so there was
+        //  never one left to ask a question in, and closing the window threw
+        //  away unsaved work in silence.
+        // ==================================================================
+        if (!engine.BeginFrame() && !HoldQuitForQuestion()) {
+            break;
+        }
+
+        // THE FRAME LIMIT IS NOT A QUIT and does not go through any of that.
+        // --frames N is for headless verification, where nothing is on screen
+        // to answer a dialog and there is no unsaved work to protect.
         if (frameLimit > 0 && frames++ >= frameLimit) {
             break;
         }
@@ -1901,9 +2275,60 @@ void EditorApp::Run(int frameLimit) {
         const bool inPlayMode = engine.IsInPlayMode();
         if (inPlayMode && !m_wasInPlayMode) {
             ClearConsoleForPlay();
+
+            // ==============================================================
+            //  AND WHETHER THERE WAS UNSAVED WORK, so Stop can say the same
+            //  thing again.
+            //
+            //  Stop restores the scene to exactly the text it was snapshotted
+            //  from, so the honest answer to "is this unsaved?" afterwards is
+            //  whatever it was before Play - but nothing put it back, and the
+            //  flag can move in both directions during a session: the Scene
+            //  view and the Inspector are both editable while paused, and
+            //  each marks the scene dirty.
+            //
+            //  Leaving it set was not cosmetic. The title bar claimed unsaved
+            //  work on a scene that had none, and the fix the editor offers
+            //  for that is Ctrl+S - which, for the session that changed
+            //  scene, was the keystroke that overwrote the other level. The
+            //  editor asked for the save that lost the work.
+            // ==============================================================
+            m_dirtyWhenPlayStarted = EditorState::Get().IsDirty();
         }
         if (!inPlayMode && m_wasInPlayMode) {
             EditorState::Get().focusSceneView = true;
+
+            // The other half of m_dirtyWhenPlayStarted above. Only written
+            // when it differs, because MarkDirty advances the edit serial and
+            // would otherwise ask undo to consider a frame in which nothing
+            // happened.
+            if (m_dirtyWhenPlayStarted != EditorState::Get().IsDirty()) {
+                if (m_dirtyWhenPlayStarted) {
+                    EditorState::Get().MarkDirty();
+                } else {
+                    EditorState::Get().ClearDirty();
+                }
+            }
+
+            // ==============================================================
+            //  AND ANY PREFAB EDITED WHILE THE GAME WAS RUNNING, NOW.
+            //
+            //  ReloadChangedPrefabs refuses during a session, because its
+            //  rebuild ends in Undo::Reset and would baseline the played
+            //  scene as both the undo baseline and the saved state. Its only
+            //  other caller is the alt-tab handler, and Stop raises no focus
+            //  event - so without this line the refusal became a silent
+            //  never: the instances kept the prefab's old contents until the
+            //  person happened to alt-tab away and back again.
+            //
+            //  HERE, and not at the three ExitPlayMode call sites, for the
+            //  reason this whole block exists. And on THIS frame rather than
+            //  the last one of the session, because by now the snapshot has
+            //  been restored - so the rebuild and its Undo::Reset apply to
+            //  the scene being edited, which is the baseline the refusal was
+            //  protecting in the first place.
+            // ==============================================================
+            ReloadChangedPrefabs();
 
             // AND THE OTHER REQUEST IS DROPPED, in case Play and Stop both
             // happened inside one frame - a script rebuild stopping a session
@@ -1932,6 +2357,7 @@ void EditorApp::Run(int frameLimit) {
         FocusGameViewIfRequested();
         FocusSceneViewIfRequested();
         RevealAssetsPanelIfRequested();
+        ShowPanelIfRequested();
 
         // The title carries the project, the scene and whether there is
         // unsaved work, all three of which change while the editor runs. It
@@ -2025,6 +2451,12 @@ void EditorApp::Run(int frameLimit) {
             }
         }
 
+        // A QUIT SOMEBODY ASKED FOR, APPLIED HERE - and the unsaved question
+        // asked here too, for the same reason the scene gate above is at this
+        // point rather than where the request was made. See
+        // EditorApp::ApplyQuitRequest.
+        ApplyQuitRequest();
+
         // ---- undo's bookkeeping, LAST -------------------------------------
         //
         // After every edit this frame, after any undo applied just above, and
@@ -2083,7 +2515,21 @@ void EditorApp::Shutdown() {
     //
     // The same guard the engine keeps for the same reason; see the
     // m_initialised check at the top of Engine::Shutdown.
+    // ======================================================================
+    //  PLAY MODE IS LEFT BEFORE ANY OF THAT IS WRITTEN DOWN.
+    //
+    //  The session file records the open scene's path, and during a play
+    //  session that changed level the path is the PLAYED scene's - so closing
+    //  the editor mid-playtest used to write the level a script had loaded
+    //  into .editor/session.json, and the next launch opened that instead of
+    //  the scene the person had spent the evening on.
+    //
+    //  ExitPlayMode rather than a special case here: it is the one place that
+    //  knows what a session has to put back, and the guide's promise that the
+    //  editor reopens where you were should not depend on how you left.
+    // ======================================================================
     if (m_ready) {
+        eng::Engine::Get().ExitPlayMode();
         EditorSession::Save(m_scenePanel, m_gamePanel);
     }
 

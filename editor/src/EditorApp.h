@@ -496,7 +496,7 @@ public:
 private:
     // Which scene change is waiting on the "you have unsaved work" question.
     // Declared up here because the methods below take it.
-    enum class Pending { None, NewScene, OpenScene, CloseScene };
+    enum class Pending { None, NewScene, OpenScene, CloseScene, Quit };
 
     void DrawMenuBar();
     void DrawEditMenu();
@@ -539,6 +539,41 @@ private:
     // Answers "would changing scene now lose work?", and if so puts the
     // question up and returns true. The caller does nothing further.
     bool AskedAboutUnsavedWork(Pending what, const std::string& scene);
+
+    // ======================================================================
+    //  CLOSING THE EDITOR IS A SCENE-DISCARDING ACTION LIKE ANY OTHER.
+    //
+    //  It was the one that never asked. New Scene, Close Scene and opening a
+    //  scene have all asked about unsaved work for a long time; the window's
+    //  close button and File -> Exit went straight to Shutdown, and an hour
+    //  of edits went with the process. It is also the EASIEST of them to do
+    //  by accident, being a button in the corner of the title bar.
+    //
+    //  THREE PIECES, BECAUSE A QUIT CANNOT BE ANSWERED WHERE IT ARRIVES.
+    //  Engine::BeginFrame is what notices it, at the top of the frame, before
+    //  a single panel has drawn - so the question cannot be asked there any
+    //  more than a scene load can be done there. It follows the pattern the
+    //  rest of this file uses: notice, record, apply at one known point.
+    // ======================================================================
+
+    // Called when BeginFrame says to stop. Takes the request off the engine
+    // and records it, returning true when the editor should carry on drawing
+    // and false when it really should close.
+    bool HoldQuitForQuestion();
+
+    // The answer was yes. Puts the request back on the engine and marks it
+    // approved, so HoldQuitForQuestion lets the next frame end the loop
+    // instead of asking all over again.
+    void ApproveQuit();
+
+    // Acts on a held request, at the same point in the frame the scene routes
+    // are applied.
+    void ApplyQuitRequest();
+
+    // Brings the window back to where a modal can be seen and answered. A
+    // minimized editor draws nothing, so a held quit would otherwise look
+    // like an editor that refuses to close.
+    void RaiseWindowForQuestion();
 
     // Carries out a scene change once the question has been answered.
     void Continue(Pending what, const std::string& scene);
@@ -584,6 +619,18 @@ private:
     // ======================================================================
     void RevealAssetsPanelIfRequested();
 
+    // ======================================================================
+    //  OPENS A PANEL AND BRINGS IT TO THE FRONT - over two frames, which is
+    //  not an implementation detail that can be tidied away.
+    //
+    //  A panel that has never been open has never been shown to ImGui, so
+    //  there is no window of that name for SetWindowFocus to find: focusing
+    //  it in the same frame it is opened does nothing at all, silently. The
+    //  Scene and Game views already learned this; see
+    //  FocusSceneViewIfRequested.
+    // ======================================================================
+    void ShowPanelIfRequested();
+
     // Called when the editor window regains focus - the user alt-tabbed away,
     // edited a script in their text editor, and came back. If anything in
     // any script under assets/ has changed, it is rebuilt and reloaded before
@@ -621,6 +668,16 @@ private:
     class InputActionsPanel* m_inputActionsPanel = nullptr;
     class AssetBrowserPanel* m_assetBrowserPanel = nullptr;
 
+    // The two panels a MENU ITEM opens. They need back-pointers for the same
+    // reason the Scene and Game views do: opening and focusing a panel cannot
+    // happen in one frame - see ShowPanelIfRequested.
+    class ProjectSettingsPanel* m_projectSettingsPanel = nullptr;
+    class EditorOptionsPanel*   m_editorOptionsPanel   = nullptr;
+
+    // Which of them a menu item asked for, if either. Null the rest of the
+    // time.
+    Panel* m_panelToShow = nullptr;
+
     char m_saveAsPath[256] = {};
     bool m_openSaveAsPopup = false;
     char m_status[256]     = {};
@@ -629,6 +686,12 @@ private:
     // frame on which a play session begins. See ClearConsoleForPlay.
     bool m_wasInPlayMode = false;
 
+    // Whether there was unsaved work when Play was pressed, so that Stop can
+    // say the same thing again. Stop restores the scene to exactly the text it
+    // was snapshotted from, so the state of this flag is part of what a play
+    // session has to put back. Written at both edges in Run.
+    bool m_dirtyWhenPlayStarted = false;
+
     // ---- a scene change waiting on an answer -----------------------------
     //
     // Recorded rather than acted on, because "do you want to save first?" has
@@ -636,6 +699,18 @@ private:
     // nobody has to pick the same scene twice.
     Pending     m_pending = Pending::None;
     std::string m_pendingScene;
+
+    // ---- closing the editor ----------------------------------------------
+    //
+    // Set when a quit has been taken off the engine and not yet answered;
+    // cleared when the question goes on screen or the quit is approved.
+    bool m_quitPending = false;
+
+    // Set once the question has been answered yes. It has to exist separately:
+    // saying yes puts the request back on the engine, and without this the
+    // very next frame would take it off again and ask the same question for
+    // ever. See HoldQuitForQuestion.
+    bool m_quitApproved = false;
 
     // ---- an undo step waiting to be applied ------------------------------
     //

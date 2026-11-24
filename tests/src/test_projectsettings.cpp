@@ -15,13 +15,18 @@
 
 #include <ProjectSettings.h>
 
+#include <engine/Engine.h>
 #include <engine/core/Config.h>
 #include <engine/core/Json.h>
+#include <engine/core/Log.h>
+#include <engine/core/WorldUnit.h>
 #include <engine/fs/FileSystem.h>
+#include <engine/physics/Physics2D.h>
 #include <engine/render/Presentation.h>
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -81,13 +86,30 @@ struct SettingsSandbox {
         fileSystem.Init(BootConfig{});
     }
 
+    // ======================================================================
+    //  AND IT PUTS THE ENGINE BACK.
+    //
+    //  Writing a setting now APPLIES it - that is the whole point of the
+    //  feature - and the things it applies to are globals: the world unit
+    //  every collider is measured against, the physics gravity, the log
+    //  threshold. A case that left one of those changed would be a case that
+    //  broke a test file it has never heard of, and the failure would look
+    //  like a bug in that file.
+    // ======================================================================
     ~SettingsSandbox() {
         fileSystem.Shutdown();
         SetEnv("ENGINE_ASSET_ROOT", "");
         Presentation::SetFree();
+        WorldUnit::SetPixels(worldUnitWas);
+        Physics2D::SetGravity(gravityWas);
+        Log::SetThreshold(thresholdWas);
         std::error_code ec;
         fs::remove_all(root, ec);
     }
+
+    const float    worldUnitWas = WorldUnit::Pixels();
+    const Vec2     gravityWas   = Physics2D::Gravity();
+    const LogLevel thresholdWas = Log::GetThreshold();
 
     Json Read() const {
         std::ifstream     in(root / "config" / "engine.json", std::ios::binary);
@@ -475,4 +497,305 @@ TEST_CASE("the real file's awkward parts do not throw the scanner off") {
           "free, 16:9, 1920x1080");
     CHECK(after["window"]["_resizable"].get<std::string>().find("{Game view}") !=
           std::string::npos);
+}
+
+// ============================================================================
+//  THE TYPED WRITERS, AND WHAT THEY PUT IN THE FILE.
+//
+//  A settings panel writes numbers, and a number is where this gets
+//  interesting: nlohmann holds every number as a double, so a float arrives
+//  widened and -9.81f would be written as -9.8100004196166992. A settings
+//  file full of those is one nobody wants to open, and a gravity that reads
+//  back differently from what was typed is a setting that looks broken.
+// ============================================================================
+
+TEST_CASE("a float is written as the shortest text that reads back the same") {
+    SettingsSandbox box("numbers");
+
+    std::string error;
+    REQUIRE_MESSAGE(editor::SetNumber("physics", "drag", -9.81f, error), error);
+
+    const std::string after = box.RawText();
+    CHECK(after.find("\"drag\": -9.81") != std::string::npos);
+
+    // Said the other way round, because that is the failure this guards: not
+    // one digit of double's widening may appear.
+    CHECK(after.find("-9.8100004") == std::string::npos);
+
+    // And it still IS the float that was asked for.
+    CHECK(box.Read()["physics"]["drag"].get<float>() == doctest::Approx(-9.81f));
+}
+
+TEST_CASE("a whole number keeps its decimal point, so the file still reads as a measurement") {
+    SettingsSandbox box("whole");
+
+    std::string error;
+    REQUIRE(editor::SetNumber("units", "pixelsPerUnit", 32.0f, error));
+    CHECK(box.RawText().find("\"pixelsPerUnit\": 32.0") != std::string::npos);
+
+    // An INT is a different request and keeps no point - window.width is a
+    // count of pixels, not a measurement of one.
+    REQUIRE(editor::SetInt("window", "width", 1920, error));
+    CHECK(box.RawText().find("\"width\": 1920,") != std::string::npos);
+}
+
+TEST_CASE("a pair of numbers is written on one line, the way a person writes one") {
+    SettingsSandbox box("pair");
+
+    const float gravity[2] = {0.0f, -981.0f};
+    std::string error;
+    REQUIRE_MESSAGE(editor::SetNumbers("physics", "gravity", gravity, 2, error), error);
+
+    // nlohmann's own dump would put each number on a line of its own, which
+    // is not how any hand-written config in this repo spells a coordinate.
+    CHECK(box.RawText().find("\"gravity\": [0.0, -981.0]") != std::string::npos);
+
+    const Json after = box.Read();
+    REQUIRE(after["physics"]["gravity"].is_array());
+    CHECK(after["physics"]["gravity"][1].get<float>() == doctest::Approx(-981.0f));
+}
+
+TEST_CASE("a new section arrives with the note that belongs to it") {
+    // The note is looked up from the section's NAME rather than passed in by
+    // the caller, so that two places setting two keys of one section cannot
+    // write two different explanations of it.
+    SettingsSandbox box("notes");
+
+    std::string error;
+    REQUIRE(editor::SetNumber("units", "pixelsPerUnit", 16.0f, error));
+    REQUIRE(editor::SetInt("physics", "solverIterations", 7, error));
+
+    const Json after = box.Read();
+    REQUIRE(after["units"].contains("_note"));
+    REQUIRE(after["physics"].contains("_note"));
+    CHECK(after["units"]["_note"].get<std::string>() !=
+          after["physics"]["_note"].get<std::string>());
+
+    // AND A SECTION THAT WAS ALREADY THERE IS NOT GIVEN ONE. The fixture's
+    // "tunables" has no note and did not ask for one; a writer that added
+    // explanations to sections somebody else wrote would be editing their
+    // file rather than setting a value in it.
+    REQUIRE(editor::SetInt("tunables", "maxStepsPerFrame", 7, error));
+    CHECK_FALSE(box.Read()["tunables"].contains("_note"));
+
+    // A SECOND KEY IN A SECTION THAT ALREADY EXISTS does not get a second
+    // note, and does not disturb the first.
+    const std::string noteBefore = after["units"]["_note"].get<std::string>();
+    REQUIRE(editor::SetNumber("units", "somethingElse", 2.5f, error));
+    CHECK(box.Read()["units"]["_note"].get<std::string>() == noteBefore);
+}
+
+TEST_CASE("a string is escaped by the same parser that will read it back") {
+    SettingsSandbox box("escapes");
+
+    std::string error;
+    REQUIRE(editor::SetString("window", "title", "He said \"hi\"\\there", error));
+
+    // The point is the round trip, not the spelling: whatever it wrote, the
+    // file still parses and still says what was asked for.
+    const Json after = box.Read();
+    REQUIRE_FALSE(after.is_discarded());
+    CHECK(after["window"]["title"].get<std::string>() == "He said \"hi\"\\there");
+    CHECK(after.contains("input"));
+}
+
+TEST_CASE("asking whether a setting was actually written down") {
+    // ======================================================================
+    //  ABSENT AND DEFAULT ARE INDISTINGUISHABLE FROM BootConfig ALONE: a
+    //  panel shows 1280 whether window.width is in the file or not. This is
+    //  the only way to tell, and it reads the file rather than the engine
+    //  because the engine is exactly the thing that cannot tell.
+    // ======================================================================
+    SettingsSandbox box("presence");
+
+    CHECK(editor::HasSetting("window", "width"));        // the sandbox file has it
+    CHECK_FALSE(editor::HasSetting("window", "resizable"));
+    CHECK_FALSE(editor::HasSetting("physics", "gravity"));
+    CHECK_FALSE(editor::HasSetting("nosuchsection", "nosuchkey"));
+
+    std::string error;
+    REQUIRE(editor::SetBool("window", "resizable", false, error));
+    CHECK(editor::HasSetting("window", "resizable"));
+}
+
+TEST_CASE("a value the file cannot hold is refused before anything is written") {
+    SettingsSandbox box("badvalue");
+
+    const std::string before = box.RawText();
+
+    // Presentation is the one key checked by the ENGINE's own parser, so a
+    // value the editor accepted can never be one the game refuses.
+    std::string error;
+    CHECK_FALSE(editor::SetPresentationMode("sideways", error));
+    CHECK_FALSE(error.empty());
+    CHECK(box.RawText() == before);
+}
+
+// ============================================================================
+//  AND THE CHANGE IS LIVE.
+//
+//  The point of editing settings in an editor rather than in a text editor is
+//  that you see what you changed. Every writer above ends by asking the
+//  engine to re-read the file, which applies whatever can be applied - so
+//  these cases are about the SUBSYSTEM, not about the file.
+// ============================================================================
+
+TEST_CASE("writing a setting changes the running engine, not just the file") {
+    SettingsSandbox box("live-apply");
+
+    std::string error;
+
+    // ---- the world unit, which every collider is measured against --------
+    REQUIRE_MESSAGE(editor::SetNumber("units", "pixelsPerUnit", 64.0f, error), error);
+    CHECK(WorldUnit::Pixels() == doctest::Approx(64.0f));
+
+    // ---- gravity ---------------------------------------------------------
+    const float gravity[2] = {0.0f, -500.0f};
+    REQUIRE(editor::SetNumbers("physics", "gravity", gravity, 2, error));
+    CHECK(Physics2D::Gravity().y == doctest::Approx(-500.0f));
+
+    // ---- how loud the log is ---------------------------------------------
+    REQUIRE(editor::SetString("logging", "threshold", "Error", error));
+    CHECK(Log::GetThreshold() == LogLevel::Error);
+
+    // ---- and the engine's own copy agrees with all of it -----------------
+    //
+    // Config() is what every panel reads. A setting applied to a subsystem
+    // but not to Config() would show the old number in the editor while the
+    // new one was in force, which is worse than not applying it at all.
+    const BootConfig& config = eng::Engine::Get().Config();
+    CHECK(config.worldUnitPixels == doctest::Approx(64.0f));
+    CHECK(config.gravity.y == doctest::Approx(-500.0f));
+    CHECK(config.logThreshold == LogLevel::Error);
+}
+
+TEST_CASE("re-reading the settings leaves untouched values alone") {
+    // ======================================================================
+    //  THIS IS NOT AN OPTIMISATION, IT IS THE BEHAVIOUR.
+    //
+    //  LogBuffer::SetCapacity EMPTIES THE CONSOLE. If re-reading applied
+    //  every key rather than the changed ones, nudging the gravity would wipe
+    //  the log - and that would be blamed on the Console, not on the gravity.
+    //
+    //  Checked here through the world unit, which is observable without
+    //  filling a buffer: it is set to something unusual, a DIFFERENT setting
+    //  is then written, and it has to still be unusual afterwards.
+    // ======================================================================
+    SettingsSandbox box("untouched");
+
+    std::string error;
+    REQUIRE(editor::SetNumber("units", "pixelsPerUnit", 48.0f, error));
+    REQUIRE(WorldUnit::Pixels() == doctest::Approx(48.0f));
+
+    // Something the file has never mentioned, set directly - the way another
+    // part of the engine might have set it.
+    WorldUnit::SetPixels(7.0f);
+
+    REQUIRE(editor::SetInt("tunables", "maxStepsPerFrame", 9, error));
+
+    // Still 7: the file still says 48, the engine's copy still says 48, so
+    // nothing about the world unit changed and nothing was re-applied.
+    CHECK(WorldUnit::Pixels() == doctest::Approx(7.0f));
+    CHECK(eng::Engine::Get().Config().maxStepsPerFrame == 9);
+}
+
+TEST_CASE("a settings file that will not parse leaves the engine as it was") {
+    SettingsSandbox box("reload-broken", /*writeConfig=*/false);
+
+    // A known-good state first.
+    std::string error;
+    REQUIRE(editor::SetNumber("units", "pixelsPerUnit", 24.0f, error));
+    REQUIRE(WorldUnit::Pixels() == doctest::Approx(24.0f));
+
+    {
+        std::ofstream out(box.root / "config" / "engine.json", std::ios::binary);
+        out << R"({"units": {"pixelsPerUnit": 9)";
+    }
+
+    // Half-replaced settings would be worse than stale ones: the engine runs
+    // on what it has rather than on half of what it was given.
+    std::string reloadError;
+    CHECK_FALSE(eng::Engine::Get().ReloadSettings(reloadError));
+    CHECK_FALSE(reloadError.empty());
+    CHECK(WorldUnit::Pixels() == doctest::Approx(24.0f));
+    CHECK(eng::Engine::Get().Config().worldUnitPixels == doctest::Approx(24.0f));
+}
+
+TEST_CASE("the editor's window is never touched by a project's window settings") {
+    // ======================================================================
+    //  A project that ships full screen at a locked size must not open the
+    //  EDITOR that way - there would be no way back except hand-editing the
+    //  file. Engine::Options::gameOwnsTheWindow is the gate, and this engine
+    //  was never told it owns one, so the keys are recorded and not applied.
+    // ======================================================================
+    SettingsSandbox box("window-gate");
+
+    std::string error;
+    REQUIRE(editor::SetBool("window", "fullscreen", true, error));
+    REQUIRE(editor::SetBool("window", "resizable", false, error));
+
+    // Written, and remembered, so the export and the Game view both see it...
+    CHECK(eng::Engine::Get().Config().fullscreen);
+    CHECK_FALSE(eng::Engine::Get().Config().windowResizable);
+
+    // ...and that is the whole of what happened. There is no window in a test
+    // run to inspect; what matters is that ReloadSettings reported success
+    // rather than trying to act on it.
+    std::string reloadError;
+    CHECK(eng::Engine::Get().ReloadSettings(reloadError));
+}
+
+TEST_CASE("a number with no JSON spelling is refused rather than replaced") {
+    // ======================================================================
+    //  WHY THIS IS NOT PEDANTRY. An infinity has no spelling in JSON, and
+    //  the first version of this quietly wrote 0.0 instead and returned
+    //  success. For units.pixelsPerUnit that is the difference between a
+    //  32-pixel world unit and a 1-pixel one - every collider in the project
+    //  resized by a factor of 32, reported to the editor as "done".
+    // ======================================================================
+    SettingsSandbox box("nonfinite");
+
+    const std::string before = box.RawText();
+    const float       infinity = std::numeric_limits<float>::infinity();
+
+    std::string error;
+    CHECK_FALSE(editor::SetNumber("units", "pixelsPerUnit", infinity, error));
+    CHECK_FALSE(error.empty());
+
+    const float pair[2] = {0.0f, std::numeric_limits<float>::quiet_NaN()};
+    CHECK_FALSE(editor::SetNumbers("physics", "gravity", pair, 2, error));
+
+    // AND NOTHING WAS WRITTEN. A refusal that had already half-written the
+    // file would be worse than the value it refused.
+    CHECK(box.RawText() == before);
+    CHECK(WorldUnit::Pixels() == doctest::Approx(box.worldUnitWas));
+}
+
+TEST_CASE("a settings file that is there but cannot be read is left alone") {
+    // ======================================================================
+    //  THERE-AND-UNREADABLE IS NOT ABSENT, and the engine's own reader
+    //  cannot tell the difference - it answers "no settings file; using
+    //  built-in defaults" to both. Taking that at face value here would
+    //  replace a project's whole settings file, every key binding included,
+    //  with a file holding one key.
+    //
+    //  A FOLDER WHERE THE FILE SHOULD BE is the portable way to produce a
+    //  path that exists and will not open as a file.
+    // ======================================================================
+    SettingsSandbox box("unreadable", /*writeConfig=*/false);
+
+    std::error_code ec;
+    fs::create_directories(box.root / "config" / "engine.json", ec);
+    REQUIRE(fs::is_directory(box.root / "config" / "engine.json"));
+
+    std::string error;
+    CHECK_FALSE(editor::SetNumber("units", "pixelsPerUnit", 64.0f, error));
+    CHECK(error.find("could not be read") != std::string::npos);
+
+    // Still a folder: nothing tried to write a file over it, and nothing
+    // reported success.
+    CHECK(fs::is_directory(box.root / "config" / "engine.json"));
+
+    // And the engine was not quietly reset to built-in defaults either.
+    CHECK(WorldUnit::Pixels() == doctest::Approx(box.worldUnitWas));
 }

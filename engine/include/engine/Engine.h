@@ -427,6 +427,47 @@ public:
     void RequestQuit()       { m_quitRequested = true; }
     bool QuitRequested() const { return m_quitRequested; }
 
+    // ======================================================================
+    //  TAKES A QUIT REQUEST BACK, so a host can ask a question first.
+    //
+    //  BeginFrame does the whole frame's work - polls the events, updates the
+    //  input, sizes the camera, asks the clock for its steps - and only then
+    //  returns false. The frame is therefore perfectly usable; the return
+    //  value is advice, not a teardown. A host that wants to put something on
+    //  screen before closing calls this and carries on drawing.
+    //
+    //  THE EDITOR IS THE WHOLE REASON IT EXISTS. Closing its window used to
+    //  discard unsaved scene work with no dialog of any kind, because the
+    //  frame that noticed the close was the frame that ended the loop, so
+    //  there was never one left to ask in. See EditorApp::HoldQuitForQuestion.
+    //
+    //  A GAME SHOULD NOT CALL THIS. Refusing to close when the player has
+    //  asked to is the behaviour everybody hates; the editor has a file to
+    //  protect and a dialog to offer, and a game has neither.
+    // ======================================================================
+    void CancelQuit() { m_quitRequested = false; }
+
+    // ======================================================================
+    //  PUTS THE SCENE'S OWN CAMERA SETTING BACK ON THE VIEW.
+    //
+    //  A scene file carries a "camera" block - a position and either a zoom
+    //  or a frame height - and it is the framing the scene uses when nothing
+    //  IN the scene is driving the view. Loading a scene applies it, and so
+    //  does leaving play mode.
+    //
+    //  PUBLIC BECAUSE OF A THIRD MOMENT, which used to be a lie in the
+    //  Console. When the last camera entity stops being active - deleted,
+    //  unticked, or on an entity switched off - CameraSystem logged "the view
+    //  is back to the scene's own camera setting" and did nothing at all. The
+    //  view kept the dead camera's shot, and because SaveScene only declines
+    //  to write the block while a camera IS active, the next save then wrote
+    //  that stale shot over the hand-authored block - the exact overwrite the
+    //  block exists to survive. So the hand-back now actually happens, which
+    //  makes the log true and leaves the save with nothing to change.
+    //  See CameraSystem::Apply.
+    // ======================================================================
+    void ApplySceneCamera();
+
     // How many simulation steps the most recent BeginFrame asked for. The
     // toolbar shows it.
     int StepsThisFrame() const { return m_stepsThisFrame; }
@@ -440,22 +481,52 @@ public:
     const BootConfig& Config() const { return m_config; }
 
     // ======================================================================
-    //  TWO SETTINGS THE EDITOR CAN CHANGE WHILE RUNNING.
+    //  RE-READING THE SETTINGS FILE WITHOUT RESTARTING.
     //
-    //  The settings file is read ONCE, at start-up, which is right for almost
-    //  everything in it - but these two are edited from the Game view, and a
-    //  setting you cannot see take effect until you restart is a setting
-    //  nobody trusts. The editor writes the file and then says so here, so
-    //  Config() goes on being the one answer to "what does this project ask
-    //  for" rather than becoming stale the moment somebody changes it.
+    //  config/engine.json is read ONCE, at start-up, which is right for a
+    //  game: it is handed its settings and gets on with it. It is wrong for
+    //  an EDITOR, where the settings are something you sit and change, and a
+    //  value you cannot see take effect until you relaunch is a value nobody
+    //  trusts enough to tune.
     //
-    //  NEITHER TOUCHES THE WINDOW. Applying them is a separate decision and
-    //  belongs to the game - see Options::gameOwnsTheWindow.
+    //  WHY ONE FUNCTION RATHER THAN A SETTER PER KEY. There were two setters
+    //  here before this - one for the presentation, one for the window's
+    //  resizability - and every further key would have meant another, each
+    //  one a place to forget. This re-reads the file the engine itself reads,
+    //  so a key added to BootConfig is picked up with no new code here, and
+    //  Config() cannot disagree with what is on disk.
+    //
+    //  ONLY WHAT CHANGED IS APPLIED. Each value is compared with the one the
+    //  engine is running on, and untouched ones are left alone - which is not
+    //  an optimisation. `LogBuffer::SetCapacity` empties the Console, so
+    //  re-applying the whole file on every edit would wipe the log every time
+    //  somebody nudged a different setting.
+    //
+    //  WHAT IT DOES NOT TOUCH, and why each one is deliberate:
+    //
+    //   * THE "input" SECTION. Those are InputMap's, read by InputMap, and
+    //     rebinding every control underneath a running game because somebody
+    //     changed the gravity is not a thing anybody asked for. The document
+    //     is re-parsed; the bindings are left exactly as they are.
+    //
+    //   * THE WINDOW. Size, full screen and resizability describe the
+    //     SHIPPED window, and NEITHER host applies them here. In the editor
+    //     they are reported as describing the game's window; in the game
+    //     itself they are reported as needing a restart, because moving or
+    //     resizing a window out from under a running game is not a settings
+    //     change, it is an event the game has no way to be ready for. See
+    //     Options::gameOwnsTheWindow, which is what makes the two messages
+    //     different.
+    //
+    //   * logging.file. The log file is opened once and held open; there is
+    //     no reopen. A change to it is reported as needing a restart rather
+    //     than silently ignored.
+    //
+    //  Returns false only when the file is present and will not parse, which
+    //  is the one case where carrying on would mean ignoring what somebody
+    //  plainly wrote. A missing file is not a failure - it means defaults.
     // ======================================================================
-    void SetPresentationSetting(std::string_view spec) {
-        m_config.presentation = std::string(spec);
-    }
-    void SetWindowResizableSetting(bool on) { m_config.windowResizable = on; }
+    bool ReloadSettings(std::string& outError);
 
     // Loads a different scene at a safe moment, applying the camera settings
     // the scene file asked for.
@@ -512,8 +583,36 @@ public:
     // wants to stop doing things once it has asked to leave.
     bool HasPendingSceneRequest() const { return m_hasSceneRequest; }
 
-    // The opposite: pushes the LIVE camera into the scene, then writes it out.
-    // Pass an empty path to save over wherever it came from.
+    // The opposite: writes the scene out. Pass an empty path to save over
+    // wherever it came from.
+    //
+    // The live camera goes in first, but ONLY when nothing in the scene is
+    // driving it - see the note at the call site in SaveScene. With a camera
+    // entity active the engine camera is a derived value, and writing it out
+    // would overwrite the scene's own camera block with wherever that entity
+    // was standing.
+    //
+    // ======================================================================
+    //  IT REFUSES WHILE PLAY MODE IS RUNNING, and that refusal is the point.
+    //
+    //  During a play session the scene in memory is a THROWAWAY COPY that
+    //  Stop is about to replace. Writing it out saves the play session into
+    //  the asset: every entity wherever it had walked to, whatever health it
+    //  had left, entities the game had spawned or destroyed, and the game
+    //  camera's current framing as the scene's opening shot. Stop then
+    //  restores the snapshot in memory, so nothing on screen shows that the
+    //  file was rewritten at all.
+    //
+    //  REFUSED HERE RATHER THAN AT THE EDITOR'S FOUR SAVE ROUTES. Ctrl+S,
+    //  File -> Save Scene, the Save As box and the unsaved-work dialog all
+    //  arrive here, and a fifth will be added eventually; the editor also
+    //  greys its menu items so the refusal is visible rather than only
+    //  reported. Prefab Apply refuses during play for the identical reason -
+    //  see EditorApp::ApplyPrefabRequest.
+    //
+    //  The shipped player never enters play mode, so this costs a game
+    //  nothing. See IsInPlayMode.
+    // ======================================================================
     bool SaveScene(std::string_view virtualPath, std::string& outError);
 
     // ---- play mode --------------------------------------------------------
@@ -526,6 +625,30 @@ public:
     // The snapshot is the same text Save writes, so that code is exercised
     // constantly rather than only when somebody saves, and any bug in it shows
     // up immediately instead of the first time a file is written.
+    // ======================================================================
+    //  WHAT Stop PUTS BACK, stated as a list because it has been incomplete
+    //  twice and both times it cost somebody something.
+    //
+    //    the entities, components and the scene's name    (the snapshot)
+    //    WHICH FILE THE SCENE IS                          (see below)
+    //    the game speed the Toolbar was set to
+    //    the camera's framing
+    //    held keys, the deferred queue, the message queue
+    //    any scene a script asked for and did not get
+    //    this frame's simulation steps, so none run in edit mode
+    //
+    //  THE FILE IS ON THAT LIST BECAUSE OF A SCENE CHANGE. A script calling
+    //  RequestScene mid-session re-points the scene at the file it asked for,
+    //  and Stop used to hand the pre-play entities back under that name - so
+    //  the next Ctrl+S wrote the scene you were editing over the one you had
+    //  only played. See Scene::PlaySnapshot for the whole account.
+    //
+    //  WHAT IT DOES NOT PUT BACK: game time and the tick count, which go on
+    //  climbing across sessions, so Time::ElapsedTime() in a second playtest
+    //  does not start from zero. Unity restarts both; this does not, and a
+    //  script that times something from the start of a session has to note
+    //  its own starting point. Said here rather than left to be discovered.
+    // ======================================================================
     bool EnterPlayMode(std::string& outError);
     void ExitPlayMode();
     bool IsInPlayMode() const { return m_inPlayMode; }
@@ -538,12 +661,6 @@ private:
     // Writes down the twelve subsystems and the order they start in. It only
     // records them - nothing runs until Init calls SubsystemStack::InitAll.
     void RegisterBuiltinSubsystems(const Options& options);
-
-    // Puts the loaded scene's framing on the camera, whichever of the two
-    // ways it was written - a zoom or a frame height. Two call sites, loading
-    // a scene and leaving play mode, which were already two copies of the
-    // position-and-zoom pair. See render/Camera.h.
-    void ApplySceneCamera();
 
     // ------------------------------------------------------------------
     //  FIVE SUBSYSTEMS THAT BELONG TO THE ENGINE ITSELF.
@@ -618,6 +735,19 @@ private:
 
     SubsystemStack          m_subsystems;
     BootConfig              m_config;
+
+    // Remembered from Options so that ReloadSettings can make the same
+    // decision Init made about whether the window's settings are ours to
+    // apply, and re-read the same file Init read.
+    bool                    m_gameOwnsTheWindow = false;
+    // The same default Options::configPath carries, so that ReloadSettings
+    // reads the right file even on an engine that was never Init-ed - which
+    // is the case the unit tests exercise.
+    std::string             m_configPath = "config/engine.json";
+
+    // The presentation block of Init, shared with ReloadSettings so that one
+    // piece of text decides what "16:9" does to the renderer.
+    void ApplyPresentationSetting();
     Json                    m_configDocument = Json::object();
     std::unique_ptr<Scene>  m_scene;
 
@@ -666,8 +796,20 @@ private:
     // ======================================================================
     bool m_scriptsUpdatedThisFrame = false;
 
-    // The scene as it was when Play was pressed, so Stop can put it back.
-    std::string m_playModeSnapshot;
+    // The scene as it was when Play was pressed, so Stop can put it back -
+    // ITS CONTENTS AND WHICH FILE IT WAS, because a session that changes
+    // scene moves the second one. See Scene::PlaySnapshot.
+    Scene::PlaySnapshot m_playModeSnapshot;
+
+    // The game speed the Toolbar was set to when Play was pressed.
+    //
+    // RESTORED BY Stop, because a script is allowed to change it - a pause
+    // menu built on SetTimeScale(0) is the documented way to write one - and
+    // nothing else ever changed it back. One such playtest left the clock at
+    // zero for the rest of the editor session: every later Play ran its
+    // OnUpdates and froze every OnFixedUpdate, with the only clue a figure on
+    // the Toolbar nobody was looking at.
+    float m_playModeTimeScale = 1.0f;
 
     // A scene a script has asked for, carried out at the end of the frame.
     // See RequestScene.

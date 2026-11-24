@@ -199,15 +199,83 @@ public:
     // saves correctly.
     bool Save(std::string_view virtualPath, std::string& outError);
 
-    // The same document to and from a string instead of a file.
+    // ======================================================================
+    //  THE SAME DOCUMENT TO AND FROM A STRING INSTEAD OF A FILE.
     //
-    // This is what makes the editor's Play button non-destructive: the scene
-    // is snapshotted into a string before Play and restored from it on Stop,
-    // so a play session that moved the player and collected half the pickups
-    // leaves the level exactly as it was authored. Unity does this, and
-    // everybody relies on it without noticing until an editor does not.
+    //  THE CONTENTS ONLY. These two carry every entity, every component and
+    //  the scene's name, and they deliberately do NOT touch SourcePath() -
+    //  see LoadFromString's own comment for why, and TakePlaySnapshot below
+    //  for the one caller that needs the other behaviour.
+    //
+    //  The editor's Ctrl+Z is built on this pair: an undo step is the scene's
+    //  text, and stepping back must not re-point the file. Save As followed by
+    //  Ctrl+Z would otherwise send the scene back to the file it was saved
+    //  away from. See editor/src/UndoStack.h.
+    // ======================================================================
     bool SaveToString(std::string& outText, std::string& outError);
     bool LoadFromString(std::string_view text, std::string& outError);
+
+    // ======================================================================
+    //  AND THE WHOLE SCENE, IDENTITY INCLUDED - which is what Play needs.
+    //
+    //  ----------------------------------------------------------------------
+    //  WHY THIS IS NOT JUST SaveToString, AND WHAT IT COST TO FIND OUT
+    //
+    //  Play used to be SaveToString on the way in and LoadFromString on the
+    //  way out, and for a session that stays in one scene those are exactly
+    //  right. A session that CHANGES scene - a menu button calling
+    //  Engine::RequestScene, which is what the feature is for - broke it,
+    //  silently and expensively:
+    //
+    //      Scene::Load, which carries out the request, ASSIGNS m_sourcePath.
+    //      LoadFromString, which puts the snapshot back, deliberately does
+    //      not. So Stop restored the menu's entities under the LEVEL's
+    //      filename, every one of the editor's six "which scene is open"
+    //      readouts agreed that the level was open, and the next Ctrl+S
+    //      wrote the menu over the level. The level was gone, and the only
+    //      sign beforehand was a window title nobody had reason to doubt.
+    //
+    //  It was reported by somebody who lost an afternoon's level to it.
+    //
+    //  ----------------------------------------------------------------------
+    //  SO THE SNAPSHOT CARRIES THE PATH, AND IT IS NOT IN THE TEXT.
+    //
+    //  The path is a FIELD BESIDE the text, not a key inside it. Scene::Save
+    //  and SaveToString build the same document - that is a deliberate
+    //  property, so the file-writing path is exercised on every Play rather
+    //  than only when somebody saves - and a path written into the document
+    //  would therefore be written into every .oscene on disk. A scene file
+    //  that names its own location is a scene file that lies the moment it is
+    //  copied, renamed or moved: loading a duplicate would hand it the
+    //  original's identity and the next save would overwrite the original.
+    // ======================================================================
+    struct PlaySnapshot {
+        std::string text;
+
+        // The file the scene was being edited as when the snapshot was taken.
+        // Empty is meaningful and must survive: it is a scene that has never
+        // been saved anywhere, and restoring a path onto it would make the
+        // first Ctrl+S overwrite a file nobody chose. StartNewScene clears
+        // the path for that exact reason; this must not put one back.
+        std::string sourcePath;
+
+        bool Empty() const { return text.empty(); }
+    };
+
+    // Takes one. Fails for the same reason SaveToString does - a component
+    // that cannot be written down - so that Play is refused rather than
+    // entered without a way back.
+    bool TakePlaySnapshot(PlaySnapshot& outSnapshot, std::string& outError);
+
+    // Puts one back, CONTENTS AND IDENTITY TOGETHER.
+    //
+    // ON FAILURE THE SCENE IS LEFT WITH NO FILE. A restore that did not parse
+    // leaves entities that match nothing on disk, and the two honest choices
+    // are both bad - point at the pre-play file and Ctrl+S overwrites it with
+    // wreckage, point at the played file and Ctrl+S overwrites that instead.
+    // So it points at neither: Save has nowhere to go and asks for a name,
+    // which is the one outcome that cannot destroy a file somebody still has.
+    bool RestorePlaySnapshot(const PlaySnapshot& snapshot, std::string& outError);
 
     // Destroys every entity, which releases every texture they were using.
     // ======================================================================
@@ -269,7 +337,31 @@ public:
         m_sourcePath = std::string(virtualPath);
     }
 
+    // ======================================================================
+    //  "HAS AT LEAST ONE ENTITY", which is NOT the same as "a scene is open".
+    //
+    //  Two different questions, and using this one for the other cost a file.
+    //  See IsOpen below, and do not reach for this to gate a save.
+    // ======================================================================
     bool IsLoaded() const { return m_liveCount > 0; }
+
+    // ======================================================================
+    //  IS THERE A SCENE HERE AT ALL?
+    //
+    //  False after Unload - File -> Close Scene - and true from a Load or a
+    //  StartNewScene. It exists because the source path deliberately SURVIVES
+    //  an unload ("reload what I just unloaded" needs it), so after Close
+    //  Scene the path still names a real asset while there is nothing to
+    //  write to it. Every save route that asked only whether the path was
+    //  empty therefore offered to save, and saving serialised the zero live
+    //  entities straight over the file.
+    //
+    //  AN EMPTY SCENE IS STILL OPEN, which is the whole reason this is not
+    //  IsLoaded(). Emptying a scene on purpose and saving it is a thing
+    //  people do, and the File menu records a bug where IsLoaded() stopped
+    //  them - see the note on Save Scene in EditorApp::DrawFileMenu.
+    // ======================================================================
+    bool IsOpen() const { return m_open; }
 
     // ---- entities ---------------------------------------------------------
 
@@ -793,6 +885,11 @@ private:
     Json        m_document = Json::object();
     std::string m_name;
     std::string m_sourcePath;
+
+    // See IsOpen. Set by Load, LoadFromString and StartNewScene; cleared by
+    // Unload. NOT derived from the entity count, because an empty scene is
+    // open and a closed one is not.
+    bool m_open = false;
     Vec2        m_cameraPosition{0.0f, 0.0f};
     float       m_cameraZoom = 1.0f;
 

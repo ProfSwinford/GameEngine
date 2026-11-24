@@ -41,6 +41,7 @@ set(TEST_SOURCES
     src/test_gameview.cpp
     src/test_persistence.cpp
     src/test_projectsettings.cpp
+    src/test_editorprefs.cpp
 
     # ==========================================================================
     #  ONE EDITOR FILE, COMPILED INTO THE TEST PROGRAM.
@@ -66,6 +67,13 @@ set(TEST_SOURCES
     # user's own files - config/engine.json, holding every key binding in the
     # project. See ProjectSettings.h.
     ../editor/src/ProjectSettings.cpp
+
+    # And the editor's own appearance preferences, which are read before the
+    # first frame is drawn - so a file that could stop them being read is a
+    # file that could stop the editor opening. EditorPrefs.cpp holds no ImGui
+    # at all, deliberately, which is what lets it be here; EditorAppearance.cpp
+    # is the half that does, and cannot be. See EditorPrefs.h.
+    ../editor/src/EditorPrefs.cpp
 )
 
 add_executable(tests ${TEST_SOURCES})

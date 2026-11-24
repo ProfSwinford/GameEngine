@@ -176,7 +176,17 @@ void ScenePanel::Draw() {
             if (eng::Transform2D* transform = active->OwnerTransform()) {
                 transform->SetWorldPosition(m_camera.Position());
             }
-            active->SetZoom(m_camera.Zoom());
+            // WHICHEVER WAY THAT CAMERA IS FRAMED, or this button moves the
+            // position and silently leaves the framing alone: a component
+            // with a frame height ignores its zoom entirely (zero is how it
+            // says "framed by zoom" - see CameraComponent::FrameHeight), so
+            // handing a height-framed camera a zoom changed nothing on
+            // screen and the button looked half broken.
+            if (active->FrameHeight() > 0.0f) {
+                active->SetFrameHeight(m_camera.FrameHeight());
+            } else {
+                active->SetZoom(m_camera.Zoom());
+            }
         } else {
             // No camera entity: the old path, which still works and is what
             // a scene written before cameras were entities uses.

@@ -20,6 +20,11 @@ std::vector<CameraComponent*> g_cameras;
 // exactly the kind of thing that is hard to work out from the picture alone.
 const CameraComponent* g_lastActive = nullptr;
 
+// Set when the camera that WAS driving the view is unregistered, because the
+// pointer above has to be cleared at that moment and clearing it alone loses
+// the transition Apply's hand-back branch keys on. See Unregister.
+bool g_handBackIsOwed = false;
+
 } // namespace
 
 CameraComponent::~CameraComponent() = default;
@@ -111,8 +116,22 @@ void CameraSystem::Register(CameraComponent& camera) {
 void CameraSystem::Unregister(CameraComponent& camera) {
     std::erase(g_cameras, &camera);
 
+    // ======================================================================
+    //  THE POINTER GOES, BUT THE FACT THAT THERE WAS ONE IS REMEMBERED.
+    //
+    //  The pointer HAS to be cleared here: this runs from OnDetach, so the
+    //  object is about to be destroyed and nothing may compare against it
+    //  afterwards.
+    //
+    //  CLEARING IT ALONE LOST THE TRANSITION. Apply's hand-back branch is
+    //  reached only when g_lastActive says a camera was driving the view, so
+    //  deleting the active camera entity changed neither the picture nor the
+    //  Console: the view silently kept the deleted camera's shot, and the
+    //  next save wrote that shot over the scene's own camera block.
+    // ======================================================================
     if (g_lastActive == &camera) {
-        g_lastActive = nullptr;
+        g_lastActive     = nullptr;
+        g_handBackIsOwed = true;
     }
 }
 
@@ -122,7 +141,12 @@ std::size_t CameraSystem::Count() {
 
 void CameraSystem::Clear() {
     g_cameras.clear();
-    g_lastActive = nullptr;
+    g_lastActive     = nullptr;
+
+    // NOT OWED ACROSS A Clear. Clear is the end of a scene, and the next
+    // scene's own load applies its own camera block - so a hand-back left
+    // owed here would fire against a scene that had already framed itself.
+    g_handBackIsOwed = false;
 }
 
 CameraComponent* CameraSystem::Active() {
@@ -151,19 +175,43 @@ CameraComponent* CameraSystem::Active() {
 void CameraSystem::Apply() {
     CameraComponent* active = Active();
 
-    // NOTHING AT ALL when there is no camera entity. The engine's camera
-    // keeps whatever the scene file's "camera" block gave it, which is
-    // exactly how every scene written before this existed behaves. See the
-    // header.
+    // ======================================================================
+    //  NO CAMERA ENTITY: THE VIEW GOES BACK TO THE SCENE'S OWN SETTING.
+    //
+    //  And it now really does. This branch used to say so in the Console and
+    //  do nothing, which was wrong twice over:
+    //
+    //    THE PICTURE. Unticking or deleting the last camera left the view
+    //    showing that camera's last shot for the rest of the session. Only a
+    //    scene load or leaving play mode ever applied the scene's own block.
+    //
+    //    THE FILE. Engine::SaveScene declines to write the block only while a
+    //    camera IS active. With no active camera the gate opens - and what it
+    //    then wrote out was the dead camera's derived pose, straight over the
+    //    hand-authored block. That is the precise overwrite the block exists
+    //    to survive, and it was reachable by unticking a camera and pressing
+    //    Ctrl+S. Worse, a block authored as a frame height came back as a
+    //    zoom, because the camera had been zoom-framed by the entity.
+    //
+    //  ONCE, ON THE TRANSITION, not every frame: re-applying continuously
+    //  would fight anything that deliberately moves the engine camera while
+    //  no entity drives it - which is what a scene with no camera entity at
+    //  all does, and is what the Game view's camera fields are for.
+    // ======================================================================
     if (active == nullptr) {
-        if (g_lastActive != nullptr) {
+        if (g_lastActive != nullptr || g_handBackIsOwed) {
             ENGINE_LOG_INFO(Channels::kScene,
                             "no camera entity is active; the view is back to the "
                             "scene's own camera setting");
-            g_lastActive = nullptr;
+            g_lastActive     = nullptr;
+            g_handBackIsOwed = false;
+            Engine::Get().ApplySceneCamera();
         }
         return;
     }
+
+    // A camera has taken over again, so nothing is owed to the scene's block.
+    g_handBackIsOwed = false;
 
     if (g_lastActive != active) {
         const Entity* owner = active->Owner();

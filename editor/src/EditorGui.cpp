@@ -7,6 +7,8 @@
 
 #include "EditorGui.h"
 
+#include "EditorAppearance.h"
+
 #include <engine/core/Log.h>
 #include <engine/fs/FileSystem.h>
 #include <engine/platform/Window.h>
@@ -196,7 +198,18 @@ bool EditorGui::Init(eng::Window& window) {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    // ======================================================================
+    //  HOW THE EDITOR LOOKS, which is the PERSON'S and not the project's.
+    //
+    //  Dark is the default and what this was before the options panel
+    //  existed; the per-user file replaces it when there is one. Applied HERE
+    //  rather than later because this is before the first frame, so the
+    //  editor never flashes one appearance on its way to another - and
+    //  because loading a font is only safe between frames, which is a
+    //  condition start-up trivially satisfies.
+    // ======================================================================
     ImGui::StyleColorsDark();
+    appearance::LoadAndApply();
 
     auto* sdlWindow   = static_cast<SDL_Window*>(window.NativeWindowHandle());
     auto* sdlRenderer = static_cast<SDL_Renderer*>(window.NativeRendererHandle());
@@ -258,6 +271,14 @@ void EditorGui::BeginFrame() {
     if (!g_initialised) {
         return;
     }
+    // Anything the appearance asked for during the last frame is done now,
+    // BEFORE NewFrame: the font size, which the context would otherwise
+    // overwrite from its own copy, and a font file, because adding a source
+    // to the atlas part-way through building a frame is not something to find
+    // out about the hard way. Does nothing on almost every frame. See
+    // EditorAppearance.h.
+    appearance::Pump();
+
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();

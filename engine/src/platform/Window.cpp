@@ -195,6 +195,25 @@ bool Window::SetSize(int width, int height) {
     return true;
 }
 
+void Window::Restore() {
+    if (m_window == nullptr) {
+        return;
+    }
+    // NOT CHECKED FIRST. SDL_RestoreWindow on a window that is not minimized
+    // is a no-op, and the flag would have to be read back anyway - see
+    // SDL_GetWindowFlags. Nothing is logged on failure either: this is a
+    // courtesy to the person looking at the screen, not a contract, and a
+    // window manager that refuses is not a problem the caller can solve.
+    SDL_RestoreWindow(m_window.get());
+}
+
+void Window::Raise() {
+    if (m_window == nullptr) {
+        return;
+    }
+    SDL_RaiseWindow(m_window.get());
+}
+
 void Window::SetTitle(const char* title) {
     if (m_window == nullptr || title == nullptr) {
         return;

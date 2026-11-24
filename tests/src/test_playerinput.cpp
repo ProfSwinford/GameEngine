@@ -2,10 +2,10 @@
 //  Tests for eng::PlayerInputComponent and eng::PlayerInputSystem.
 //
 //  THE ONE THAT MATTERS MOST IS "a run-time switch is not an authored
-//  change". Ctrl+S is not blocked while a game is playing and every undo
-//  snapshot is a whole SaveToString, so a component that wrote its live
-//  current map into the field Serialize reads would, after enough ordinary
-//  editing, open the scene with the player already in the pause menu. There
+//  change". Every undo snapshot is a whole SaveToString, so a component that
+//  wrote its live current map into the field Serialize reads would, after
+//  enough ordinary editing, open the scene with the player already in the
+//  pause menu. There
 //  is no symptom until then and no way to tell what did it. SetTexture and
 //  ShowTexture are two separate calls on SpriteComponent for exactly this
 //  reason; these are two separate members for the same one.

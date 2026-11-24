@@ -984,6 +984,22 @@ writes the request down and carries it out at the end of the frame.
 
 Asking twice in one frame is not an error; the last request wins.
 
+**In the editor this is still safe, and the reason is worth knowing.** A
+request during a playtest loads the scene for real - that is the point, it is
+how you test a menu button - and the editor re-points everything at it: the
+window title, the Build panel, the save target. Pressing **Stop** puts all of
+that back, including which file you were editing, so the next `Ctrl+S` goes to
+the scene you had open before Play.
+
+It is worth knowing because it was not always true. Stop used to restore the
+objects and not the filename, so a playtest that changed level left the editor
+saving your menu over your level. If you are on an older build, press Stop and
+check the window title before you save. See "Toolbar: Play, Pause and Step" in
+the editor guide.
+
+Saving is refused during a playtest anyway, for a related reason: the scene on
+screen is a copy that Stop is about to replace.
+
 ---
 
 ## Talking to other scripts
@@ -1931,7 +1947,7 @@ list is the whole of it:
 | | |
 | --- | --- |
 | loading another scene | **keeps** it. This is what the feature is for |
-| pressing **Stop** in the editor | destroys it. Play mode puts the authored scene back, and an object outliving that would leave the editor holding something no scene file describes |
+| pressing **Stop** in the editor | destroys it. Play mode puts the authored scene back - the one you were *editing* when you pressed Play, whichever scenes the session then visited - and an object outliving that would leave the editor holding something no scene file describes |
 | **New Scene** | destroys it. "New" means nothing carried |
 | closing the project, quitting | destroys it |
 

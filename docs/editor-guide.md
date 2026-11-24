@@ -115,6 +115,23 @@ selection and the Scene view's camera, and `.editor/imgui.ini` remembers the
 panel layout, so reopening a project puts you back where you were. If there is
 unsaved work you are asked first, and the dialog names the file.
 
+The editor presses **Stop** for you on the way out, so the scene it writes down
+is the one you were *editing* - not one a script had loaded during a playtest.
+Switching project is refused outright while the game is running, because the
+switch ends the process and the scene as it was before Play lives nowhere but
+in memory.
+
+**Closing the editor asks about unsaved scene work too**, and names the file -
+the window's close button, **File -> Exit** and a script calling `RequestQuit`
+during a playtest all go through the same question. It is the same dialog the
+scene routes use, with the same three answers: save, discard, or cancel.
+
+That is newer than it should be. Closing the window used to go straight to
+shutdown with no dialog of any kind, which made the easiest action in the
+editor - the button in the corner of the title bar - the one that discarded an
+hour of work in silence. There is no autosave here, so a scene you have not
+saved exists nowhere but in memory.
+
 **`project.oproj` is optional.** A folder with an `assets/` folder in it is a
 project whether or not it has one - which is why this repository needs nothing
 added to it. The manifest only gives a project a name of its own, so that two
@@ -302,10 +319,10 @@ from the disk* in the Assets panel - two different and equally correct answers
 to the same key, chosen by focus. A global shortcut cannot make that choice, so
 those keys live next to the thing they act on.
 
-There is no `Ctrl+Q`. Closing the editor does not yet ask about an unsaved
-scene - only switching *project* does - so a single keystroke that quit would
-be a single keystroke that discarded an hour. The keystroke can come after the
-question.
+There is no `Ctrl+Q`, though the reason has changed. Closing the editor now
+*does* ask about an unsaved scene - see "Toolbar: Play, Pause and Step" - so the
+old argument against the chord (a single keystroke that discarded an hour) no
+longer holds. It is simply not bound yet.
 
 ### Undo
 
@@ -343,20 +360,29 @@ record a new one.
   of it rebuilds - and the undo history is cleared, for the same reason a scene
   change clears it. A step back into a scene holding the prefab's old contents
   would read as a pile of deliberate overrides and quietly detach the instance
-  from it.
+  from it. If you were **playing** when you alt-tabbed back, the rebuild waits
+  for **Stop** - it would otherwise make the played scene the undo baseline,
+  which is the same mistake in a worse place.
 - **The scene view camera.** Undo deliberately does not move your viewport,
   because you are looking at the thing you are undoing.
 - **Align game camera**, when the scene has no camera entity. With no camera
   entity there is nothing in the scene to change, so it writes to the engine's
   camera directly and no snapshot can see it.
 - **Play sessions.** Undo is unavailable while playing, because **Stop**
-  already puts the scene back - the menu item says so if you hover it.
+  already puts the scene back - the menu item says so if you hover it. A
+  script changing level mid-session does not disturb the history either:
+  Stop restores the scene the history describes, name and all.
 - **A scene change.** Opening a scene, starting a new one or closing one clears
   the history, because stepping back from one scene into another is not what
   undo means anywhere. That is also why those three now **ask first** when
   there is unsaved work - every route to them, not just the menu items.
   **Reload Scene** is the one exception, because discarding is what reloading
   means.
+
+  There is a fourth route and it is **not** an editor one: a script calling
+  `RequestScene` during a playtest. That one does not clear the history,
+  because it must not - Stop puts the scene the history describes back, so the
+  history is still about the scene on screen.
 
 The menu item's tooltip tells you how many steps are left.
 
@@ -414,7 +440,27 @@ two views at once possible at all.
 | Point the game camera here| **Align game camera**                               |
 
 The Game view has its own row of camera fields, because the game camera is
-what gets written into the scene file when you save.
+what gets written into the scene file when you save - **as long as nothing in
+the scene is driving it.**
+
+If the scene has a **camera entity** (an object with a Camera component), that
+entity is the camera: the engine copies its position and zoom into the view
+every frame, so the view is a reflection of the entity rather than a setting of
+its own. Saving therefore leaves the scene file's own camera block alone, and
+both **Align game camera** and the camera fields here move that *entity*
+instead - which is what makes those edits something a save can record.
+
+The block stays as the framing the scene falls back to when no camera entity is
+active, and the view drops back to it the moment that happens. That is once the
+*last* camera is deleted, unticked, or left on an entity you have switched off.
+Priority does not bring the block back: it only chooses between cameras, so
+with two in the scene, bumping one just moves the view to that one. The
+Inspector says which camera is live.
+
+Until that rule existed, every save overwrote that block with wherever the
+camera entity happened to be standing - in edit mode as well as after a
+playtest - so a hand-authored opening shot was quietly replaced by the last
+place the camera had been.
 
 The editor starts in **edit mode**: the clock is paused and nothing moves until
 you press Play.
@@ -885,6 +931,92 @@ reach a running scene. **Save** is greyed out until something changes, and
 
 ---
 
+## Project Settings
+
+**Edit -> Project Settings...** opens the project's own settings — what is in
+`config/engine.json` — as a form, grouped by section: the presentation, the
+world unit, gravity, the tunables, logging, the game's window, and the startup
+scene.
+
+**Every change takes effect at once.** There is no Save button and no
+relaunch: a control writes the file, and the engine then re-reads it and
+applies what it can, so letting go of *Pixels per unit* resizes every collider
+in the open scene.
+
+**When a control commits depends on what it is.** A slider or a drag writes
+the file when you let go of it, and a checkbox the moment you click it — so
+the file is not rewritten on every frame of a drag. A **text field writes when
+you press Enter**, and reverts to what the project says if you click away; its
+tooltip says so too.
+
+*Mode* under Presentation is checked before it is written, by the same parser
+the engine uses at start-up, so a value the panel accepts is never one the
+game refuses.
+
+The three things that cannot work that way say so where you would look:
+
+| | |
+| --- | --- |
+| **The game's window** | size, title, full screen, resizable. The editor hosts the same engine and deliberately ignores these for its own window — a project that shipped full screen at a locked size would otherwise open the *editor* that way, with no way back but hand-editing the file. They are written, and the built game obeys them |
+| **The log file** | opened once and held open for the run, so a new path is used the next time the editor starts |
+| **Key bindings** | in the same file, and **not edited here**. They belong to the input system; use the Input Actions panel |
+
+**The file is edited in place, one value at a time.** `config/engine.json` is
+written by hand as much as by the editor: blank lines between sections, a
+`_note` against each one explaining what it is for, the key bindings laid out
+in columns. The panel splices the one value it is changing into the text and
+leaves every other byte where it was, so the diff is one line.
+
+A section the editor has to create arrives with its own note, once, so a file
+the editor added to still explains itself.
+
+**If a setting will not write** — a read-only checkout, a file something else
+is holding open — the panel says so in red rather than snapping the control
+back with no explanation.
+
+---
+
+## Options: how the editor looks
+
+**Edit -> Options...** is the other settings panel, and it is the opposite kind
+of thing: it is **yours, not the project's**. Nothing in it is part of any
+project, nothing in it ships inside a built game, and it is the same whichever
+project you open — it lives in your own settings folder, beside the
+recent-projects list. The panel prints the exact path at the bottom.
+
+| | |
+| --- | --- |
+| **Theme** | Dark, Light or Classic, which everything else is laid on top of |
+| **Font size** | in pixels |
+| **Interface scale** | padding, spacing, borders and corner rounding — not the text, which is the font size |
+| **Font file** | a `.ttf` or `.otf` by full path, Enter to apply. Empty is the font built into the editor |
+| **Colours** | any of Dear ImGui's colours, overridden one at a time, with a filter box and an **Only changed** tick |
+
+**Changes are live and are remembered immediately.** A slider shows you the
+size while you drag it and writes the file once, when you let go.
+
+A colour dragged back to exactly the theme's own value stops being an override
+and goes back to following the theme — which is what keeps the Dark/Light
+choice meaningful. **Reset** beside a colour does the same thing deliberately,
+and **Reset everything to defaults** deletes the file: the absence of the file
+*is* the defaults, so there is no table of default values anywhere to drift out
+of step with what a new install gets.
+
+Three honest limits, all of them stated in the panel too:
+
+- **Around a hundred colours are written into the panels themselves** — the
+  red of an error line, the amber of UNSAVED, the tint of a selected asset.
+  They are not Dear ImGui style colours, so nothing here reaches them, and they
+  look the same under every theme.
+- **The panel layout keeps its old pixel sizes** when you change the interface
+  scale, because the arrangement is remembered in pixels. Drag an edge once and
+  it settles.
+- **A font that has been moved or uninstalled** since you chose it is reported
+  in the panel and the built-in font is used. It is not a crash and not a
+  silence.
+
+---
+
 ## Console
 
 The log. Everything the engine and your own code write, with filters by level,
@@ -911,6 +1043,58 @@ the pickups leaves the level exactly as you built it.
 If the scene contains something that cannot be saved, Play is **refused**
 rather than entered, because a snapshot that cannot be restored is worse than
 no Play button.
+
+**What Stop puts back**, in full, because "safe" is only worth saying if it is
+a list:
+
+- every entity, component and the scene's name;
+- **which scene file you are editing** - this one matters when a script
+  changes level, see below;
+- the **Speed** slider, which a script is allowed to move;
+- the camera's framing;
+- whatever keys were held, and anything the game had queued;
+- any scene a script asked for and did not get before you pressed Stop;
+- the unsaved-work asterisk, which goes back to whatever it said before Play.
+
+What it does **not** put back is game time: `Time::ElapsedTime()` and the tick
+count go on climbing across sessions, so a second playtest does not start from
+zero. A script that times something from the start of a session has to note its
+own starting point.
+
+**A script may change level during a playtest, and Stop still brings you back
+to the scene you were editing.** A menu button calling
+`eng::Engine::Get().RequestScene("scenes/level.oscene")` is the whole point of
+that call; press Stop in the level and the menu comes back, filed under the
+menu's own name.
+
+That sentence is here because it was not true until somebody lost an
+afternoon's work to it. Stop restored the menu's objects under the *level's*
+filename - the title bar, the Build panel and every other readout agreed - and
+the next `Ctrl+S` wrote the menu over the level. If you are reading this
+because it happened to you on an older build: the overwritten scene is only
+recoverable from version control. Commit your scenes.
+
+**You cannot save while the game is running.** `Ctrl+S`, **Save Scene** and
+**Save Scene As...** are all refused during a playtest, and the menu items are
+greyed with the reason. The scene on screen is a copy: saving it would write
+the playtest into the asset - enemies wherever they had walked to, whatever
+health was left, the game camera's current shot as the scene's opening framing
+- and Stop would then hide the evidence by restoring the snapshot over it.
+Press Stop first.
+
+For the same reason these are all refused mid-playtest: **New Scene**, **Close
+Scene**, opening another scene, **Open Project**, **Close Project**, any change
+to a prefab (creating, applying, reverting or unpacking one), renaming or moving
+a file in the **Assets** panel, and **+ Script**.
+
+Most say so in the status bar; renaming, moving or adding a script says so in
+the **Assets** panel itself, and **Open Project** and **Close Project** say so
+in the **Console**. A prefab you edit outside the editor is the one thing that
+is deferred rather than refused: it rebuilds when you press Stop, and the
+status bar says so while you are still playing.
+
+Closing the editor during a playtest is allowed, and presses Stop for you on
+the way out, so the scene it remembers is the one you were editing.
 
 **Pause and Step together are the best debugging tool in the editor.** Pause,
 press Step once, and watch a single entity's position change by exactly one
@@ -1181,9 +1365,19 @@ There is no separate prefab-editing mode. Edit any instance and press
 You can also edit the `.oprefab` by hand, since it is JSON like everything else
 here. When you alt-tab back to the editor, every instance in the open scene
 rebuilds and keeps its own overrides. That is the same trigger that rebuilds
-your scripts.
+your scripts - and if you were playing when you alt-tabbed back, the rebuild
+waits until you press **Stop**, because the scene on screen during a playtest
+is a copy that Stop is about to replace.
 
-### Two things it refuses
+### Three things it refuses
+
+**No change to a prefab happens during a playtest.** Creating, applying,
+reverting and unpacking are all refused until you press **Stop**, and the
+status bar says so. *Apply* is the one that matters: it writes the `.oprefab`
+file, and the scene it would read the values out of is a play session - an
+enemy saved at wherever it had walked to, with whatever health it had left,
+pushed out to every instance in the project. The other three are refused with
+it so that the rule is one rule rather than three.
 
 **A prefab's child cannot be deleted or reparented.** The root is fine -
 deleting it deletes the whole instance, and it can be parented anywhere you

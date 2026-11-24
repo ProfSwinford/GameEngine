@@ -118,6 +118,24 @@ public:
     // ======================================================================
     bool SetSize(int width, int height);
 
+    // ======================================================================
+    //  BRINGS THE WINDOW BACK TO WHERE SOMEBODY CAN SEE IT.
+    //
+    //  Restore un-minimizes; Raise puts it in front and gives it the input
+    //  focus. Both do nothing if the window is already where they would put
+    //  it, so calling them is cheap and calling them twice is harmless.
+    //
+    //  THE EDITOR IS WHAT THESE ARE FOR, and a game should not touch them:
+    //  a window that puts itself in front of whatever somebody was reading
+    //  is the behaviour everybody hates. The editor's case is narrow and
+    //  earns it - it has a question to ask before closing, the question is
+    //  drawn inside this window, and a minimized window draws nothing, so
+    //  "Close window" from the taskbar would otherwise appear to do nothing
+    //  at all. See EditorApp::RaiseWindowForQuestion.
+    // ======================================================================
+    void Restore();
+    void Raise();
+
     // Fills the whole window with one colour. Each channel is 0-255, which is
     // why they are `unsigned char` - that type holds exactly 0 to 255.
     void Clear(unsigned char r, unsigned char g, unsigned char b);

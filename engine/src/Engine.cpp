@@ -324,6 +324,11 @@ bool Engine::Init(const Options& options) {
         return false;
     }
 
+    // Remembered for ReloadSettings, which re-reads this same file when the
+    // editor changes a setting. See Engine::ReloadSettings.
+    m_configPath        = options.configPath;
+    m_gameOwnsTheWindow = options.gameOwnsTheWindow;
+
     std::string configError;
     if (!LoadBootConfig(options.configPath, m_config, m_configDocument, configError)) {
         // The log is not open yet, so this goes straight to the terminal.
@@ -364,31 +369,7 @@ bool Engine::Init(const Options& options) {
     //  aspect - not the ability to start the game - which is the rule the
     //  whole of Config.h states for every other key.
     // ======================================================================
-    {
-        Presentation::Mode mode = Presentation::Mode::Free;
-        int                x    = 0;
-        int                y    = 0;
-        std::string        why;
-        if (!Presentation::ParseSpec(m_config.presentation, mode, x, y, why)) {
-            ENGINE_LOG_WARN(Channels::kRender,
-                            "presentation.mode '{}' was not understood ({}), so the "
-                            "game fills the window",
-                            m_config.presentation, why);
-        } else if (mode == Presentation::Mode::Aspect) {
-            Presentation::SetAspect(x, y);
-            ENGINE_LOG_INFO(Channels::kRender,
-                            "the game is presented at {}:{}, with black in the margins",
-                            x, y);
-        } else if (mode == Presentation::Mode::Resolution) {
-            Presentation::SetResolution(x, y);
-            ENGINE_LOG_INFO(Channels::kRender,
-                            "the game is rendered at {}x{} and scaled to the window, "
-                            "with black in the margins",
-                            x, y);
-        } else {
-            Presentation::SetFree();
-        }
-    }
+    ApplyPresentationSetting();
 
     // ======================================================================
     //  THE WINDOW SETTINGS, AND ONLY FOR THE GAME.
@@ -508,6 +489,225 @@ void Engine::Shutdown() {
     // SDL_Quit exactly once, after every part of the engine that used SDL has
     // finished with it.
     SDL_Quit();
+}
+
+// ---------------------------------------------------------------------------
+//  Settings, after start-up
+// ---------------------------------------------------------------------------
+
+// Shared by Init and ReloadSettings, so that one piece of text decides what
+// presentation.mode does to the renderer. Reported rather than refused when
+// the text makes no sense: a settings file is edited by people, and a mistyped
+// aspect should cost you the aspect, not the ability to start the game.
+void Engine::ApplyPresentationSetting() {
+    Presentation::Mode mode = Presentation::Mode::Free;
+    int                x    = 0;
+    int                y    = 0;
+    std::string        why;
+    if (!Presentation::ParseSpec(m_config.presentation, mode, x, y, why)) {
+        ENGINE_LOG_WARN(Channels::kRender,
+                        "presentation.mode '{}' was not understood ({}), so the "
+                        "game fills the window",
+                        m_config.presentation, why);
+    } else if (mode == Presentation::Mode::Aspect) {
+        Presentation::SetAspect(x, y);
+        ENGINE_LOG_INFO(Channels::kRender,
+                        "the game is presented at {}:{}, with black in the margins",
+                        x, y);
+    } else if (mode == Presentation::Mode::Resolution) {
+        Presentation::SetResolution(x, y);
+        ENGINE_LOG_INFO(Channels::kRender,
+                        "the game is rendered at {}x{} and scaled to the window, "
+                        "with black in the margins",
+                        x, y);
+    } else {
+        Presentation::SetFree();
+    }
+}
+
+bool Engine::ReloadSettings(std::string& outError) {
+    // ======================================================================
+    //  PRESENT AND UNREADABLE IS NOT THE SAME AS ABSENT.
+    //
+    //  LoadBootConfig treats both as "no settings file; using built-in
+    //  defaults" and returns TRUE - which is right at start-up, where there
+    //  may genuinely be no file, and wrong here. Every value in `fresh`
+    //  would then be a built-in default, the diff would read that as "the
+    //  project now asks for the defaults", and a file locked by something
+    //  else for a moment would silently reset the world unit, the gravity
+    //  and the log threshold of a project that still says otherwise on disk.
+    // ======================================================================
+    {
+        std::string probe;
+        std::string probeError;
+        if (!FileSystem::ReadTextFile(m_configPath, probe, probeError) &&
+            FileSystem::Exists(m_configPath)) {
+            outError = m_configPath + " is there but could not be read (" +
+                       probeError + "); the engine is still running on the settings " +
+                       "it started with";
+            ENGINE_LOG_WARN(Channels::kConfig, "{}", outError);
+            return false;
+        }
+    }
+
+    // The file the engine itself read at start-up, read by the same function,
+    // so a key added to BootConfig arrives here with no new code.
+    BootConfig fresh;
+    Json       document = Json::object();
+    if (!LoadBootConfig(m_configPath, fresh, document, outError)) {
+        // Present and unparseable. The settings the engine is running on are
+        // left exactly as they are rather than half-replaced.
+        return false;
+    }
+
+    const BootConfig& was = m_config;
+
+    // ======================================================================
+    //  ONLY WHAT CHANGED, and this is not an optimisation.
+    //
+    //  LogBuffer::SetCapacity EMPTIES THE CONSOLE. Re-applying every setting
+    //  on every edit would wipe the log each time somebody nudged the gravity,
+    //  which is the kind of thing that gets blamed on the Console.
+    //
+    //  WorldUnit::SetPixels is the same shape of problem from the other end:
+    //  every collider in the open scene is measured against it, so changing
+    //  it is a real event and worth saying out loud, not a silent re-apply.
+    // ======================================================================
+    int         applied = 0;
+    std::string restartNeeded;
+
+    const auto note = [&restartNeeded](const char* key) {
+        if (!restartNeeded.empty()) {
+            restartNeeded += ", ";
+        }
+        restartNeeded += key;
+    };
+
+    // ---- logging ---------------------------------------------------------
+    if (fresh.logThreshold != was.logThreshold) {
+        Log::SetThreshold(fresh.logThreshold);
+        ++applied;
+    }
+    if (fresh.logBufferCapacity != was.logBufferCapacity) {
+        LogBuffer::SetCapacity(static_cast<std::size_t>(fresh.logBufferCapacity));
+        ++applied;
+    }
+    if (fresh.logFile != was.logFile) {
+        // The log file is opened once and held open for the run - Log::Init
+        // opens it, Log::Shutdown closes it, and there is no reopen. Said
+        // out loud rather than silently ignored.
+        note("logging.file");
+    }
+
+    // ---- tunables --------------------------------------------------------
+    if (fresh.gizmoCircleSegments != was.gizmoCircleSegments) {
+        Gizmos::SetCircleSegments(fresh.gizmoCircleSegments);
+        ++applied;
+    }
+    if (fresh.fixedTimestepSeconds != was.fixedTimestepSeconds) {
+        m_clock.SetFixedStepSeconds(fresh.fixedTimestepSeconds);
+        ++applied;
+    }
+    if (fresh.maxStepsPerFrame != was.maxStepsPerFrame) {
+        m_clock.SetMaxStepsPerFrame(fresh.maxStepsPerFrame);
+        ++applied;
+    }
+
+    // ---- physics ---------------------------------------------------------
+    if (fresh.gravity.x != was.gravity.x || fresh.gravity.y != was.gravity.y) {
+        Physics2D::SetGravity(fresh.gravity);
+        ++applied;
+    }
+    if (fresh.solverIterations != was.solverIterations) {
+        CollisionSystem::SetSolverIterations(fresh.solverIterations);
+        ++applied;
+    }
+
+    // ---- units -----------------------------------------------------------
+    if (fresh.worldUnitPixels != was.worldUnitPixels) {
+        WorldUnit::SetPixels(fresh.worldUnitPixels);
+        ++applied;
+
+        // EVERY COLLIDER IN THE OPEN SCENE JUST CHANGED SIZE, because a
+        // collider's scale is a fraction of this number. That is the intended
+        // effect and it is still worth a line in the log: a scene that was
+        // right a moment ago now has hitboxes of a different size, and
+        // anything already measured against the old number - a sprite fitted
+        // to one unit, say - was measured once and does not re-measure.
+        ENGINE_LOG_WARN(Channels::kCore,
+                        "one world unit is now {} pixels (was {}); colliders are "
+                        "authored as fractions of it, so every collider in the open "
+                        "scene has changed size",
+                        fresh.worldUnitPixels, was.worldUnitPixels);
+    }
+
+    // ---- presentation ----------------------------------------------------
+    const bool presentationChanged = fresh.presentation != was.presentation;
+
+    // ---- the window, and ONLY when this host is the game ------------------
+    //
+    // Size, full screen and resizability describe the SHIPPED window. An
+    // editor that went full screen at a locked size because a project asked
+    // for it would leave no way back but hand-editing the file, which is the
+    // whole reason Options::gameOwnsTheWindow exists.
+    // ---- the startup scene -----------------------------------------------
+    //
+    // Read once, in Init, and only as the last of three fallbacks behind
+    // --scene and build-list index 0. So it cannot be applied - and saying
+    // nothing would make it the one key in the file whose change is reported
+    // nowhere, which is the thing Config.h asks never to happen.
+    const bool startupSceneChanged = fresh.startupScene != was.startupScene;
+
+    const bool windowChanged = fresh.windowWidth != was.windowWidth ||
+                               fresh.windowHeight != was.windowHeight ||
+                               fresh.windowTitle != was.windowTitle ||
+                               fresh.fullscreen != was.fullscreen ||
+                               fresh.windowResizable != was.windowResizable;
+
+    // The new values are in place BEFORE anything is applied from them, so
+    // that ApplyPresentationSetting reads the same m_config every other
+    // caller does rather than being handed a second copy.
+    m_config = fresh;
+
+    // Kept in step although nothing re-reads it: InputMap loaded the bindings
+    // at start-up and is deliberately NOT asked to load them again - see the
+    // header. A document that disagreed with the file would still be a lie.
+    m_configDocument = std::move(document);
+
+    if (presentationChanged) {
+        ApplyPresentationSetting();
+        ++applied;
+    }
+
+    if (startupSceneChanged) {
+        ENGINE_LOG_INFO(Channels::kConfig,
+                        "the startup scene is now '{}'; it decides which scene the "
+                        "GAME opens with and takes effect when the game is built or "
+                        "run - the build list wins over it when there is one",
+                        m_config.startupScene);
+    }
+
+    if (windowChanged) {
+        if (m_gameOwnsTheWindow) {
+            note("the window settings");
+        } else {
+            ENGINE_LOG_INFO(Channels::kConfig,
+                            "the window settings changed; they describe the game's "
+                            "window and take effect when the game is built or run");
+        }
+    }
+
+    if (restartNeeded.empty()) {
+        ENGINE_LOG_INFO(Channels::kConfig, "settings re-read from '{}': {} applied",
+                        m_configPath, applied);
+    } else {
+        ENGINE_LOG_INFO(Channels::kConfig,
+                        "settings re-read from '{}': {} applied; {} needs a restart",
+                        m_configPath, applied, restartNeeded);
+    }
+
+    outError.clear();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +861,38 @@ bool Engine::SaveScene(std::string_view virtualPath, std::string& outError) {
         return false;
     }
 
+    // ======================================================================
+    //  NOT WHILE THE GAME IS RUNNING. See the header for the whole argument;
+    //  the short version is that the scene in memory is a throwaway copy of
+    //  the one on disk, so writing it out saves the playtest into the asset
+    //  and Stop then hides the evidence by restoring the snapshot.
+    //
+    //  THE MESSAGE NAMES THE WAY OUT, because every one of the editor's save
+    //  routes shows it verbatim in the status bar.
+    // ======================================================================
+    if (m_inPlayMode) {
+        outError = "the game is running, and the scene on screen is a copy that Stop "
+                   "is about to replace - press Stop first, then save";
+        ENGINE_LOG_WARN(Channels::kEditor, "save refused: {}", outError);
+        return false;
+    }
+
+    // ======================================================================
+    //  AND NOT WHEN THERE IS NO SCENE OPEN.
+    //
+    //  The source path deliberately survives an unload, so after Close Scene
+    //  it still names a real asset with nothing behind it - and writing that
+    //  out serialised zero entities over the file. The editor greys its save
+    //  routes on the same question; this is the backstop, for the same reason
+    //  the play-mode refusal above is here rather than only in the menus.
+    // ======================================================================
+    if (!m_scene->IsOpen()) {
+        outError = "there is no scene open, so there is nothing to save - saving now "
+                   "would write an empty scene over the file";
+        ENGINE_LOG_WARN(Channels::kEditor, "save refused: {}", outError);
+        return false;
+    }
+
     const std::string target =
         virtualPath.empty() ? m_scene->SourcePath() : std::string(virtualPath);
     if (target.empty()) {
@@ -668,17 +900,51 @@ bool Engine::SaveScene(std::string_view virtualPath, std::string& outError) {
         return false;
     }
 
-    // The live camera goes in FIRST, so that framing a shot in the editor and
-    // pressing save keeps the framing. Doing it here rather than inside
-    // Scene::Save means the scene does not have to know a camera exists.
-    // WHICHEVER WAY THIS CAMERA IS FRAMED. A scene framed by height has to
-    // save as a height, or the next load would turn it back into a zoom and
-    // the framing would quietly start following the window again.
-    if (m_camera.CurrentFraming() == Camera::Framing::Height) {
-        m_scene->SetCameraFrameHeight(m_camera.Position(), m_camera.FrameHeight(),
-                                      m_camera.Zoom());
-    } else {
-        m_scene->SetCameraState(m_camera.Position(), m_camera.Zoom());
+    // =======================================================================
+    //  THE LIVE CAMERA GOES IN FIRST - BUT ONLY WHEN IT IS THE SCENE'S OWN.
+    //
+    //  Framing a shot in the editor and pressing save should keep the framing,
+    //  and that is what this is for. Done here rather than inside Scene::Save
+    //  so the scene does not have to know a camera exists.
+    //
+    //  ---------------------------------------------------------------------
+    //  WHY IT IS GATED, AND WHAT IT WAS QUIETLY DESTROYING
+    //
+    //  A camera can be an ENTITY - a CameraComponent, which is how a camera
+    //  that follows the player is built. When one is active, CameraSystem
+    //  copies its world position and zoom into m_camera at the end of EVERY
+    //  Simulate, playing or not (the editor needs that, or dragging the camera
+    //  entity in the Scene view would not move the Game view until Play was
+    //  pressed - see Engine::Simulate).
+    //
+    //  So for such a scene m_camera is a DERIVED value, and writing it into
+    //  the scene document meant every save overwrote the hand-authored
+    //  "camera" block with wherever that entity happened to be standing. That
+    //  block is not dead weight: it is the framing the scene falls back to
+    //  when no camera entity is active, which is what happens once the LAST
+    //  one is deleted, disabled, or left on an entity switched off in the
+    //  hierarchy. (Priority does not bring the block back - it only chooses
+    //  between cameras.) Saving
+    //  during a playtest made it worse - the entity was wherever the player
+    //  had walked to - but the overwrite happened in edit mode too, on every
+    //  single save, and nothing on screen showed it.
+    //
+    //  THIS IS NOW THE SAME RULE THE "Align game camera" BUTTON ALREADY USES:
+    //  write the camera ENTITY when there is one, and the engine's camera only
+    //  when there is not. See editor/src/panels/ScenePanel.cpp, which branches
+    //  on the very same question and says why.
+    //
+    //  WHICHEVER WAY THIS CAMERA IS FRAMED. A scene framed by height has to
+    //  save as a height, or the next load would turn it back into a zoom and
+    //  the framing would quietly start following the window again.
+    // =======================================================================
+    if (CameraSystem::Active() == nullptr) {
+        if (m_camera.CurrentFraming() == Camera::Framing::Height) {
+            m_scene->SetCameraFrameHeight(m_camera.Position(), m_camera.FrameHeight(),
+                                          m_camera.Zoom());
+        } else {
+            m_scene->SetCameraState(m_camera.Position(), m_camera.Zoom());
+        }
     }
 
     return m_scene->Save(target, outError);
@@ -692,7 +958,10 @@ bool Engine::EnterPlayMode(std::string& outError) {
     if (m_inPlayMode || m_scene == nullptr) {
         return m_inPlayMode;
     }
-    if (!m_scene->SaveToString(m_playModeSnapshot, outError)) {
+    // TakePlaySnapshot, NOT SaveToString: the snapshot has to carry which file
+    // this scene is, because a session that changes scene moves it. See
+    // Scene::PlaySnapshot.
+    if (!m_scene->TakePlaySnapshot(m_playModeSnapshot, outError)) {
         // Refuse rather than play unsafely. Entering play mode without a
         // snapshot means Stop cannot put the scene back, and silently turning
         // a safe action into a destructive one is the worst possible failure
@@ -703,6 +972,11 @@ bool Engine::EnterPlayMode(std::string& outError) {
         return false;
     }
     m_inPlayMode = true;
+
+    // THE SPEED IS WRITTEN DOWN BEFORE ANY SCRIPT CAN TOUCH IT, so Stop can
+    // put the Toolbar back where the person left it. See m_playModeTimeScale.
+    m_playModeTimeScale = m_clock.TimeScale();
+
     m_clock.SetPaused(false);
 
     // A SESSION STARTS WITH NOTHING HELD. Whatever the keyboard was doing
@@ -723,6 +997,31 @@ void Engine::ExitPlayMode() {
     m_inPlayMode = false;
     m_clock.SetPaused(true);
 
+    // ======================================================================
+    //  THIS FRAME'S SIMULATION STEPS ARE CANCELLED, and that is not tidying.
+    //
+    //  BeginFrame asks the clock how many fixed steps to run and REMEMBERS
+    //  the answer, at the top of the frame, while the game is still playing.
+    //  Pausing the clock here does not unask the question. The automatic stop
+    //  before a script rebuild runs BEFORE Simulate in the editor's frame -
+    //  see EditorApp::RebuildScriptsIfChanged - so without this line Simulate
+    //  would go on to run those steps against the scene this function has
+    //  just restored: physics integrating, scripts getting an OnUpdate, every
+    //  rigidbody drifting out of the pose it was authored in, with nothing on
+    //  screen to say so and no dirty flag to catch it. The next save then
+    //  wrote the drift to the file.
+    //
+    //  The Stop button and Ctrl+P are read after Simulate and so never hit
+    //  that window. Zeroing it here covers all three, and the fourth.
+    // ======================================================================
+    m_stepsThisFrame = 0;
+
+    // AND THE SPEED THE TOOLBAR WAS SET TO. A pause menu script is documented
+    // to do this with SetTimeScale(0), and nothing put it back - so one such
+    // playtest froze every later session in the same editor. See
+    // m_playModeTimeScale.
+    m_clock.SetTimeScale(m_playModeTimeScale);
+
     // AND IT ENDS WITH NOTHING HELD EITHER. Clearing it here as well as on
     // the way in is not belt and braces: pressing Stop with a key down is
     // precisely how the key gets stuck, and the editor itself should not be
@@ -741,12 +1040,31 @@ void Engine::ExitPlayMode() {
     // stopped on the second - with nothing reported anywhere. See Messaging.h.
     MessageBus::ClearQueue();
 
-    if (m_scene != nullptr && !m_playModeSnapshot.empty()) {
+    if (m_scene != nullptr && !m_playModeSnapshot.Empty()) {
         std::string error;
-        if (!m_scene->LoadFromString(m_playModeSnapshot, error)) {
-            ENGINE_LOG_ERROR(Channels::kEditor,
-                             "play mode ended but the scene could not be restored: {}",
-                             error);
+        if (!m_scene->RestorePlaySnapshot(m_playModeSnapshot, error)) {
+            // SAID AT ERROR LEVEL AND SAID COMPLETELY, because the scene now
+            // has no file - RestorePlaySnapshot clears it rather than leave a
+            // real asset one Ctrl+S from being overwritten with wreckage - and
+            // somebody has to be told why Save is suddenly asking for a name.
+            //
+            // TWO WORDINGS, because a scene that had never been saved has no
+            // file to name: the one message read "rather than overwrite ''"
+            // and claimed to have saved a file that never existed. This is
+            // the one branch whose whole job is explaining itself, so it is
+            // the one that has to get that right.
+            if (m_playModeSnapshot.sourcePath.empty()) {
+                ENGINE_LOG_ERROR(Channels::kEditor,
+                                 "play mode ended but the scene could not be restored: "
+                                 "{}; this scene had never been saved anywhere, so Save "
+                                 "will ask for a name", error);
+            } else {
+                ENGINE_LOG_ERROR(Channels::kEditor,
+                                 "play mode ended but the scene could not be restored: "
+                                 "{}; the scene has been left with no file, so Save will "
+                                 "ask for a name rather than overwrite '{}'",
+                                 error, m_playModeSnapshot.sourcePath);
+            }
         } else {
             ENGINE_LOG_INFO(Channels::kEditor, "play mode stopped; scene restored");
         }
@@ -760,7 +1078,29 @@ void Engine::ExitPlayMode() {
 
         ApplySceneCamera();
     }
-    m_playModeSnapshot.clear();
+    m_playModeSnapshot = {};
+
+    // ======================================================================
+    //  ANY SCENE A SCRIPT ASKED FOR AND DID NOT GET IS DROPPED HERE.
+    //
+    //  LAST, AFTER THE RESTORE, and the order is the whole fix. Putting the
+    //  snapshot back unloads the played scene, and an unload runs every
+    //  script's OnDestroy - which is a perfectly ordinary place to call
+    //  RequestScene from ("when this dies, go to the next level"). That
+    //  request arrives after this frame's Simulate has already drained the
+    //  field, so it was still standing when the editor went back to editing,
+    //  and the next Simulate - in EDIT mode, with nobody playing - carried it
+    //  out: the requested scene loaded straight over the scene that had just
+    //  been restored, without the unsaved-work question the editor's own
+    //  open-scene routes all ask, and re-pointed the save target again.
+    //
+    //  ApplyPendingSceneRequest is deliberately NOT gated on play mode
+    //  instead. The engine's job is to carry out a request from a script, and
+    //  the shipped player is never in play mode at all - the thing that is
+    //  wrong is a request outliving the session that made it, which is this.
+    // ======================================================================
+    m_requestedScene.clear();
+    m_hasSceneRequest = false;
 }
 
 // ---------------------------------------------------------------------------

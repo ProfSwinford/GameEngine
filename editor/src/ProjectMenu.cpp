@@ -36,8 +36,14 @@ namespace {
 constexpr int kPurposeOpen = 1;
 constexpr int kPurposeNew  = 2;
 
+// What WhatNext() answers with. Written ONLY by ProjectMenu::ConfirmExit, so
+// that it cannot describe a quit the editor ended up cancelling.
 ProjectMenu::Exit g_exit = ProjectMenu::Exit::Quit;
 std::string       g_openNext;
+
+// What Commit decided, waiting to be made real. See ProjectMenu::ConfirmExit.
+ProjectMenu::Exit g_pendingExit = ProjectMenu::Exit::Quit;
+std::string       g_pendingOpenNext;
 
 // ---------------------------------------------------------------------------
 //  A PROJECT CHANGE THAT IS WAITING TO BE CONFIRMED.
@@ -69,12 +75,12 @@ void Commit(const Waiting& change) {
     g_waiting = Waiting{};
 
     if (change.kind == Waiting::Kind::Open) {
-        g_openNext = change.root;
-        g_exit     = ProjectMenu::Exit::OpenProject;
+        g_pendingOpenNext = change.root;
+        g_pendingExit     = ProjectMenu::Exit::OpenProject;
         ENGINE_LOG_INFO(eng::Channels::kEditor, "opening '{}' - the editor will restart",
                         change.name);
     } else {
-        g_openNext.clear();
+        g_pendingOpenNext.clear();
 
         // BACK TO THE LAUNCHER IF THERE IS ONE. Closing a project should land
         // somewhere you can open another, and that is what the launcher is
@@ -83,7 +89,7 @@ void Commit(const Waiting& change) {
         // answer rather than a menu item that implies a list that does not
         // exist.
         const bool toHub = HubIsInstalled();
-        g_exit = toHub ? ProjectMenu::Exit::OpenHub : ProjectMenu::Exit::Quit;
+        g_pendingExit = toHub ? ProjectMenu::Exit::OpenHub : ProjectMenu::Exit::Quit;
 
         ENGINE_LOG_INFO(eng::Channels::kEditor, "closing '{}'{}", change.name,
                         toHub ? " - back to the launcher" : "");
@@ -233,6 +239,26 @@ bool ProjectMenu::RequestOpen(const std::string& realRoot) {
         return false;
     }
 
+    // ======================================================================
+    //  NOT WHILE THE GAME IS RUNNING, and this one is the worst of the lot.
+    //
+    //  Switching project ends the process. The scene as it was before Play
+    //  exists in one place only - a string inside the engine - so quitting
+    //  mid-session throws it away with nothing to restore it from. And the
+    //  unsaved-work dialog this used to raise named the PLAYED scene and
+    //  offered to save it, which wrote the playtest over that file and then
+    //  killed the process: no Stop, no undo, and the authored level gone.
+    //
+    //  Refused with a line in the Console, which is where this file's other
+    //  refusals go. See EditorApp::RequestNewScene for the same refusal at
+    //  the smaller scale.
+    // ======================================================================
+    if (eng::Engine::Get().IsInPlayMode()) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                        "stop playing first - press Stop, then open the project");
+        return false;
+    }
+
     eng::ProjectInfo info;
     std::string      error;
     if (!eng::Project::Read(realRoot, info, error)) {
@@ -265,6 +291,15 @@ bool ProjectMenu::RequestOpen(const std::string& realRoot) {
 }
 
 bool ProjectMenu::RequestClose() {
+    // The same refusal as RequestOpen above, for the same reason: closing the
+    // project ends the process, and the scene as it was before Play lives only
+    // in the engine's snapshot.
+    if (eng::Engine::Get().IsInPlayMode()) {
+        ENGINE_LOG_WARN(eng::Channels::kEditor,
+                        "stop playing first - press Stop, then close the project");
+        return false;
+    }
+
     if (EditorState::Get().IsDirty()) {
         g_waiting          = Waiting{Waiting::Kind::Close, {}, CurrentProject().name};
         g_openUnsavedPopup = true;
@@ -273,6 +308,13 @@ bool ProjectMenu::RequestClose() {
 
     Commit(Waiting{Waiting::Kind::Close, {}, CurrentProject().name});
     return true;
+}
+
+void ProjectMenu::ConfirmExit() {
+    // See the header. Commit wrote these down provisionally; a quit that the
+    // editor actually grants is what turns them into the answer main() reads.
+    g_exit     = g_pendingExit;
+    g_openNext = g_pendingOpenNext;
 }
 
 ProjectMenu::Exit ProjectMenu::WhatNext() {
@@ -594,6 +636,20 @@ void DrawUnsavedProjectPopup() {
     ImGui::SameLine();
     if (ImGui::Button("Discard and continue")) {
         const Waiting change = g_waiting;
+
+        // ==================================================================
+        //  THE FLAG IS CLEARED, exactly as the editor's own discard button
+        //  clears it and for the reason stated there: discarding the changes
+        //  IS declaring that there is no unsaved work any more.
+        //
+        //  IT MATTERS NOW THAT CLOSING THE EDITOR ASKS. Commit ends the
+        //  process through the same quit flag the window's close button sets,
+        //  and that flag is now intercepted so unsaved work can be asked
+        //  about - so a scene still marked dirty here would raise a SECOND
+        //  dialog, about a decision taken a moment earlier on this one.
+        // ==================================================================
+        EditorState::Get().ClearDirty();
+
         ImGui::CloseCurrentPopup();
         Commit(change);
     }

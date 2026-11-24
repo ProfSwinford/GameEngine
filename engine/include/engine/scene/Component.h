@@ -331,13 +331,16 @@ public:
     //  SHOWS A PICTURE WITHOUT CHANGING THE SAVED PATH.
     //
     //  SetTexture above writes m_texturePath, which Serialize writes into the
-    //  scene file. That is right for an edit and WRONG FOR PLAYBACK: Ctrl+S
-    //  is not blocked while the game is playing - unlike New Scene - so an
-    //  animation calling SetTexture twelve times a second would eventually
-    //  have one of those frames saved as the sprite's authored picture.
-    //  Silently, because a frame path loads perfectly well, and invisibly,
-    //  because Stop puts the authored value back in memory afterwards. Undo
-    //  is the same path: every snapshot is a full Scene::SaveToString.
+    //  scene file. That is right for an edit and WRONG FOR PLAYBACK: every
+    //  undo step is a full Scene::SaveToString, so an animation calling
+    //  SetTexture twelve times a second would eventually have one of those
+    //  frames saved as the sprite's authored picture. Silently, because a
+    //  frame path loads perfectly well, and invisibly, because Stop puts the
+    //  authored value back in memory afterwards.
+    //
+    //  This used to name Ctrl+S during play as the way it happened. Saving is
+    //  refused during a playtest now - see Engine::SaveScene - but undo alone
+    //  still gets there, so the rule and the two separate calls stand.
     //
     //  TAKES A TextureRef, NOT A PATH, and both halves of that are
     //  deliberate: the caller already holds the pinned frame, so this is a

@@ -34,6 +34,8 @@ set(EDITOR_SOURCES
     src/AssetRefs.cpp                    # following an asset when it is renamed or moved
     src/GameViewLayout.cpp               # the Game view aspect, resolution and scale
     src/ProjectSettings.cpp              # the editor writing config/engine.json
+    src/EditorPrefs.cpp                  # how the editor looks, per person, as a file
+    src/EditorAppearance.cpp             # putting those preferences into Dear ImGui
     src/TileAssetEditor.cpp              # editing one .otile, in the Inspector
     src/EditorSession.cpp                # remembers where you were when you closed it
     src/GameExport.cpp                   # File -> Build Game...
@@ -46,6 +48,8 @@ set(EDITOR_SOURCES
     src/panels/InspectorPanel.cpp        # Inspector- the selected entity's components
     src/panels/ScenePanel.cpp            # Scene    - the view you edit in
     src/panels/InputActionsPanel.cpp     # Input Actions - maps, actions, bindings
+    src/panels/ProjectSettingsPanel.cpp  # Project Settings - config/engine.json, as a form
+    src/panels/EditorOptionsPanel.cpp    # Options  - the editor's own colours and font
     src/panels/ToolbarPanel.cpp          # Toolbar  - Play, Pause, Step
 )
 

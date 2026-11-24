@@ -91,6 +91,25 @@ public:
     static Exit               WhatNext();
     static const std::string& ProjectToOpen();
 
+    // ======================================================================
+    //  PROMOTES A RECORDED INTENTION INTO THE ONE WhatNext() ANSWERS WITH.
+    //
+    //  Switching project works by writing down where to go and then asking
+    //  the frame loop to stop, because the restart has to happen after
+    //  Shutdown - see Commit. That was sound while a quit request was final.
+    //
+    //  IT IS NOT FINAL ANY MORE. Closing the editor now asks about unsaved
+    //  work first, which means a quit can be held and, in one case, dropped.
+    //  A dropped quit used to leave the intention latched: the editor carried
+    //  on running, and the NEXT, unrelated close relaunched into a project
+    //  nobody had asked for by then.
+    //
+    //  So Commit records it provisionally and this is the only thing that
+    //  makes it real. EditorApp::ApproveQuit is the single place a quit is
+    //  actually granted, and it is the only caller.
+    // ======================================================================
+    static void ConfirmExit();
+
     // Asks for a project to be opened once the editor has shut down. Public
     // because the Hub-facing paths and the recents list both use it, and
     // because a test or a tool may want to drive it.
